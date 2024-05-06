@@ -189,20 +189,20 @@ function generateExpression(expression: Parser.Expression, argOptions?: Expressi
     }
 
     if (expression.type == 'CallExpression') {
-        let result = formatBase(expression.base) + '(';
+        let result = formatParenForIndexer(expression.base) + '(';
         result += expression.arguments.map((arg) => generateExpression(arg)).join(",")
         result += ')';
         return result;
     }
 
     if (expression.type == "MemberExpression") {
-        return formatBase(expression.base) + expression.indexer + generateExpression(expression.identifier, {preserveIdentifiers: true});
+        return formatParenForIndexer(expression.base) + expression.indexer + generateExpression(expression.identifier, {preserveIdentifiers: true});
     }
 
     return "<" + expression.type  + ">";
 }
 
-function formatBase(base: Parser.Expression) {
+function formatParenForIndexer(base: Parser.Expression) {
     let result = '';
     const type = base.type;
     //@ts-check
