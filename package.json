@@ -1,0 +1,23 @@
+{
+  "dependencies": {
+    "@types/luaparse": "^0.2.12",
+    "luamin": "^1.0.4",
+    "luaparse": "^0.3.1",
+    "source-map": "^0.7.4",
+    "typescript": "^5.4.5"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^7.8.0",
+    "@typescript-eslint/parser": "^7.8.0",
+    "eslint": "^8.57.0"
+  },
+  "name": "storm-lua-minify",
+  "description": "",
+  "version": "0.1.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "MIT"
+}
