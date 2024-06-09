@@ -11,9 +11,9 @@ const luaparseSetting: Partial<Options> = {
 }
 
 const argPath = argv[2];
-console.log(argPath);
+console.log("--", argPath, fs.existsSync(argPath));
 
 if (fs.existsSync(argPath)) {
     const ast = Parser.parse(fs.readFileSync(argPath).toString(), luaparseSetting);
-    minify(ast);
+    console.log(minify(ast));
 }
