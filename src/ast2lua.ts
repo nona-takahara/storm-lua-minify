@@ -227,9 +227,7 @@ function formatExpression(expression: Parser.Expression, argOptions?: Expression
         // eslint-disable-next-line @typescript-eslint/ban-ts-comment, @typescript-eslint/prefer-ts-expect-error
         //@ts-ignore
         // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-        return expression.isLocal && !options.preserveIdentifiers
-        ? generateIdentifier(expression.name)
-        : expression.name;
+        return expression.isLocal ? generateIdentifier(expression.name) : expression.name;
     } else if (expression.type == "StringLiteral" || expression.type == "NumericLiteral" || expression.type == "BooleanLiteral" || expression.type == "NilLiteral" || expression.type == "VarargLiteral") {
         return expression.raw;
     } else if (expression.type == "LogicalExpression" || expression.type == "BinaryExpression") {
