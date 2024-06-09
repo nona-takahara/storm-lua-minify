@@ -1,23 +1,8 @@
-// luamin: Copyright Mathias Bynens <https://mathiasbynens.be/>
+// based on "luamin": Copyright Mathias Bynens <https://mathiasbynens.be/>
+// SPDX-License-Identifier: MIT
 
+/* eslint-disable @typescript-eslint/no-unnecessary-condition */
 import Parser from "luaparse";
-
-interface FilePosition {
-    line: number;
-    column: number;
-}
-
-
-interface FileRange {
-    start: FilePosition;
-    end: FilePosition;
-}
-
-interface CodeSnippet {
-    lua: string;
-    orignalLoc?: FileRange;
-}
-
 
 const PRECEDENCE: Record<string, number> = {
     'or': 1,
@@ -36,24 +21,159 @@ const PRECEDENCE: Record<string, number> = {
     'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
     'U', 'V', 'W', 'X', 'Y', 'Z', '_'];
 */
-export function ast2lua(ast: Parser.Chunk) {
-    console.log(joinLua(generateStatementList(ast.body), "\n"));
+export function minify(ast: Parser.Chunk) {
+    return formatStatementList(ast.body);
 }
 
-export function joinLua(code: CodeSnippet[], separator?: string): string {
-    return code.reduce((a, b) => ({ lua: joinSnippet(a.lua, b.lua, separator) })).lua;
+function wrapArray<T>(obj: T | T[]): T[] {
+    if (Array.isArray(obj)) {
+        return obj;
+    }
+    return [obj];
 }
 
-function joinSnippet(a: string, b: string, separator?: string) {
+function formatStatementList(body: Parser.Statement[] | Parser.Statement) {
+    let result = '';
+    wrapArray(body).forEach((statement) => {
+        result = joinStatements(result, formatStatement(statement), ';');
+    })
+    return result;
+}
+
+function formatStatement(statement: Parser.Statement) {
+    let result = '';
+    if (statement.type == 'AssignmentStatement') {
+        // left-hand side
+        result = joinStatements(result, statement.variables.map(variable => formatExpression(variable)).join(','));
+        // right-hand side
+        result = joinStatements(result, '=');
+        result = joinStatements(result,  statement.init.map(init => formatExpression(init)).join(','));
+    } else if (statement.type == 'LocalStatement') {
+        result = joinStatements(result, 'local ');
+        // left-hand side
+        result = joinStatements(result,  statement.variables.map(variable => generateIdentifier(variable.name)).join(','));
+        // right-hand side
+        if (statement.init.length) {
+            result = joinStatements(result,  '=');
+            result = joinStatements(result,  statement.init.map(init => formatExpression(init)).join(','));
+        }
+    } else if (statement.type == 'CallStatement') {
+        result = formatExpression(statement.expression);
+    } else if (statement.type == 'IfStatement') {
+        statement.clauses.forEach((clause) => {
+            if (clause.type == "IfClause") {
+                result = joinStatements(result, 'if');
+                result = joinStatements(result, formatExpression(clause.condition));
+                result = joinStatements(result, 'then');
+            } else if (clause.type == "ElseifClause") {
+                result = joinStatements(result, 'elseif');
+                result = joinStatements(result, formatExpression(clause.condition));
+                result = joinStatements(result, 'then');
+            } else {
+                result = joinStatements(result, 'else');
+            }
+            result = joinStatements(result, formatStatementList(clause.body));
+        })
+        result = joinStatements(result, 'end');
+        
+    } else if (statement.type == 'WhileStatement') {
+        result = joinStatements('while', formatExpression(statement.condition));
+        result = joinStatements(result, 'do');
+        result = joinStatements(result, formatStatementList(statement.body));
+        result = joinStatements(result, 'end');
+
+    } else if (statement.type == 'DoStatement') {
+        result = joinStatements('do', formatStatementList(statement.body));
+        result = joinStatements(result, 'end');
+
+    } else if (statement.type == 'ReturnStatement') {
+        result = joinStatements(result, 'return');
+        if (statement.arguments.length) {
+            result = joinStatements(
+                result,
+                statement.arguments.map(argument => formatExpression(argument)).join(',')
+            );
+        }
+
+    } else if (statement.type == 'BreakStatement') {
+        result = joinStatements(result, 'break');
+    } else if (statement.type == 'RepeatStatement') {
+        result = joinStatements('repeat', formatStatementList(statement.body));
+        result = joinStatements(result, 'until');
+        result = joinStatements(result, formatExpression(statement.condition))
+    } else if (statement.type == 'FunctionDeclaration') {
+
+        result = (statement.isLocal ? 'local ' : '') + 'function ';
+        if (statement.identifier) {
+            result = joinStatements(result,  formatExpression(statement.identifier));
+        }
+        result = joinStatements(result,  '(');
+
+        if (statement.parameters.length) {
+            result = joinStatements(result,  statement.parameters.map(parameter => {
+                return parameter.type == "Identifier" ? generateIdentifier(parameter.name)
+                                                      : parameter.value
+            }).join(','));
+        }
+
+        result = joinStatements(result,  ')');
+        result = joinStatements(result, formatStatementList(statement.body));
+        result = joinStatements(result, 'end');
+
+    } else if (statement.type == 'ForGenericStatement') {
+        // see also `ForNumericStatement`
+
+        result = joinStatements(result, 'for ');
+        result = joinStatements(result, statement.variables.map(variable => generateIdentifier(variable.name)).join(','));
+        result = joinStatements(result,  ' in');
+        result = joinStatements(result, statement.iterators.map(iterator => formatExpression(iterator)).join(','));
+        result = joinStatements(result, 'do');
+        result = joinStatements(result, formatStatementList(statement.body));
+        result = joinStatements(result, 'end');
+
+    } else if (statement.type == 'ForNumericStatement') {
+
+        // The variables in a `ForNumericStatement` are always local
+        result = joinStatements(result, 'for ' + generateIdentifier(statement.variable.name) + '=');
+        result = joinStatements(result,
+            formatExpression(statement.start) + ',' +
+            formatExpression(statement.end));
+
+        if (statement.step) {
+            result = joinStatements(result,  ',' + formatExpression(statement.step));
+        }
+
+        result = joinStatements(result, 'do');
+        result = joinStatements(result, formatStatementList(statement.body));
+        result = joinStatements(result, 'end');
+
+    } else if (statement.type == 'LabelStatement') {
+
+        // The identifier names in a `LabelStatement` can safely be renamed
+        result = joinStatements(result, '::' + generateIdentifier(statement.label.name) + '::');
+
+    } else if (statement.type == 'GotoStatement') {
+
+        // The identifier names in a `GotoStatement` can safely be renamed
+        result = joinStatements(result, 'goto ' + generateIdentifier(statement.label.name));
+
+    } else {
+        throw TypeError('Unknown statement type: `' + JSON.stringify(statement) + '`');
+    }
+
+    return result;
+}
+
+function joinStatements(a: string, b: string, separator?: string) {
     separator = separator ? separator : " ";
-
-    const regexAlphaUnderscore = /[a-zA-Z_]/;
-    const regexAlphaNumUnderscore = /[a-zA-Z0-9_]/;
-    const regexDigits = /[0-9]/;
 
     const lastCharA = a.slice(-1);
     const firstCharB = b.charAt(0);
 
+    const regexAlphaUnderscore = /[a-zA-Z_]/;
+    const regexAlphaNumUnderscore = /[a-zA-Z0-9_]/;
+    const regexDigits = /[0-9]/;
+    
     if (lastCharA == '' || firstCharB == '') {
         return a + b;
     }
@@ -95,91 +215,6 @@ function joinSnippet(a: string, b: string, separator?: string) {
     return a + b;
 }
 
-function generateStatementList(statement: Parser.Statement[] | Parser.Statement): CodeSnippet[] {
-    let res: CodeSnippet[];
-    if (Array.isArray(statement)) {
-        res = statement.map((st) => generateStatement(st)).flat();
-    } else {
-        res = generateStatement(statement);
-    }
-    return res;
-}
-
-function generateStatement(statement: Parser.Statement): CodeSnippet[] {
-    if (statement.type == "AssignmentStatement" || statement.type == "LocalStatement") {
-        const leftHand = statement.variables.map((variable) =>
-            generateExpression(variable)
-        ).join(",");
-        const assignment = statement.init.length ? "=" : "";
-        const rightHand = statement.init.map((initexp) => generateExpression(initexp)).join(",");
-        return [{
-            lua:
-                ((statement.type == "LocalStatement") ? "local " : "")
-                + leftHand + assignment + rightHand,
-            orignalLoc: statement.loc
-        }];
-    }
-
-    if (statement.type == "FunctionDeclaration") {
-        const defineKeyword = (statement.isLocal ? "local " : "") + "function";
-        const identifier = statement.identifier ? generateExpression(statement.identifier) : "";
-        const argumentList = statement.parameters.map((parameter) =>
-            (parameter.type == "VarargLiteral") ? parameter.value : generateExpression(parameter)
-        ).join(",")
-        return [[
-            {
-                lua: joinSnippet(defineKeyword, identifier) + "(" + argumentList + ")",
-                orignalLoc: statement.loc
-            }
-        ], generateStatementList(statement.body), [
-            { lua: "end" }
-        ]].flat();
-    }
-
-    if (statement.type == "CallStatement") {
-        return [{
-            lua: generateExpression(statement.expression),
-            orignalLoc: statement.loc
-        }];
-    }
-
-    if (statement.type == "IfStatement") {
-        const code: CodeSnippet[] = statement.clauses.map((clauses) => {
-            if (clauses.type == "IfClause") {
-                return [{
-                    lua: joinSnippet(joinSnippet("if", generateExpression(clauses.condition)), "then"),
-                    originalLoc: clauses.loc
-                } as CodeSnippet].concat(
-                    generateStatementList(clauses.body));
-            }
-            if (clauses.type == "ElseifClause") {
-                return [{
-                    lua: joinSnippet(joinSnippet("elseif", generateExpression(clauses.condition)), "then"),
-                    originalLoc: clauses.loc
-                } as CodeSnippet].concat(
-                    generateStatementList(clauses.body));
-            }
-            //if (clauses.type == "ElseClause") {
-            return [{
-                lua: "else",
-                originalLoc: clauses.loc
-            } as CodeSnippet].concat(
-                generateStatementList(clauses.body));
-            //}
-        }).flat();
-        code.push({
-            lua: "end", orignalLoc: undefined
-        });
-        return code;
-    }
-
-    return [{
-        lua: "{{" + statement.type + "}}",
-        orignalLoc: undefined
-    }];
-    //throw TypeError('Unknown statement type: `' + statement.type + '`');
-}
-
 interface ExpressionOptoions {
     precedence?: number;
     preserveIdentifiers?: boolean;
@@ -187,17 +222,17 @@ interface ExpressionOptoions {
     parent?: string | undefined;
 }
 
-function generateExpression(expression: Parser.Expression, argOptions?: ExpressionOptoions): string {
-
+function formatExpression(expression: Parser.Expression, argOptions?: ExpressionOptoions): string {
     if (expression.type == "Identifier") {
-        return expression.name;
-    }
-
-    if (expression.type == "StringLiteral" || expression.type == "NumericLiteral" || expression.type == "BooleanLiteral" || expression.type == "NilLiteral" || expression.type == "VarargLiteral") {
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment, @typescript-eslint/prefer-ts-expect-error
+        //@ts-ignore
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        return expression.isLocal && !options.preserveIdentifiers
+        ? generateIdentifier(expression.name)
+        : expression.name;
+    } else if (expression.type == "StringLiteral" || expression.type == "NumericLiteral" || expression.type == "BooleanLiteral" || expression.type == "NilLiteral" || expression.type == "VarargLiteral") {
         return expression.raw;
-    }
-
-    if (expression.type == "LogicalExpression" || expression.type == "BinaryExpression") {
+    } else if (expression.type == "LogicalExpression" || expression.type == "BinaryExpression") {
         const operator = expression.operator;
         const currentPrecedence = PRECEDENCE[operator];
         let associativity: ("left" | "right") = "left";
@@ -207,21 +242,19 @@ function generateExpression(expression: Parser.Expression, argOptions?: Expressi
             ...argOptions
         }
 
-        const leftHand = generateExpression(expression.left, {
+        const leftHand = formatExpression(expression.left, {
             precedence: currentPrecedence,
             direction: "left",
             parent: operator
         })
-        const rightHand = generateExpression(expression.right, {
+        const rightHand = formatExpression(expression.right, {
             precedence: currentPrecedence,
             direction: "right",
             parent: operator
         })
         if (operator == '^' || operator == '..') {
             associativity = "right";
-        }
-
-        if (
+        } else if (
             currentPrecedence < options.precedence ||
             (
                 currentPrecedence == options.precedence &&
@@ -230,20 +263,76 @@ function generateExpression(expression: Parser.Expression, argOptions?: Expressi
                 !(options.parent == '*' && (operator == '/' || operator == '*'))
             )
         ) {
-            return "(" + joinSnippet(joinSnippet(leftHand, operator), rightHand) + ")"
+            return "(" + joinStatements(joinStatements(leftHand, operator), rightHand) + ")"
         }
-        return joinSnippet(joinSnippet(leftHand, operator), rightHand);
-    }
+        return joinStatements(joinStatements(leftHand, operator), rightHand);
+    } else if (expression.type == 'UnaryExpression' ){
+        const operator = expression.operator;
+        const currentPrecedence = PRECEDENCE['unary' + operator];
+        const options = {
+            precedence: 0,
+            ...argOptions
+        }
 
-    if (expression.type == 'CallExpression') {
-        return formatParenForIndexer(expression.base) + '(' + expression.arguments.map((arg) => generateExpression(arg)).join(",") + ")";
-    }
+        let result = joinStatements(
+            operator,
+            formatExpression(expression.argument, {
+                'precedence': currentPrecedence
+            })
+        );
 
-    if (expression.type == "MemberExpression") {
-        return formatParenForIndexer(expression.base) + expression.indexer + generateExpression(expression.identifier, { preserveIdentifiers: true });
-    }
+        if (
+            currentPrecedence < options.precedence &&
+            // In principle, we should parenthesize the RHS of an
+            // expression like `3^-2`, because `^` has higher precedence
+            // than unary `-` according to the manual. But that is
+            // misleading on the RHS of `^`, since the parser will
+            // always try to find a unary operator regardless of
+            // precedence.
+            !(
+                (options.parent == '^') &&
+                options.direction == 'right'
+            )
+        ) {
+            result = '(' + result + ')';
+        }
+        return result;
+    } else if (expression.type == 'CallExpression') {
+        return formatParenForIndexer(expression.base) + '(' + expression.arguments.map((arg) => formatExpression(arg)).join(",") + ")";
+    } else if (expression.type == 'TableCallExpression') {
+		return formatExpression(expression.base) + formatExpression(expression.arguments);
+    } else if (expression.type == 'StringCallExpression') {
+        return formatExpression(expression.base) + formatExpression(expression.argument);
+    } else if (expression.type == 'IndexExpression') {
+        return formatBase(expression.base) + '[' + formatExpression(expression.index) + ']';
+    }else if (expression.type == "MemberExpression") {
+        return formatParenForIndexer(expression.base) + expression.indexer + formatExpression(expression.identifier, { preserveIdentifiers: true });
+    }else if (expression.type == 'FunctionDeclaration') {
+        let result = 'function(';
+        if (expression.parameters.length) {
+            result = joinStatements(result, expression.parameters.map(parameter => (parameter.type === "Identifier" ? generateIdentifier(parameter.name) : parameter.value)).join(','));
+        }
+        result = joinStatements(result, ')');
+        result = joinStatements(result, formatStatementList(expression.body));
+        result = joinStatements(result, 'end');
+        return result;
+    } else if (expression.type == 'TableConstructorExpression') {
+        let result = '{';
 
-    return "<" + expression.type + ">";
+        result = joinStatements(result, expression.fields.map(field => {
+            if (field.type == 'TableKey') {
+                return '[' + formatExpression(field.key) + ']=' + formatExpression(field.value);
+            } else if (field.type == 'TableValue') {
+                return formatExpression(field.value);
+            } else { // at this point, `field.type == 'TableKeyString'`
+                // TODO: keep track of nested scopes (#18)
+                return formatExpression(field.key, {'preserveIdentifiers': true}) + '=' + formatExpression(field.value);
+            }
+        }).join(','));
+        return joinStatements(result, '}');
+    } else {
+        throw TypeError('Unknown expression type: `' + JSON.stringify(expression) + '`');
+    }
 }
 
 function formatParenForIndexer(base: Parser.Expression) {
@@ -259,11 +348,36 @@ function formatParenForIndexer(base: Parser.Expression) {
         type == 'StringLiteral'
     );
     if (needsParens) {
-        result += '(';
+        result = joinStatements(result,  '(');
     }
-    result += generateExpression(base);
+    result = joinStatements(result,  formatExpression(base));
     if (needsParens) {
-        result += ')';
+        result = joinStatements(result,  ')');
+    }
+    return result;
+}
+
+
+function generateIdentifier(name: string): string {
+    return name;
+}
+
+function formatBase(base: Parser.Expression) {
+    let result = '';
+    const needsParens = ("inParens" in base) && (
+        base.type == 'CallExpression' ||
+        base.type == 'BinaryExpression' ||
+        base.type == 'FunctionDeclaration' ||
+        base.type == 'TableConstructorExpression' ||
+        base.type == 'LogicalExpression' ||
+        base.type == 'StringLiteral'
+    );
+    if (needsParens) {
+        result = joinStatements(result, '(');
+    }
+    result = joinStatements(result, formatExpression(base));
+    if (needsParens) {
+        result = joinStatements(result, ')');
     }
     return result;
 }
