@@ -73,18 +73,20 @@ function formatStatement(statement: Parser.Statement): SourceNode {
     } else if (statement.type == 'IfStatement') {
         const result = sourceNodeHelper(statement, []);
         statement.clauses.forEach((clause) => {
+            const clauseMap = sourceNodeHelper(clause, []);
             if (clause.type == "IfClause") {
-                addWithSeparator(result, "if");
-                addWithSeparator(result, formatExpression(clause.condition));
-                addWithSeparator(result, 'then');
+                addWithSeparator(clauseMap, "if");
+                addWithSeparator(clauseMap, formatExpression(clause.condition));
+                addWithSeparator(clauseMap, 'then');
             } else if (clause.type == "ElseifClause") {
-                addWithSeparator(result, 'elseif');
-                addWithSeparator(result, formatExpression(clause.condition));
-                addWithSeparator(result, 'then');
+                addWithSeparator(clauseMap, 'elseif');
+                addWithSeparator(clauseMap, formatExpression(clause.condition));
+                addWithSeparator(clauseMap, 'then');
             } else {
-                addWithSeparator(result, 'else');
+                addWithSeparator(clauseMap, 'else');
             }
-            addWithSeparator(result, formatStatementList(clause.body));
+            addWithSeparator(clauseMap, formatStatementList(clause.body));
+            addWithSeparator(result, clauseMap);
         })
         addWithSeparator(result, 'end');
         return result;
