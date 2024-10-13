@@ -3,6 +3,7 @@
 
 /* eslint-disable @typescript-eslint/no-unnecessary-condition */
 import Parser from "luaparse";
+import { SourceNode } from "source-map";
 
 const PRECEDENCE: Record<string, number> = {
     'or': 1,
@@ -25,6 +26,12 @@ export function minify(ast: Parser.Chunk) {
     return formatStatementList(ast.body);
 }
 
+function sourceNodeHelper(node: Parser.Node | undefined, chuncks: (SourceNode | string)[] | SourceNode | string, name?: string) {
+    const line = node?.loc?.start.line;
+    const column = node?.loc?.start.column;
+    return new SourceNode(line == undefined ? null : line, column == undefined ? null : column, "test.lua", chuncks, name);
+}
+
 function wrapArray<T>(obj: T | T[]): T[] {
     if (Array.isArray(obj)) {
         return obj;
@@ -33,159 +40,194 @@ function wrapArray<T>(obj: T | T[]): T[] {
 }
 
 function formatStatementList(body: Parser.Statement[] | Parser.Statement) {
-    let result = '';
+    const result = sourceNodeHelper(undefined, []);
     wrapArray(body).forEach((statement) => {
-        result = joinStatements(result, formatStatement(statement), ';');
+        addWithSeparator(result, formatStatement(statement), '\n');
     })
     return result;
 }
 
-function formatStatement(statement: Parser.Statement) {
-    let result = '';
+function formatStatement(statement: Parser.Statement): SourceNode {
     if (statement.type == 'AssignmentStatement') {
         // left-hand side
-        result = joinStatements(result, statement.variables.map(variable => formatExpression(variable)).join(','));
-        // right-hand side
-        result = joinStatements(result, '=');
-        result = joinStatements(result,  statement.init.map(init => formatExpression(init)).join(','));
+        const variables = statement.variables.map(variable => [formatExpression(variable), ","]).flat();
+        const inits = statement.init.map(init => [formatExpression(init), ',']).flat();
+
+        const result = sourceNodeHelper(statement, sourceNodeHelper(undefined, variables.slice(0, -1)));
+        addWithSeparator(result, "=");
+        addWithSeparator(result, sourceNodeHelper(undefined, inits.slice(0, -1)));
+        return result;
     } else if (statement.type == 'LocalStatement') {
-        result = joinStatements(result, 'local ');
-        // left-hand side
-        result = joinStatements(result,  statement.variables.map(variable => generateIdentifier(variable.name)).join(','));
-        // right-hand side
+        const variables = statement.variables.map(variable => [formatExpression(variable), ","]).flat();
+        const result = sourceNodeHelper(statement, ["local ", sourceNodeHelper(undefined, variables.slice(0, -1))]);
+
         if (statement.init.length) {
-            result = joinStatements(result,  '=');
-            result = joinStatements(result,  statement.init.map(init => formatExpression(init)).join(','));
+            const inits = statement.init.map(init => [formatExpression(init), ',']).flat();
+
+            addWithSeparator(result, "=");
+            addWithSeparator(result, sourceNodeHelper(undefined, inits.slice(0, -1)));
         }
+        return result;
     } else if (statement.type == 'CallStatement') {
-        result = formatExpression(statement.expression);
+        return formatExpression(statement.expression); // NOTE: もう一度囲んでもいい
     } else if (statement.type == 'IfStatement') {
+        const result = sourceNodeHelper(statement, []);
         statement.clauses.forEach((clause) => {
             if (clause.type == "IfClause") {
-                result = joinStatements(result, 'if');
-                result = joinStatements(result, formatExpression(clause.condition));
-                result = joinStatements(result, 'then');
+                addWithSeparator(result, "if");
+                addWithSeparator(result, formatExpression(clause.condition));
+                addWithSeparator(result, 'then');
             } else if (clause.type == "ElseifClause") {
-                result = joinStatements(result, 'elseif');
-                result = joinStatements(result, formatExpression(clause.condition));
-                result = joinStatements(result, 'then');
+                addWithSeparator(result, 'elseif');
+                addWithSeparator(result, formatExpression(clause.condition));
+                addWithSeparator(result, 'then');
             } else {
-                result = joinStatements(result, 'else');
+                addWithSeparator(result, 'else');
             }
-            result = joinStatements(result, formatStatementList(clause.body));
+            addWithSeparator(result, formatStatementList(clause.body));
         })
-        result = joinStatements(result, 'end');
-        
+        addWithSeparator(result, 'end');
+        return result;
     } else if (statement.type == 'WhileStatement') {
-        result = joinStatements('while', formatExpression(statement.condition));
-        result = joinStatements(result, 'do');
-        result = joinStatements(result, formatStatementList(statement.body));
-        result = joinStatements(result, 'end');
-
+        const result = sourceNodeHelper(statement, "while");
+        addWithSeparator(result, formatExpression(statement.condition));
+        addWithSeparator(result, 'do');
+        addWithSeparator(result, formatStatementList(statement.body));
+        addWithSeparator(result, 'end');
+        return result;
     } else if (statement.type == 'DoStatement') {
-        result = joinStatements('do', formatStatementList(statement.body));
-        result = joinStatements(result, 'end');
-
+        const result = sourceNodeHelper(statement, "do");
+        addWithSeparator(result, formatStatementList(statement.body));
+        addWithSeparator(result, 'end');
+        return result;
     } else if (statement.type == 'ReturnStatement') {
-        result = joinStatements(result, 'return');
+        const result = sourceNodeHelper(statement, "return");
         if (statement.arguments.length) {
-            result = joinStatements(
+            const returns = statement.arguments.map(argument => [formatExpression(argument), ","]).flat();
+            addWithSeparator(
                 result,
-                statement.arguments.map(argument => formatExpression(argument)).join(',')
+                returns.slice(0, -1)
             );
         }
-
+        return result;
     } else if (statement.type == 'BreakStatement') {
-        result = joinStatements(result, 'break');
+        return sourceNodeHelper(statement, "break");
     } else if (statement.type == 'RepeatStatement') {
-        result = joinStatements('repeat', formatStatementList(statement.body));
-        result = joinStatements(result, 'until');
-        result = joinStatements(result, formatExpression(statement.condition))
+        const result = sourceNodeHelper(statement, 'repeat');
+        addWithSeparator(result, formatStatementList(statement.body));
+        addWithSeparator(result, 'until');
+        addWithSeparator(result, formatExpression(statement.condition))
+        return result;
     } else if (statement.type == 'FunctionDeclaration') {
 
-        result = (statement.isLocal ? 'local ' : '') + 'function ';
+        const result = sourceNodeHelper(statement, (statement.isLocal ? 'local ' : '') + 'function ');
         if (statement.identifier) {
-            result = joinStatements(result,  formatExpression(statement.identifier));
+            addWithSeparator(result, formatExpression(statement.identifier));
         }
-        result = joinStatements(result,  '(');
+        addWithSeparator(result, '(');
 
         if (statement.parameters.length) {
-            result = joinStatements(result,  statement.parameters.map(parameter => {
-                return parameter.type == "Identifier" ? generateIdentifier(parameter.name)
-                                                      : parameter.value
-            }).join(','));
+            const parameters = statement.parameters.map(parameter => {
+                return [parameter.type == "Identifier" ? generateIdentifier(parameter)
+                    : parameter.value, ","]
+            }).flat();
+            addWithSeparator(result, parameters.slice(0, -1));
         }
 
-        result = joinStatements(result,  ')');
-        result = joinStatements(result, formatStatementList(statement.body));
-        result = joinStatements(result, 'end');
-
+        addWithSeparator(result, ')');
+        addWithSeparator(result, formatStatementList(statement.body));
+        addWithSeparator(result, 'end');
+        return result;
     } else if (statement.type == 'ForGenericStatement') {
         // see also `ForNumericStatement`
-
-        result = joinStatements(result, 'for ');
-        result = joinStatements(result, statement.variables.map(variable => generateIdentifier(variable.name)).join(','));
-        result = joinStatements(result,  ' in');
-        result = joinStatements(result, statement.iterators.map(iterator => formatExpression(iterator)).join(','));
-        result = joinStatements(result, 'do');
-        result = joinStatements(result, formatStatementList(statement.body));
-        result = joinStatements(result, 'end');
-
+        const result = sourceNodeHelper(statement, "for");
+        const variables = statement.variables.map(variable => [generateIdentifier(variable), ","]).flat()
+        const iterators = statement.iterators.map(iterator => [formatExpression(iterator), ","]).flat()
+        addWithSeparator(result, variables.slice(0, -1));
+        addWithSeparator(result, 'in');
+        addWithSeparator(result, iterators.slice(0, -1));
+        addWithSeparator(result, 'do');
+        addWithSeparator(result, formatStatementList(statement.body));
+        addWithSeparator(result, 'end');
+        return result;
     } else if (statement.type == 'ForNumericStatement') {
-
         // The variables in a `ForNumericStatement` are always local
-        result = joinStatements(result, 'for ' + generateIdentifier(statement.variable.name) + '=');
-        result = joinStatements(result,
-            formatExpression(statement.start) + ',' +
-            formatExpression(statement.end));
+        const result = sourceNodeHelper(statement, "for");
+        addWithSeparator(result, generateIdentifier(statement.variable));
+        addWithSeparator(result, "=");
+        addWithSeparator(result, formatExpression(statement.start))
+        addWithSeparator(result, ',')
+        addWithSeparator(result, formatExpression(statement.end));
 
         if (statement.step) {
-            result = joinStatements(result,  ',' + formatExpression(statement.step));
+            addWithSeparator(result, ',')
+            addWithSeparator(result, formatExpression(statement.step));
         }
 
-        result = joinStatements(result, 'do');
-        result = joinStatements(result, formatStatementList(statement.body));
-        result = joinStatements(result, 'end');
+        addWithSeparator(result, 'do');
+        addWithSeparator(result, formatStatementList(statement.body));
+        addWithSeparator(result, 'end');
+        return result;
 
     } else if (statement.type == 'LabelStatement') {
 
         // The identifier names in a `LabelStatement` can safely be renamed
-        result = joinStatements(result, '::' + generateIdentifier(statement.label.name) + '::');
+        return sourceNodeHelper(statement, ['::', generateIdentifier(statement.label), '::']);
 
     } else if (statement.type == 'GotoStatement') {
 
         // The identifier names in a `GotoStatement` can safely be renamed
-        result = joinStatements(result, 'goto ' + generateIdentifier(statement.label.name));
+        return sourceNodeHelper(statement, ['goto ', generateIdentifier(statement.label)]);
 
     } else {
         throw TypeError('Unknown statement type: `' + JSON.stringify(statement) + '`');
     }
-
-    return result;
 }
 
-function joinStatements(a: string, b: string, separator?: string) {
-    separator = separator ? separator : " ";
+/*function joinStatements(a: string | SourceNode, b: string | SourceNode, separator = " ") {
+    return isNeedSeparator(a.toString(), b.toString()) ? a.toString() + separator + b.toString() : a.toString() + b.toString();
+}*/
 
+function addWithSeparator(val: SourceNode, adding: (string | SourceNode)[] | SourceNode | string, separator = " ") {
+    if (isNeedSeparator(val.toString(), wrapArray(adding).map(p => p.toString()).join())) {
+        val.add(separator);
+    }
+    val.add(adding);
+    return val;
+}
+
+function prependWithSeparator(val: SourceNode, prepending: (string | SourceNode)[] | SourceNode | string, separator = " ") {
+    if (isNeedSeparator(wrapArray(prepending).map(p => p.toString()).join(), val.toString())) {
+        val.prepend(separator);
+    }
+    val.prepend(prepending);
+    return val;
+}
+
+function insertSeparator(a: string | SourceNode, b: string | SourceNode, separator = " ") {
+    return isNeedSeparator(a.toString(), b.toString()) ? separator : undefined;
+}
+
+function isNeedSeparator(a: string, b: string) {
     const lastCharA = a.slice(-1);
     const firstCharB = b.charAt(0);
 
     const regexAlphaUnderscore = /[a-zA-Z_]/;
     const regexAlphaNumUnderscore = /[a-zA-Z0-9_]/;
     const regexDigits = /[0-9]/;
-    
+
     if (lastCharA == '' || firstCharB == '') {
-        return a + b;
+        return false;
     }
     if (regexAlphaUnderscore.test(lastCharA)) {
         if (regexAlphaNumUnderscore.test(firstCharB)) {
             // e.g. `while` + `1`
             // e.g. `local a` + `local b`
-            return a + separator + b;
+            return true;
         } else {
             // e.g. `not` + `(2>3 or 3<2)`
             // e.g. `x` + `^`
-            return a + b;
+            return false;
         }
     }
     if (regexDigits.test(lastCharA)) {
@@ -196,23 +238,23 @@ function joinStatements(a: string, b: string, separator?: string) {
         ) {
             // e.g. `1` + `+`
             // e.g. `1` + `==`
-            return a + b;
+            return false;
         } else {
             // e.g. `1` + `..`
             // e.g. `1` + `and`
-            return a + separator + b;
+            return true;
         }
     }
     if (lastCharA == firstCharB && lastCharA == '-') {
         // e.g. `1-` + `-2`
-        return a + separator + b;
+        return true;
     }
     const secondLastCharA = a.slice(-2, -1);
     if (lastCharA == '.' && secondLastCharA != '.' && regexAlphaNumUnderscore.test(firstCharB)) {
         // e.g. `1.` + `print`
-        return a + separator + b;
+        return true
     }
-    return a + b;
+    return false;
 }
 
 interface ExpressionOptoions {
@@ -222,14 +264,14 @@ interface ExpressionOptoions {
     parent?: string | undefined;
 }
 
-function formatExpression(expression: Parser.Expression, argOptions?: ExpressionOptoions): string {
+function formatExpression(expression: Parser.Expression, argOptions?: ExpressionOptoions): SourceNode {
     if (expression.type == "Identifier") {
         // eslint-disable-next-line @typescript-eslint/ban-ts-comment, @typescript-eslint/prefer-ts-expect-error
         //@ts-ignore
         // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-        return expression.isLocal ? generateIdentifier(expression.name) : expression.name;
+        return sourceNodeHelper(expression, expression.isLocal ? generateIdentifier(expression, true) : expression.name, expression.name);
     } else if (expression.type == "StringLiteral" || expression.type == "NumericLiteral" || expression.type == "BooleanLiteral" || expression.type == "NilLiteral" || expression.type == "VarargLiteral") {
-        return expression.raw;
+        return sourceNodeHelper(expression, expression.raw);
     } else if (expression.type == "LogicalExpression" || expression.type == "BinaryExpression") {
         const operator = expression.operator;
         const currentPrecedence = PRECEDENCE[operator];
@@ -261,10 +303,27 @@ function formatExpression(expression: Parser.Expression, argOptions?: Expression
                 !(options.parent == '*' && (operator == '/' || operator == '*'))
             )
         ) {
-            return "(" + joinStatements(joinStatements(leftHand, operator), rightHand) + ")"
+            return sourceNodeHelper(expression,
+                [
+                    "(",
+                    leftHand,
+                    insertSeparator(leftHand, operator),
+                    operator,
+                    insertSeparator(operator, rightHand),
+                    rightHand,
+                    ")"
+                ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined));
         }
-        return joinStatements(joinStatements(leftHand, operator), rightHand);
-    } else if (expression.type == 'UnaryExpression' ){
+        return sourceNodeHelper(expression,
+            [
+                leftHand,
+                insertSeparator(leftHand, operator),
+                operator,
+                insertSeparator(operator, rightHand),
+                rightHand
+            ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined)
+        );
+    } else if (expression.type == 'UnaryExpression') {
         const operator = expression.operator;
         const currentPrecedence = PRECEDENCE['unary' + operator];
         const options = {
@@ -272,12 +331,14 @@ function formatExpression(expression: Parser.Expression, argOptions?: Expression
             ...argOptions
         }
 
-        let result = joinStatements(
+        const p2 = formatExpression(expression.argument, {
+            'precedence': currentPrecedence
+        });
+        const result = sourceNodeHelper(expression, [
             operator,
-            formatExpression(expression.argument, {
-                'precedence': currentPrecedence
-            })
-        );
+            insertSeparator(operator, p2),
+            p2
+        ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined));
 
         if (
             currentPrecedence < options.precedence &&
@@ -292,49 +353,77 @@ function formatExpression(expression: Parser.Expression, argOptions?: Expression
                 options.direction == 'right'
             )
         ) {
-            result = '(' + result + ')';
+            result.prepend('('); result.add(')');
         }
         return result;
     } else if (expression.type == 'CallExpression') {
-        return formatParenForIndexer(expression.base) + '(' + expression.arguments.map((arg) => formatExpression(arg)).join(",") + ")";
+        const args = (expression.arguments.map((arg) => [formatExpression(arg), ","])).flat();
+        return sourceNodeHelper(expression, [
+            formatParenForIndexer(expression.base),
+            '(',
+            sourceNodeHelper(undefined, args.slice(0, -1)),
+            ")"
+        ]);
     } else if (expression.type == 'TableCallExpression') {
-		return formatExpression(expression.base) + formatExpression(expression.arguments);
+        return sourceNodeHelper(expression, [formatExpression(expression.base), formatExpression(expression.arguments)]);
     } else if (expression.type == 'StringCallExpression') {
-        return formatExpression(expression.base) + formatExpression(expression.argument);
+        return sourceNodeHelper(expression, [formatExpression(expression.base), formatExpression(expression.argument)]);
     } else if (expression.type == 'IndexExpression') {
-        return formatBase(expression.base) + '[' + formatExpression(expression.index) + ']';
-    }else if (expression.type == "MemberExpression") {
-        return formatParenForIndexer(expression.base) + expression.indexer + formatExpression(expression.identifier, { preserveIdentifiers: true });
-    }else if (expression.type == 'FunctionDeclaration') {
-        let result = 'function(';
+        return sourceNodeHelper(expression, [formatBase(expression.base), '[', formatExpression(expression.index), ']']);
+    } else if (expression.type == "MemberExpression") {
+        return sourceNodeHelper(expression, [
+            formatParenForIndexer(expression.base),
+            expression.indexer,
+            formatExpression(expression.identifier, { preserveIdentifiers: true })
+        ]);
+    } else if (expression.type == 'FunctionDeclaration') {
+        const result = sourceNodeHelper(expression, ["function", "("]);
+
         if (expression.parameters.length) {
-            result = joinStatements(result, expression.parameters.map(parameter => (parameter.type === "Identifier" ? generateIdentifier(parameter.name) : parameter.value)).join(','));
+            const parameters = expression.parameters.map(parameter => {
+                return [sourceNodeHelper(parameter, (parameter.type === "Identifier" ? generateIdentifier(parameter) : parameter.value)), ","];
+            }).flat();
+            addWithSeparator(result, parameters.slice(0, -1));
         }
-        result = joinStatements(result, ')');
-        result = joinStatements(result, formatStatementList(expression.body));
-        result = joinStatements(result, 'end');
+        result.add(")");
+        const body = formatStatementList(expression.body);
+        addWithSeparator(result, body);
+        addWithSeparator(result, "end");
         return result;
     } else if (expression.type == 'TableConstructorExpression') {
-        let result = '{';
-
-        result = joinStatements(result, expression.fields.map(field => {
+        const result = sourceNodeHelper(expression, "{");
+        const fields = expression.fields.map((field, ix, ar) => {
             if (field.type == 'TableKey') {
-                return '[' + formatExpression(field.key) + ']=' + formatExpression(field.value);
+                return sourceNodeHelper(field, [
+                    sourceNodeHelper(undefined, ['[', formatExpression(field.key), ']']),
+                    '=',
+                    formatExpression(field.value),
+                    (ix !== ar.length - 1) ? ',' : undefined
+                ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined));
             } else if (field.type == 'TableValue') {
-                return formatExpression(field.value);
+                return [
+                    formatExpression(field.value),
+                    (ix !== ar.length - 1) ? ',' : undefined
+                ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined);
             } else { // at this point, `field.type == 'TableKeyString'`
                 // TODO: keep track of nested scopes (#18)
-                return formatExpression(field.key, {'preserveIdentifiers': true}) + '=' + formatExpression(field.value);
+                return sourceNodeHelper(field, [
+                    formatExpression(field.key, { 'preserveIdentifiers': true }),
+                    '=',
+                    formatExpression(field.value),
+                    (ix !== ar.length - 1) ? ',' : undefined
+                ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined));
             }
-        }).join(','));
-        return joinStatements(result, '}');
+        }).flat();
+        addWithSeparator(result, fields);
+        addWithSeparator(result, "}");
+        return result;
     } else {
         throw TypeError('Unknown expression type: `' + JSON.stringify(expression) + '`');
     }
 }
 
-function formatParenForIndexer(base: Parser.Expression) {
-    let result = '';
+function formatParenForIndexer(base: Parser.Expression): SourceNode {
     const type = base.type;
     //@ts-check
     const needsParens = ("inParens" in base) && (
@@ -345,23 +434,20 @@ function formatParenForIndexer(base: Parser.Expression) {
         type == 'LogicalExpression' ||
         type == 'StringLiteral'
     );
+    const result = sourceNodeHelper(base, formatExpression(base));
     if (needsParens) {
-        result = joinStatements(result,  '(');
-    }
-    result = joinStatements(result,  formatExpression(base));
-    if (needsParens) {
-        result = joinStatements(result,  ')');
+        prependWithSeparator(result, "(");
+        addWithSeparator(result, ")");
     }
     return result;
 }
 
 
-function generateIdentifier(name: string): string {
-    return name;
+function generateIdentifier(nameItem: Parser.Identifier, nested = false): SourceNode {
+    return sourceNodeHelper(nameItem, nameItem.name, nested ? nameItem.name : undefined);
 }
 
 function formatBase(base: Parser.Expression) {
-    let result = '';
     const needsParens = ("inParens" in base) && (
         base.type == 'CallExpression' ||
         base.type == 'BinaryExpression' ||
@@ -370,12 +456,10 @@ function formatBase(base: Parser.Expression) {
         base.type == 'LogicalExpression' ||
         base.type == 'StringLiteral'
     );
+    const result = sourceNodeHelper(base, formatExpression(base));
     if (needsParens) {
-        result = joinStatements(result, '(');
-    }
-    result = joinStatements(result, formatExpression(base));
-    if (needsParens) {
-        result = joinStatements(result, ')');
+        prependWithSeparator(result, "(");
+        addWithSeparator(result, ")");
     }
     return result;
 }
