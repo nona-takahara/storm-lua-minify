@@ -365,7 +365,7 @@ function formatExpression(expression: Parser.Expression, argOptions?: Expression
     } else if (expression.type == 'CallExpression') {
         const args = (expression.arguments.map((arg) => [formatExpression(arg), ","])).flat();
         return sourceNodeHelper(expression, [
-            formatParenForIndexer(expression.base),
+            formatBase(expression.base),
             '(',
             sourceNodeHelper(undefined, args.slice(0, -1)),
             ")"
@@ -378,7 +378,7 @@ function formatExpression(expression: Parser.Expression, argOptions?: Expression
         return sourceNodeHelper(expression, [formatBase(expression.base), '[', formatExpression(expression.index), ']']);
     } else if (expression.type == "MemberExpression") {
         return sourceNodeHelper(expression, [
-            formatParenForIndexer(expression.base),
+            formatBase(expression.base),
             expression.indexer,
             formatExpression(expression.identifier, { preserveIdentifiers: true })
         ]);
@@ -429,10 +429,10 @@ function formatExpression(expression: Parser.Expression, argOptions?: Expression
     }
 }
 
-function formatParenForIndexer(base: Parser.Expression): SourceNode {
+function formatBase(base: Parser.Expression): SourceNode {
     const type = base.type;
     //@ts-check
-    const needsParens = ("inParens" in base) && (
+    const needsParens = (
         type == 'CallExpression' ||
         type == 'BinaryExpression' ||
         type == 'FunctionDeclaration' ||
@@ -491,22 +491,6 @@ function generateIdentifier(nameItem: Parser.Identifier, nested = false): Source
     //    return sourceNodeHelper(nameItem, nameItem.name, nested ? nameItem.name : undefined);
 }
 
-function formatBase(base: Parser.Expression) {
-    const needsParens = ("inParens" in base) && (
-        base.type == 'CallExpression' ||
-        base.type == 'BinaryExpression' ||
-        base.type == 'FunctionDeclaration' ||
-        base.type == 'TableConstructorExpression' ||
-        base.type == 'LogicalExpression' ||
-        base.type == 'StringLiteral'
-    );
-    const result = sourceNodeHelper(base, formatExpression(base));
-    if (needsParens) {
-        prependWithSeparator(result, "(");
-        addWithSeparator(result, ")");
-    }
-    return result;
-}
 
 function generateZeroes(length: number) {
     let zero = '0';
