@@ -5,6 +5,13 @@
 import Parser from "luaparse";
 import { SourceNode } from "source-map";
 
+export type Chunk = Parser.Chunk & {
+    globals?: (Parser.Base<"Identifer"> & {
+        name: string,
+        isLocal: boolean
+    })[];
+}
+
 const PRECEDENCE: Record<string, number> = {
     'or': 1,
     'and': 2,
@@ -25,8 +32,8 @@ const IDENTIFIER_PARTS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a',
     'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
     'U', 'V', 'W', 'X', 'Y', 'Z', '_'];
 
-export function minify(ast: Parser.Chunk) {
-    //ast.globals?.map(v => identifiersInUse.add(v.name));
+export function minify(ast: Chunk) {
+    ast.globals?.map(v => identifiersInUse.add(v.name));
     return formatStatementList(ast.body);
 }
 
