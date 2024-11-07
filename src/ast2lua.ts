@@ -370,6 +370,7 @@ function formatExpression(expression: Parser.Expression, argOptions?: Expression
         }
         return result;
     } else if (expression.type == 'CallExpression') {
+        // （Stormworksオプションの場合）dofileの展開をここに書く。またrequireは展開せずに警告する。
         const args = (expression.arguments.map((arg) => [formatExpression(arg), ","])).flat();
         return sourceNodeHelper(expression, [
             formatBase(expression.base),
