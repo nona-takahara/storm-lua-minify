@@ -16,13 +16,17 @@ const PRECEDENCE: Record<string, number> = {
     '^': 10
 };
 
-/*const IDENTIFIER_PARTS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a',
+const identifierMap = new Map<string, string>();
+const identifiersInUse = new Set<string>();
+
+const IDENTIFIER_PARTS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a',
     'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p',
     'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 'A', 'B', 'C', 'D', 'E',
     'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
     'U', 'V', 'W', 'X', 'Y', 'Z', '_'];
-*/
+
 export function minify(ast: Parser.Chunk) {
+    //ast.globals?.map(v => identifiersInUse.add(v.name));
     return formatStatementList(ast.body);
 }
 
@@ -444,9 +448,47 @@ function formatParenForIndexer(base: Parser.Expression): SourceNode {
     return result;
 }
 
+let currentIdentifier = "";
 
 function generateIdentifier(nameItem: Parser.Identifier, nested = false): SourceNode {
-    return sourceNodeHelper(nameItem, nameItem.name, nested ? nameItem.name : undefined);
+    if (nameItem.name === "self") {
+        return sourceNodeHelper(nameItem, "self", undefined);
+    }
+
+    const defined = identifierMap.get(nameItem.name);
+    if (defined) {
+        return sourceNodeHelper(nameItem, defined, defined); // 第3引数は要調査
+    }
+
+    const length = currentIdentifier.length;
+    let position = length - 1;
+    let character: string;
+	let index;
+		while (position >= 0) {
+			character = currentIdentifier.charAt(position);
+			index = IDENTIFIER_PARTS.indexOf(character);
+			if (index != IDENTIFIER_PARTS.length - 1) {
+				currentIdentifier = currentIdentifier.substring(0, position) +
+					IDENTIFIER_PARTS[index + 1] + generateZeroes(length - (position + 1));
+				if (
+					isKeyword(currentIdentifier) ||
+					identifiersInUse.has(currentIdentifier)
+				) {
+					return generateIdentifier(nameItem, nested);
+				}
+				identifierMap.set(nameItem.name, currentIdentifier);
+				return generateIdentifier(nameItem, nested);
+			}
+			--position;
+		}
+		currentIdentifier = 'a' + generateZeroes(length);
+		if (identifiersInUse.has(currentIdentifier)) {
+			return generateIdentifier(nameItem, nested);
+		}
+		identifierMap.set(nameItem.name, currentIdentifier);
+        return generateIdentifier(nameItem, nested);
+
+//    return sourceNodeHelper(nameItem, nameItem.name, nested ? nameItem.name : undefined);
 }
 
 function formatBase(base: Parser.Expression) {
@@ -464,4 +506,45 @@ function formatBase(base: Parser.Expression) {
         addWithSeparator(result, ")");
     }
     return result;
+}
+
+function generateZeroes(length: number) {
+    let zero = '0';
+		let result = '';
+		if (length < 1) {
+			return result;
+		}
+		if (length == 1) {
+			return zero;
+		}
+		while (length) {
+			if (length & 1) {
+				result += zero;
+			}
+			// eslint-disable-next-line no-cond-assign
+			if (length >>= 1) {
+				zero += zero;
+			}
+		}
+		return result;
+}
+
+function isKeyword(id: string) {
+    switch (id.length) {
+        case 2:
+            return 'do' == id || 'if' == id || 'in' == id || 'or' == id;
+        case 3:
+            return 'and' == id || 'end' == id || 'for' == id || 'nil' == id ||
+                'not' == id;
+        case 4:
+            return 'else' == id || 'goto' == id || 'then' == id || 'true' == id;
+        case 5:
+            return 'break' == id || 'false' == id || 'local' == id ||
+                'until' == id || 'while' == id;
+        case 6:
+            return 'elseif' == id || 'repeat' == id || 'return' == id;
+        case 8:
+            return 'function' == id;
+    }
+    return false;
 }
