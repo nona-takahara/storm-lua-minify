@@ -463,32 +463,32 @@ function generateIdentifier(nameItem: Parser.Identifier, nested = false): Source
     const length = currentIdentifier.length;
     let position = length - 1;
     let character: string;
-	let index;
-		while (position >= 0) {
-			character = currentIdentifier.charAt(position);
-			index = IDENTIFIER_PARTS.indexOf(character);
-			if (index != IDENTIFIER_PARTS.length - 1) {
-				currentIdentifier = currentIdentifier.substring(0, position) +
-					IDENTIFIER_PARTS[index + 1] + generateZeroes(length - (position + 1));
-				if (
-					isKeyword(currentIdentifier) ||
-					identifiersInUse.has(currentIdentifier)
-				) {
-					return generateIdentifier(nameItem, nested);
-				}
-				identifierMap.set(nameItem.name, currentIdentifier);
-				return generateIdentifier(nameItem, nested);
-			}
-			--position;
-		}
-		currentIdentifier = 'a' + generateZeroes(length);
-		if (identifiersInUse.has(currentIdentifier)) {
-			return generateIdentifier(nameItem, nested);
-		}
-		identifierMap.set(nameItem.name, currentIdentifier);
+    let index;
+    while (position >= 0) {
+        character = currentIdentifier.charAt(position);
+        index = IDENTIFIER_PARTS.indexOf(character);
+        if (index != IDENTIFIER_PARTS.length - 1) {
+            currentIdentifier = currentIdentifier.substring(0, position) +
+                IDENTIFIER_PARTS[index + 1] + generateZeroes(length - (position + 1));
+            if (
+                isKeyword(currentIdentifier) ||
+                identifiersInUse.has(currentIdentifier)
+            ) {
+                return generateIdentifier(nameItem, nested);
+            }
+            identifierMap.set(nameItem.name, currentIdentifier);
+            return generateIdentifier(nameItem, nested);
+        }
+        --position;
+    }
+    currentIdentifier = 'a' + generateZeroes(length);
+    if (identifiersInUse.has(currentIdentifier)) {
         return generateIdentifier(nameItem, nested);
+    }
+    identifierMap.set(nameItem.name, currentIdentifier);
+    return generateIdentifier(nameItem, nested);
 
-//    return sourceNodeHelper(nameItem, nameItem.name, nested ? nameItem.name : undefined);
+    //    return sourceNodeHelper(nameItem, nameItem.name, nested ? nameItem.name : undefined);
 }
 
 function formatBase(base: Parser.Expression) {
@@ -510,23 +510,23 @@ function formatBase(base: Parser.Expression) {
 
 function generateZeroes(length: number) {
     let zero = '0';
-		let result = '';
-		if (length < 1) {
-			return result;
-		}
-		if (length == 1) {
-			return zero;
-		}
-		while (length) {
-			if (length & 1) {
-				result += zero;
-			}
-			// eslint-disable-next-line no-cond-assign
-			if (length >>= 1) {
-				zero += zero;
-			}
-		}
-		return result;
+    let result = '';
+    if (length < 1) {
+        return result;
+    }
+    if (length == 1) {
+        return zero;
+    }
+    while (length) {
+        if (length & 1) {
+            result += zero;
+        }
+        // eslint-disable-next-line no-cond-assign
+        if (length >>= 1) {
+            zero += zero;
+        }
+    }
+    return result;
 }
 
 function isKeyword(id: string) {
