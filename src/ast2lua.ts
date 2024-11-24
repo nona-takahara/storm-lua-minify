@@ -4,6 +4,7 @@
 /* eslint-disable @typescript-eslint/no-unnecessary-condition */
 import Parser, { Comment } from "luaparse";
 import { SourceNode } from "source-map";
+import { Minifier, MinifierMode } from "./minifier";
 
 export type Chunk = Parser.Chunk & {
   globals?: (Parser.Base<"Identifer"> & {
@@ -99,9 +100,6 @@ const IDENTIFIER_PARTS = [
   "Z",
   "_",
 ];
-
-const identifierMap = new Map<string, string>();
-const identifiersInUse = new Set<string>();
 
 function wrapArray<T>(obj: T | T[]): T[] {
   if (Array.isArray(obj)) {
@@ -262,31 +260,33 @@ function insertSeparator(
   return isNeedSeparator(a.toString(), b.toString()) ? separator : undefined;
 }
 
-export class Minifier {
+export class MinifyFile {
   private fileName: string;
   private ast: Chunk;
-  private requireHelper: (fileName: string) => SourceNode | undefined;
+  private minifier: Minifier;
+  private mode: MinifierMode;
 
   constructor(
     fileName: string,
     ast: Chunk,
-    requireHelper: (fileName: string) => SourceNode | undefined
+    minifier: Minifier,
+    mode: MinifierMode
   ) {
     this.fileName = fileName;
     this.ast = ast;
-    this.requireHelper = requireHelper;
-    ast.globals?.map((v) => identifiersInUse.add(v.name));
+    this.minifier = minifier;
+    this.mode = mode;
   }
 
-  parse() {
+  parse(noComment: boolean) {
     const body = this.formatStatementList(this.ast.body);
-    /*if (this.ast.comments) {
+    if (!noComment && this.ast.comments) {
       const comments = this.ast.comments as Comment[];
       comments.reverse().filter(v => v.raw.includes("--#") || v.raw.includes("[[#")).forEach(comment => {
-        body.prepend(this.sourceNodeHelper(comment, comment.raw));
+        body.prepend([this.sourceNodeHelper(comment, comment.raw), "\n"]);
       })
       return body;
-    } else*/ {
+    } else {
       return body;
     }
   }
@@ -605,15 +605,28 @@ export class Minifier {
       return result;
     } else if (expression.type == "CallExpression") {
       // requireの展開モードは2種類: SLモード-その場に読み込み, FLモード-require相当の関数で呼び出し
+      const callExpr = this.formatBase(expression.base).toString();
       if (
-        this.formatBase(expression.base).toString() == "require" &&
+        (callExpr === "require" || callExpr === "dofile") &&
         expression?.arguments[0].type === "StringLiteral"
       ) {
-        const res = this.requireHelper(
-          expression.arguments[0].raw.replaceAll('"', "")
-        );
-        if (res != undefined) {
-          return res;
+        const moduleName = expression.arguments[0].raw
+          .replaceAll('"', "")
+          .replaceAll("'", "");
+
+        const res = this.minifier.parseModule(moduleName);
+        
+        if (this.mode.moduleLikeLua) {
+          if (callExpr === "dofile") {
+            return (
+              res || this.sourceNodeHelper(undefined, "")
+            );
+          }
+          // requireならスキップ
+        } else {
+          return (
+            res || this.sourceNodeHelper(undefined, "")
+          );
         }
       }
       const args = expression.arguments
@@ -759,7 +772,7 @@ export class Minifier {
       return this.sourceNodeHelper(nameItem, "self", "self");
     }
 
-    const defined = identifierMap.get(nameItem.name);
+    const defined = this.minifier.identifierMap.get(nameItem.name);
     if (defined) {
       return this.sourceNodeHelper(nameItem, defined, nameItem.name); // 第3引数は要調査
     }
@@ -778,20 +791,20 @@ export class Minifier {
           generateZeroes(length - (position + 1));
         if (
           isKeyword(this.currentIdentifier) ||
-          identifiersInUse.has(this.currentIdentifier)
+          this.minifier.identifiersInUse.has(this.currentIdentifier)
         ) {
           return this.generateIdentifier(nameItem, nested);
         }
-        identifierMap.set(nameItem.name, this.currentIdentifier);
+        this.minifier.identifierMap.set(nameItem.name, this.currentIdentifier);
         return this.generateIdentifier(nameItem, nested);
       }
       --position;
     }
     this.currentIdentifier = "a" + generateZeroes(length);
-    if (identifiersInUse.has(this.currentIdentifier)) {
+    if (this.minifier.identifiersInUse.has(this.currentIdentifier)) {
       return this.generateIdentifier(nameItem, nested);
     }
-    identifierMap.set(nameItem.name, this.currentIdentifier);
+    this.minifier.identifierMap.set(nameItem.name, this.currentIdentifier);
     return this.generateIdentifier(nameItem, nested);
 
     //    return this.sourceNodeHelper(nameItem, nameItem.name, nested ? nameItem.name : undefined);
