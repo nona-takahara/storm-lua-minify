@@ -9,7 +9,7 @@ import { Minifier, MinifierMode } from "./minifier";
 const program = new Command();
 
 program
-  .version("0.1.1")
+  .version("0.1.2")
   .description("A Lua minifier also outputs source map")
   .option(
     "-m, --module-like-lua",
