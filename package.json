@@ -1,26 +1,27 @@
 {
+  "name": "storm-lua-minify",
+  "description": "A Lua minifier also outputs source map",
+  "version": "0.1.0",
   "dependencies": {
-    "@types/luaparse": "^0.2.12",
+    "commander": "^12.1.0",
     "luamin": "^1.0.4",
     "luaparse": "^0.3.1",
-    "source-map": "^0.7.4",
-    "typescript": "^5.4.5"
+    "source-map": "^0.7.4"
   },
   "devDependencies": {
     "@types/node": "^20.12.8",
+    "@types/luaparse": "^0.2.12",
     "@typescript-eslint/eslint-plugin": "^7.8.0",
     "@typescript-eslint/parser": "^7.8.0",
     "eslint": "^8.57.0",
-    "ts-node": "^10.9.2"
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
   },
-  "name": "storm-lua-minify",
-  "description": "",
-  "version": "0.1.0",
-  "main": "index.js",
+  "bin": "dist/cli.js",
   "scripts": {
     "start": "node ./dist/index.js",
     "build": "npx tsc"
   },
-  "author": "",
+  "author": "Nona Takahara <nona_t_2612@yahoo.co.jp>",
   "license": "MIT"
 }
