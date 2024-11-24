@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /* eslint-disable @typescript-eslint/no-unnecessary-condition */
-import Parser from "luaparse";
+import Parser, { Comment } from "luaparse";
 import { SourceNode } from "source-map";
 
 export type Chunk = Parser.Chunk & {
@@ -10,6 +10,7 @@ export type Chunk = Parser.Chunk & {
     name: string;
     isLocal: boolean;
   })[];
+  comments?: Comment[];
 };
 
 const PRECEDENCE: Record<string, number> = {
@@ -264,15 +265,30 @@ function insertSeparator(
 export class Minifier {
   private fileName: string;
   private ast: Chunk;
+  private requireHelper: (fileName: string) => SourceNode | undefined;
 
-  constructor(fileName: string, ast: Chunk) {
+  constructor(
+    fileName: string,
+    ast: Chunk,
+    requireHelper: (fileName: string) => SourceNode | undefined
+  ) {
     this.fileName = fileName;
     this.ast = ast;
+    this.requireHelper = requireHelper;
     ast.globals?.map((v) => identifiersInUse.add(v.name));
   }
 
   parse() {
-    return this.formatStatementList(this.ast.body);
+    const body = this.formatStatementList(this.ast.body);
+    /*if (this.ast.comments) {
+      const comments = this.ast.comments as Comment[];
+      comments.reverse().filter(v => v.raw.includes("--#") || v.raw.includes("[[#")).forEach(comment => {
+        body.prepend(this.sourceNodeHelper(comment, comment.raw));
+      })
+      return body;
+    } else*/ {
+      return body;
+    }
   }
 
   private sourceNodeHelper(
@@ -285,7 +301,7 @@ export class Minifier {
     return new SourceNode(
       line == undefined ? null : line,
       column == undefined ? null : column,
-      this.fileName,
+      this.fileName, // 本当に自分のファイル名でよいかは要検討
       chuncks,
       name
     );
@@ -484,10 +500,10 @@ export class Minifier {
     if (expression.type == "Identifier") {
       return this.sourceNodeHelper(
         expression,
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment, @typescript-eslint/prefer-ts-expect-error
-      //@ts-ignore
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-      expression.isLocal
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment, @typescript-eslint/prefer-ts-expect-error
+        //@ts-ignore
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        expression.isLocal
           ? this.generateIdentifier(expression, true)
           : expression.name,
         expression.name
@@ -589,6 +605,17 @@ export class Minifier {
       return result;
     } else if (expression.type == "CallExpression") {
       // requireの展開モードは2種類: SLモード-その場に読み込み, FLモード-require相当の関数で呼び出し
+      if (
+        this.formatBase(expression.base).toString() == "require" &&
+        expression?.arguments[0].type === "StringLiteral"
+      ) {
+        const res = this.requireHelper(
+          expression.arguments[0].raw.replaceAll('"', "")
+        );
+        if (res != undefined) {
+          return res;
+        }
+      }
       const args = expression.arguments
         .map((arg) => [this.formatExpression(arg), ","])
         .flat();
@@ -652,7 +679,11 @@ export class Minifier {
       const fields = expression.fields
         .map((field, ix, ar) => {
           // Stormworks "propert" Trailing Comma: https://nona-takahara.github.io/blog/entry11.html
-          const comma = ((ix !== ar.length - 1) || this.formatExpression(field.value).toString().includes("property")) ? "," : undefined;
+          const comma =
+            ix !== ar.length - 1 ||
+            this.formatExpression(field.value).toString().includes("property")
+              ? ","
+              : undefined;
 
           if (field.type == "TableKey") {
             return this.sourceNodeHelper(
@@ -671,11 +702,9 @@ export class Minifier {
               )
             );
           } else if (field.type == "TableValue") {
-
-            return [
-              this.formatExpression(field.value),
-              comma,
-            ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined);
+            return [this.formatExpression(field.value), comma].filter(
+              (p): p is Exclude<typeof p, undefined> => p !== undefined
+            );
           } else {
             // at this point, `field.type == 'TableKeyString'`
             // TODO: keep track of nested scopes (#18)
@@ -705,7 +734,6 @@ export class Minifier {
 
   private formatBase(base: Parser.Expression): SourceNode {
     const type = base.type;
-    //@ts-check
     const needsParens =
       type == "CallExpression" ||
       type == "BinaryExpression" ||
@@ -728,12 +756,12 @@ export class Minifier {
     nested = false
   ): SourceNode {
     if (nameItem.name === "self") {
-      return this.sourceNodeHelper(nameItem, "self", undefined);
+      return this.sourceNodeHelper(nameItem, "self", "self");
     }
 
     const defined = identifierMap.get(nameItem.name);
     if (defined) {
-      return this.sourceNodeHelper(nameItem, defined, defined); // 第3引数は要調査
+      return this.sourceNodeHelper(nameItem, defined, nameItem.name); // 第3引数は要調査
     }
 
     const length = this.currentIdentifier.length;
