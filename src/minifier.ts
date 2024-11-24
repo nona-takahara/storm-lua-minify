@@ -14,6 +14,7 @@ export class Minifier {
   readonly moduleSourceText: Map<string, string>;
   readonly moduleSourceNode: Map<string, SourceNode>;
   readonly moduleAST: Map<string, Chunk>;
+  readonly moduleNameAndFileName: Map<string, string>;
   readonly dir: string;
   readonly entryModule: string;
   readonly mode: MinifierMode;
@@ -29,6 +30,7 @@ export class Minifier {
     this.moduleSourceText = new Map<string, string>();
     this.moduleSourceNode = new Map<string, SourceNode>();
     this.moduleAST = new Map<string, Chunk>();
+    this.moduleNameAndFileName = new Map<string, string>();
     this.luaParseSettings = luaParseSettings;
     this.mode = mode;
     const pn = path.parse(entryFilePath);
@@ -78,6 +80,7 @@ export class Minifier {
         });
     }
 
+    this.moduleSourceText.forEach((v, k) => { const fileName = this.moduleNameAndFileName.get(k); fileName && sn.setSourceContent(fileName, v) });
     return sn;
   }
 
@@ -101,11 +104,12 @@ export class Minifier {
           ast,
           this,
           this.mode
-        ).parse(resolvePath === this.entryModule);
+        ).parse(moduleName === this.entryModule);
 
         this.moduleSourceText.set(moduleName, code);
         this.moduleAST.set(moduleName, ast);
         this.moduleSourceNode.set(moduleName, sourceNode);
+        this.moduleNameAndFileName.set(moduleName, resolvePath);
         return sourceNode;
       }
     }
