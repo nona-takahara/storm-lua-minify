@@ -44,7 +44,7 @@ luaFiles.forEach((fileName) => {
       name: parsedFileName.name,
       ext: parsedFileName.ext + ".map",
     });
-    map.add("\n--[[\n//# sourceMappingURL=" + mapFileName + "\n]]");
+    map.add("\n--[[\n//# sourceMappingURL=" + path.basename(mapFileName) + "\n]]");
 
     const sourceAndMap = map.toStringWithSourceMap();
 
