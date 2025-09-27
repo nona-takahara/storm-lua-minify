@@ -36,16 +36,6 @@ const PRECEDENCE: Record<string, number> = {
 };
 
 const IDENTIFIER_PARTS = [
-  "0",
-  "1",
-  "2",
-  "3",
-  "4",
-  "5",
-  "6",
-  "7",
-  "8",
-  "9",
   "a",
   "b",
   "c",
@@ -615,7 +605,7 @@ export class MinifyFile {
           .replaceAll("'", "");
 
         const res = this.minifier.parseModule(moduleName);
-        
+
         if (this.mode.moduleLikeLua) {
           if (callExpr === "dofile") {
             return (
@@ -694,7 +684,7 @@ export class MinifyFile {
           // Stormworks "propert" Trailing Comma: https://nona-takahara.github.io/blog/entry11.html
           const comma =
             ix !== ar.length - 1 ||
-            this.formatExpression(field.value).toString().includes("property")
+              this.formatExpression(field.value).toString().includes("property")
               ? ","
               : undefined;
 
@@ -762,7 +752,7 @@ export class MinifyFile {
     return result;
   }
 
-  private currentIdentifier = "";
+  private static currentIdentifier = 0;
 
   private generateIdentifier(
     nameItem: Parser.Identifier,
@@ -777,36 +767,22 @@ export class MinifyFile {
       return this.sourceNodeHelper(nameItem, defined, nameItem.name); // 第3引数は要調査
     }
 
-    const length = this.currentIdentifier.length;
-    let position = length - 1;
-    let character: string;
-    let index;
-    while (position >= 0) {
-      character = this.currentIdentifier.charAt(position);
-      index = IDENTIFIER_PARTS.indexOf(character);
-      if (index != IDENTIFIER_PARTS.length - 1) {
-        this.currentIdentifier =
-          this.currentIdentifier.substring(0, position) +
-          IDENTIFIER_PARTS[index + 1] +
-          generateZeroes(length - (position + 1));
-        if (
-          isKeyword(this.currentIdentifier) ||
-          this.minifier.identifiersInUse.has(this.currentIdentifier)
-        ) {
-          return this.generateIdentifier(nameItem, nested);
-        }
-        this.minifier.identifierMap.set(nameItem.name, this.currentIdentifier);
-        return this.generateIdentifier(nameItem, nested);
-      }
-      --position;
+    if (this.minifier.identifiersInUse.has(nameItem.name)) {
+      return this.sourceNodeHelper(nameItem, nameItem.name, nameItem.name);
     }
-    this.currentIdentifier = "a" + generateZeroes(length);
-    if (this.minifier.identifiersInUse.has(this.currentIdentifier)) {
-      return this.generateIdentifier(nameItem, nested);
-    }
-    this.minifier.identifierMap.set(nameItem.name, this.currentIdentifier);
-    return this.generateIdentifier(nameItem, nested);
 
-    //    return this.sourceNodeHelper(nameItem, nameItem.name, nested ? nameItem.name : undefined);
+    let id = "";
+    do {
+      let p = MinifyFile.currentIdentifier++;
+      const l = IDENTIFIER_PARTS.length;
+      id = IDENTIFIER_PARTS[p % l];
+      while (p >= l) {
+        id += IDENTIFIER_PARTS[p % l];
+        p = Math.floor(p / l);
+      }
+    } while (isKeyword(id) || this.minifier.identifiersInUse.has(id))
+
+    this.minifier.identifierMap.set(nameItem.name, id);
+    return this.sourceNodeHelper(nameItem, id, nameItem.name);
   }
 }
