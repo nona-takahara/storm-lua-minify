@@ -776,6 +776,7 @@ export class MinifyFile {
       let p = MinifyFile.currentIdentifier++;
       const l = IDENTIFIER_PARTS.length;
       id = IDENTIFIER_PARTS[p % l];
+      p = Math.floor(p / l);
       while (p >= l) {
         id += IDENTIFIER_PARTS[p % l];
         p = Math.floor(p / l);
