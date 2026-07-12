@@ -98,6 +98,7 @@ function wrapArray<T>(obj: T | T[]): T[] {
   return [obj];
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- 現時点では未参照だが、オリジナル(luamin)由来のコードのため残置
 function generateZeroes(length: number) {
   let zero = "0";
   let result = "";
@@ -111,7 +112,6 @@ function generateZeroes(length: number) {
     if (length & 1) {
       result += zero;
     }
-    // eslint-disable-next-line no-cond-assign
     if ((length >>= 1)) {
       zero += zero;
     }
@@ -207,14 +207,14 @@ interface ExpressionOptoions {
 function addWithSeparator(
   val: SourceNode,
   adding: (string | SourceNode)[] | SourceNode | string,
-  separator = " "
+  separator = " ",
 ) {
   if (
     isNeedSeparator(
       val.toString(),
       wrapArray(adding)
         .map((p) => p.toString())
-        .join()
+        .join(),
     )
   ) {
     val.add(separator);
@@ -226,14 +226,14 @@ function addWithSeparator(
 function prependWithSeparator(
   val: SourceNode,
   prepending: (string | SourceNode)[] | SourceNode | string,
-  separator = " "
+  separator = " ",
 ) {
   if (
     isNeedSeparator(
       wrapArray(prepending)
         .map((p) => p.toString())
         .join(),
-      val.toString()
+      val.toString(),
     )
   ) {
     val.prepend(separator);
@@ -245,7 +245,7 @@ function prependWithSeparator(
 function insertSeparator(
   a: string | SourceNode,
   b: string | SourceNode,
-  separator = " "
+  separator = " ",
 ) {
   return isNeedSeparator(a.toString(), b.toString()) ? separator : undefined;
 }
@@ -260,7 +260,7 @@ export class MinifyFile {
     fileName: string,
     ast: Chunk,
     minifier: Minifier,
-    mode: MinifierMode
+    mode: MinifierMode,
   ) {
     this.fileName = fileName;
     this.ast = ast;
@@ -271,10 +271,13 @@ export class MinifyFile {
   parse(noComment: boolean) {
     const body = this.formatStatementList(this.ast.body);
     if (!noComment && this.ast.comments) {
-      const comments = this.ast.comments as Comment[];
-      comments.reverse().filter(v => v.raw.includes("--#") || v.raw.includes("[[#")).forEach(comment => {
-        body.prepend([this.sourceNodeHelper(comment, comment.raw), "\n"]);
-      })
+      const comments = this.ast.comments;
+      comments
+        .reverse()
+        .filter((v) => v.raw.includes("--#") || v.raw.includes("[[#"))
+        .forEach((comment) => {
+          body.prepend([this.sourceNodeHelper(comment, comment.raw), "\n"]);
+        });
       return body;
     } else {
       return body;
@@ -284,7 +287,7 @@ export class MinifyFile {
   private sourceNodeHelper(
     node: Parser.Node | undefined,
     chuncks: (SourceNode | string)[] | SourceNode | string,
-    name?: string
+    name?: string,
   ) {
     const line = node?.loc?.start.line;
     const column = node?.loc?.start.column;
@@ -293,7 +296,7 @@ export class MinifyFile {
       column == undefined ? null : column,
       this.fileName, // 本当に自分のファイル名でよいかは要検討
       chuncks,
-      name
+      name,
     );
   }
 
@@ -317,12 +320,12 @@ export class MinifyFile {
 
       const result = this.sourceNodeHelper(
         statement,
-        this.sourceNodeHelper(undefined, variables.slice(0, -1))
+        this.sourceNodeHelper(undefined, variables.slice(0, -1)),
       );
       addWithSeparator(result, "=");
       addWithSeparator(
         result,
-        this.sourceNodeHelper(undefined, inits.slice(0, -1))
+        this.sourceNodeHelper(undefined, inits.slice(0, -1)),
       );
       return result;
     } else if (statement.type == "LocalStatement") {
@@ -342,7 +345,7 @@ export class MinifyFile {
         addWithSeparator(result, "=");
         addWithSeparator(
           result,
-          this.sourceNodeHelper(undefined, inits.slice(0, -1))
+          this.sourceNodeHelper(undefined, inits.slice(0, -1)),
         );
       }
       return result;
@@ -400,7 +403,7 @@ export class MinifyFile {
     } else if (statement.type == "FunctionDeclaration") {
       const result = this.sourceNodeHelper(
         statement,
-        (statement.isLocal ? "local " : "") + "function "
+        (statement.isLocal ? "local " : "") + "function ",
       );
       if (statement.identifier) {
         addWithSeparator(result, this.formatExpression(statement.identifier));
@@ -474,7 +477,7 @@ export class MinifyFile {
       ]);
     } else {
       throw TypeError(
-        "Unknown statement type: `" + JSON.stringify(statement) + "`"
+        "Unknown statement type: `" + JSON.stringify(statement) + "`",
       );
     }
   }
@@ -485,18 +488,17 @@ export class MinifyFile {
 
   private formatExpression(
     expression: Parser.Expression,
-    argOptions?: ExpressionOptoions
+    argOptions?: ExpressionOptoions,
   ): SourceNode {
     if (expression.type == "Identifier") {
       return this.sourceNodeHelper(
         expression,
-        // eslint-disable-next-line @typescript-eslint/ban-ts-comment, @typescript-eslint/prefer-ts-expect-error
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
         //@ts-ignore
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         expression.isLocal
           ? this.generateIdentifier(expression, true)
           : expression.name,
-        expression.name
+        expression.name,
       );
     } else if (
       expression.type == "StringLiteral" ||
@@ -548,7 +550,7 @@ export class MinifyFile {
             insertSeparator(operator, rightHand),
             rightHand,
             ")",
-          ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined)
+          ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined),
         );
       }
       return this.sourceNodeHelper(
@@ -559,7 +561,7 @@ export class MinifyFile {
           operator,
           insertSeparator(operator, rightHand),
           rightHand,
-        ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined)
+        ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined),
       );
     } else if (expression.type == "UnaryExpression") {
       const operator = expression.operator;
@@ -575,8 +577,8 @@ export class MinifyFile {
       const result = this.sourceNodeHelper(
         expression,
         [operator, insertSeparator(operator, p2), p2].filter(
-          (p): p is Exclude<typeof p, undefined> => p !== undefined
-        )
+          (p): p is Exclude<typeof p, undefined> => p !== undefined,
+        ),
       );
 
       if (
@@ -608,15 +610,11 @@ export class MinifyFile {
 
         if (this.mode.moduleLikeLua) {
           if (callExpr === "dofile") {
-            return (
-              res || this.sourceNodeHelper(undefined, "")
-            );
+            return res || this.sourceNodeHelper(undefined, "");
           }
           // requireならスキップ
         } else {
-          return (
-            res || this.sourceNodeHelper(undefined, "")
-          );
+          return res || this.sourceNodeHelper(undefined, "");
         }
       }
       const args = expression.arguments
@@ -664,7 +662,7 @@ export class MinifyFile {
                 parameter,
                 parameter.type === "Identifier"
                   ? this.generateIdentifier(parameter)
-                  : parameter.value
+                  : parameter.value,
               ),
               ",",
             ];
@@ -684,7 +682,7 @@ export class MinifyFile {
           // Stormworks "propert" Trailing Comma: https://nona-takahara.github.io/blog/entry11.html
           const comma =
             ix !== ar.length - 1 ||
-              this.formatExpression(field.value).toString().includes("property")
+            this.formatExpression(field.value).toString().includes("property")
               ? ","
               : undefined;
 
@@ -701,12 +699,12 @@ export class MinifyFile {
                 this.formatExpression(field.value),
                 comma,
               ].filter(
-                (p): p is Exclude<typeof p, undefined> => p !== undefined
-              )
+                (p): p is Exclude<typeof p, undefined> => p !== undefined,
+              ),
             );
           } else if (field.type == "TableValue") {
             return [this.formatExpression(field.value), comma].filter(
-              (p): p is Exclude<typeof p, undefined> => p !== undefined
+              (p): p is Exclude<typeof p, undefined> => p !== undefined,
             );
           } else {
             // at this point, `field.type == 'TableKeyString'`
@@ -719,8 +717,8 @@ export class MinifyFile {
                 this.formatExpression(field.value),
                 comma,
               ].filter(
-                (p): p is Exclude<typeof p, undefined> => p !== undefined
-              )
+                (p): p is Exclude<typeof p, undefined> => p !== undefined,
+              ),
             );
           }
         })
@@ -730,7 +728,7 @@ export class MinifyFile {
       return result;
     } else {
       throw TypeError(
-        "Unknown expression type: `" + JSON.stringify(expression) + "`"
+        "Unknown expression type: `" + JSON.stringify(expression) + "`",
       );
     }
   }
@@ -756,7 +754,8 @@ export class MinifyFile {
 
   private generateIdentifier(
     nameItem: Parser.Identifier,
-    nested = false
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- #18で対応予定のネストスコープ追跡用に予約
+    nested = false,
   ): SourceNode {
     if (nameItem.name === "self") {
       return this.sourceNodeHelper(nameItem, "self", "self");
@@ -781,7 +780,7 @@ export class MinifyFile {
         id += IDENTIFIER_PARTS[p % l];
         p = Math.floor(p / l);
       }
-    } while (isKeyword(id) || this.minifier.identifiersInUse.has(id))
+    } while (isKeyword(id) || this.minifier.identifiersInUse.has(id));
 
     this.minifier.identifierMap.set(nameItem.name, id);
     return this.sourceNodeHelper(nameItem, id, nameItem.name);

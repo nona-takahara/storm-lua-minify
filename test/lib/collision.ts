@@ -20,13 +20,15 @@ interface Declaration {
 //   （例: `local t = { f = function() ... end }`）の内部は対象外。
 export async function findIdentifierCollisions(
   code: string,
-  rawMap: RawSourceMap
+  rawMap: RawSourceMap,
 ): Promise<IdentifierCollision[]> {
   const ast = Parser.parse(code, { luaVersion: "5.3", locations: true });
   const collisions: IdentifierCollision[] = [];
 
   await SourceMapConsumer.with(rawMap, null, (consumer) => {
-    const originalNameFor = (node: { loc?: Parser.Node["loc"] }): string | null => {
+    const originalNameFor = (node: {
+      loc?: Parser.Node["loc"];
+    }): string | null => {
       if (!node.loc) {
         return null;
       }
@@ -71,7 +73,7 @@ export async function findIdentifierCollisions(
 
     const collectFromStatement = (
       statement: Parser.Statement,
-      declarations: Declaration[]
+      declarations: Declaration[],
     ) => {
       switch (statement.type) {
         case "LocalStatement":

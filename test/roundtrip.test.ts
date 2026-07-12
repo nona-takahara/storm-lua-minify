@@ -15,8 +15,12 @@ for (const c of WORKING_CASES) {
 
 for (const c of KNOWN_BUG_CASES) {
   const issue = String(c.issue);
-  void test(`round-trip parse (known bug, issue #${issue}): ${c.label}`, { todo: `#${issue} の本修正待ち` }, () => {
-    const { code } = runMinifier(c);
-    assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
-  });
+  void test(
+    `round-trip parse (known bug, issue #${issue}): ${c.label}`,
+    { todo: `#${issue} の本修正待ち` },
+    () => {
+      const { code } = runMinifier(c);
+      assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
+    },
+  );
 }

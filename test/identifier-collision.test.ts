@@ -16,9 +16,13 @@ for (const c of WORKING_CASES) {
 
 for (const c of KNOWN_BUG_CASES) {
   const issue = String(c.issue);
-  void test(`identifier collision (known bug, issue #${issue}): ${c.label}`, { todo: `#${issue} の本修正待ち` }, async () => {
-    const { code, map } = runMinifier(c);
-    const collisions = await findIdentifierCollisions(code, map);
-    assert.deepEqual(collisions, []);
-  });
+  void test(
+    `identifier collision (known bug, issue #${issue}): ${c.label}`,
+    { todo: `#${issue} の本修正待ち` },
+    async () => {
+      const { code, map } = runMinifier(c);
+      const collisions = await findIdentifierCollisions(code, map);
+      assert.deepEqual(collisions, []);
+    },
+  );
 }
