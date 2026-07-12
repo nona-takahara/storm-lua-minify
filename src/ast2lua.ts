@@ -98,6 +98,27 @@ function wrapArray<T>(obj: T | T[]): T[] {
   return [obj];
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- 現時点では未参照だが、オリジナル(luamin)由来のコードのため残置
+function generateZeroes(length: number) {
+  let zero = "0";
+  let result = "";
+  if (length < 1) {
+    return result;
+  }
+  if (length == 1) {
+    return zero;
+  }
+  while (length) {
+    if (length & 1) {
+      result += zero;
+    }
+    if ((length >>= 1)) {
+      zero += zero;
+    }
+  }
+  return result;
+}
+
 function isKeyword(id: string) {
   switch (id.length) {
     case 2:
