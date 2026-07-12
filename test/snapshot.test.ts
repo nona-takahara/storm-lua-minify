@@ -19,7 +19,7 @@ for (const c of WORKING_CASES) {
 
     assert.ok(
       fs.existsSync(snapshotPath),
-      `スナップショットが存在しません: ${snapshotPath}\nUPDATE_SNAPSHOTS=1 npm test で生成してください。`
+      `スナップショットが存在しません: ${snapshotPath}\nUPDATE_SNAPSHOTS=1 npm test で生成してください。`,
     );
     const expected = fs.readFileSync(snapshotPath, "utf8");
     assert.equal(code, expected);

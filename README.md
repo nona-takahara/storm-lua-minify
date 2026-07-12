@@ -22,6 +22,14 @@ npm run build
 npm test
 ```
 
+# Lint / Format
+
+```
+npm run lint          # ESLint
+npm run format:check  # Prettierのフォーマットチェック
+npm run format        # Prettierでフォーマット
+```
+
 `test/` 以下にスナップショット・ラウンドトリップパース・識別子衝突検知のテストがあります。
 既知バグ（#11, #12 など）の再現ケースは `test.todo` として登録されており、`npm test` は成功しますが、
 修正が入るまではそのテスト自体は失敗した状態のまま todo 扱いになります。

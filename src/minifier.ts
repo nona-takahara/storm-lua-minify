@@ -1,4 +1,4 @@
-import Parser, { Comment, Options } from "luaparse";
+import Parser, { Options } from "luaparse";
 import path from "path";
 import fs from "fs";
 import { SourceNode } from "source-map";
@@ -23,7 +23,7 @@ export class Minifier {
   constructor(
     entryFilePath: string,
     luaParseSettings: Partial<Options>,
-    mode: MinifierMode
+    mode: MinifierMode,
   ) {
     this.identifierMap = new Map<string, string>();
     this.identifiersInUse = new Set<string>();
@@ -51,19 +51,21 @@ export class Minifier {
         package.loaded[m]=package.loaded[m] or r or true;return package.loaded[m]
       end
       */
-      sn.prepend("package.loaded[m]=package.loaded[m]or r or true;return package.loaded[m]end\n");
+      sn.prepend(
+        "package.loaded[m]=package.loaded[m]or r or true;return package.loaded[m]end\n",
+      );
       this.moduleSourceNode.forEach((v, k) => {
         if (k !== this.entryModule) {
-            sn.prepend(["if m==\"", k, "\"then r=(function() ", v ," end)()end\n"]);
+          sn.prepend(['if m=="', k, '"then r=(function() ', v, " end)()end\n"]);
         }
       });
-      sn.prepend("function require(m,r)package=package or{loaded={}};if package.loaded[m]then return package.loaded[m]end\n");
+      sn.prepend(
+        "function require(m,r)package=package or{loaded={}};if package.loaded[m]then return package.loaded[m]end\n",
+      );
     }
 
     // コメントの流し込み
-    const comments = this.moduleAST.get(this.entryModule)?.comments as
-      | Comment[]
-      | undefined;
+    const comments = this.moduleAST.get(this.entryModule)?.comments;
     if (comments) {
       comments
         .reverse()
@@ -74,13 +76,19 @@ export class Minifier {
               comment.loc?.start.line || null,
               comment.loc?.start.column || null,
               this.entryModule, // 本当に自分のファイル名でよいかは要検討
-              comment.raw
-            )
-          ,"\n"]);
+              comment.raw,
+            ),
+            "\n",
+          ]);
         });
     }
 
-    this.moduleSourceText.forEach((v, k) => { const fileName = this.moduleNameAndFileName.get(k); fileName && sn.setSourceContent(fileName, v) });
+    this.moduleSourceText.forEach((v, k) => {
+      const fileName = this.moduleNameAndFileName.get(k);
+      if (fileName) {
+        sn.setSourceContent(fileName, v);
+      }
+    });
     return sn;
   }
 
@@ -103,7 +111,7 @@ export class Minifier {
           resolvePath,
           ast,
           this,
-          this.mode
+          this.mode,
         ).parse(moduleName === this.entryModule);
 
         this.moduleSourceText.set(moduleName, code);

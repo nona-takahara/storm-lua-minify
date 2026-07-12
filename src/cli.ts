@@ -13,7 +13,7 @@ program
   .description("A Lua minifier also outputs source map")
   .option(
     "-m, --module-like-lua",
-    "require・dofileの動作を実際のLuaに近づけます"
+    "require・dofileの動作を実際のLuaに近づけます",
   );
 
 program.parse(process.argv);
@@ -44,7 +44,9 @@ luaFiles.forEach((fileName) => {
       name: parsedFileName.name,
       ext: parsedFileName.ext + ".map",
     });
-    map.add("\n--[[\n//# sourceMappingURL=" + path.basename(mapFileName) + "\n]]");
+    map.add(
+      "\n--[[\n//# sourceMappingURL=" + path.basename(mapFileName) + "\n]]",
+    );
 
     const sourceAndMap = map.toStringWithSourceMap();
 

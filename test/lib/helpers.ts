@@ -39,7 +39,7 @@ export function runMinifier(c: FixtureCase): {
   const minifier = new Minifier(
     fixtureEntryPath(c.fixture, c.entry),
     LUAPARSE_SETTINGS,
-    c.mode
+    c.mode,
   );
   const sourceNode = minifier.parse();
   const { code, map } = sourceNode.toStringWithSourceMap({
@@ -51,13 +51,21 @@ export function runMinifier(c: FixtureCase): {
 // require() / require "m" / dofile が正しく解決される、動作が確認できているケース。
 // スナップショット・ラウンドトリップ・識別子衝突検知の全テストで「衝突・構文エラーが無い」ことを期待する。
 export const WORKING_CASES: FixtureCase[] = [
-  { label: "単一ファイル", fixture: "single-file", mode: { moduleLikeLua: false } },
+  {
+    label: "単一ファイル",
+    fixture: "single-file",
+    mode: { moduleLikeLua: false },
+  },
   {
     label: 'require("m") 構文 (-m モード)',
     fixture: "require-call",
     mode: { moduleLikeLua: true },
   },
-  { label: "dofile (SLモード)", fixture: "dofile", mode: { moduleLikeLua: false } },
+  {
+    label: "dofile (SLモード)",
+    fixture: "dofile",
+    mode: { moduleLikeLua: false },
+  },
   {
     label: "同一モジュールの多重require (-m モード)",
     fixture: "multi-require",
@@ -80,13 +88,15 @@ export const KNOWN_BUG_CASES: KnownBugCase[] = [
     issue: 11,
   },
   {
-    label: "SLモードでrequireしたモジュールの展開が式として埋め込まれ構文が壊れる",
+    label:
+      "SLモードでrequireしたモジュールの展開が式として埋め込まれ構文が壊れる",
     fixture: "require-call",
     mode: { moduleLikeLua: false },
     issue: 11,
   },
   {
-    label: "SLモードで同一モジュールを多重requireすると展開が式として壊れる（識別子重複を含む）",
+    label:
+      "SLモードで同一モジュールを多重requireすると展開が式として壊れる（識別子重複を含む）",
     fixture: "multi-require",
     mode: { moduleLikeLua: false },
     issue: 12,
