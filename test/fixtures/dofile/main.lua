@@ -1,0 +1,2 @@
+dofile("greet")
+print("done")
