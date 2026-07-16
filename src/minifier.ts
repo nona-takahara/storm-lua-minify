@@ -2,15 +2,23 @@ import Parser, { Options } from "luaparse";
 import path from "path";
 import fs from "fs";
 import { SourceNode } from "source-map";
-import { Chunk, MinifyFile, IDENTIFIER_PARTS, isKeyword } from "./ast2lua";
+import { Chunk, MinifyFile } from "./ast2lua";
 import { findModuleReferences } from "./linker";
+import { resolveScopes, ResolveResult } from "./resolver";
+import { assignRenames, RenameResult } from "./renamer";
 
 export interface MinifierMode {
   moduleLikeLua: boolean;
+  // 識別子の短縮(リネーム)を行うかどうか。デバッグ用途でfalseにできる。省略時はtrue扱い。
+  rename?: boolean;
 }
 
+const NO_RENAME: RenameResult = {
+  nameOf: () => undefined,
+  usedNames: new Set(),
+};
+
 export class Minifier {
-  readonly identifierMap: Map<string, string>;
   readonly identifiersInUse: Set<string>;
   readonly moduleSourceText: Map<string, string>;
   readonly moduleAST: Map<string, Chunk>;
@@ -20,16 +28,18 @@ export class Minifier {
   readonly mode: MinifierMode;
   readonly luaParseSettings: Partial<Options>;
 
-  private currentIdentifier = 0;
   // Linkパスで解決されたモジュール名を、依存されている側が先に来る順序で並べたもの
   private readonly linkOrder: string[] = [];
+  // モジュールごとのResolveパスの結果（Linkパスで一度だけ計算し使い回す）
+  private readonly moduleResolve = new Map<string, ResolveResult>();
+  // モジュールごとのRenameパスの結果（初回アクセス時に計算しキャッシュする）
+  private readonly renameCache = new Map<string, RenameResult>();
 
   constructor(
     entryFilePath: string,
     luaParseSettings: Partial<Options>,
     mode: MinifierMode,
   ) {
-    this.identifierMap = new Map<string, string>();
     this.identifiersInUse = new Set<string>();
     this.moduleSourceText = new Map<string, string>();
     this.moduleAST = new Map<string, Chunk>();
@@ -43,6 +53,7 @@ export class Minifier {
 
   parse(): SourceNode {
     this.link();
+    this.renameAll();
 
     const parts: (SourceNode | string)[] = [];
 
@@ -104,35 +115,53 @@ export class Minifier {
     }
     return new MinifyFile(
       fileName,
+      moduleName,
       ast,
       this,
       this.mode,
     ).parseAsStatementsAndFinalExpression(moduleName === this.entryModule);
   }
 
-  allocateIdentifier(key: string): string {
-    const defined = this.identifierMap.get(key);
-    if (defined) {
-      return defined;
+  /**
+   * 指定モジュールのRenameパス結果を返す。`renameAll`で事前に計算済みの
+   * ものをそのまま返すだけの参照用アクセサ。
+   */
+  getRenameResult(moduleName: string): RenameResult {
+    if (this.mode.rename === false) {
+      return NO_RENAME;
     }
-    if (this.identifiersInUse.has(key)) {
-      return key;
+    const cached = this.renameCache.get(moduleName);
+    if (!cached) {
+      throw new Error(moduleName + " is not found");
     }
+    return cached;
+  }
 
-    let id = "";
-    do {
-      let p = this.currentIdentifier++;
-      const l = IDENTIFIER_PARTS.length;
-      id = IDENTIFIER_PARTS[p % l];
-      p = Math.floor(p / l);
-      while (p >= l) {
-        id += IDENTIFIER_PARTS[p % l];
-        p = Math.floor(p / l);
+  /**
+   * Renameパス（#20）: linkOrder（依存されている側が先）の順にモジュールごとの
+   * 短縮名を割り当てる。
+   *
+   * dofileやSLモードのrequireその場展開は、呼び出し元と同じLuaスコープに
+   * 関数で包まずに直接展開されるため、モジュールをまたいで同じ短縮名を
+   * 再利用すると本来無関係な変数同士が衝突しうる（#12）。これを安全に防ぐため、
+   * あるモジュールが実際に使った短縮名は、後続モジュールを処理する前に
+   * `identifiersInUse`（予約名の集合）へ積み増す。これにより短縮名は
+   * プログラム全体で重複しなくなる（モジュール間での再利用による圧縮は
+   * 犠牲になるが、モジュール内でのスコープに基づく再利用は維持される）。
+   */
+  private renameAll() {
+    if (this.mode.rename === false) {
+      return;
+    }
+    this.linkOrder.forEach((moduleName) => {
+      const resolved = this.moduleResolve.get(moduleName);
+      if (!resolved) {
+        throw new Error(moduleName + " is not found");
       }
-    } while (isKeyword(id) || this.identifiersInUse.has(id));
-
-    this.identifierMap.set(key, id);
-    return id;
+      const result = assignRenames(resolved, this.identifiersInUse);
+      this.renameCache.set(moduleName, result);
+      result.usedNames.forEach((name) => this.identifiersInUse.add(name));
+    });
   }
 
   private printModule(moduleName: string): SourceNode {
@@ -141,7 +170,7 @@ export class Minifier {
     if (!ast || !fileName) {
       throw new Error(moduleName + " is not found");
     }
-    return new MinifyFile(fileName, ast, this, this.mode).parse(
+    return new MinifyFile(fileName, moduleName, ast, this, this.mode).parse(
       moduleName === this.entryModule,
     );
   }
@@ -179,10 +208,15 @@ export class Minifier {
       }
       const code = fs.readFileSync(fullResolvePath).toString();
       const ast = Parser.parse(code, this.luaParseSettings) as Chunk;
-      if (!("globals" in ast)) {
-        throw new Error(moduleName + " is not found");
-      }
-      ast.globals?.forEach((v) => this.identifiersInUse.add(v.name));
+
+      // Resolveパス（#19）: このモジュールのスコープ/シンボルを解析し、Renameパスの
+      // 入力として使い回せるようキャッシュする。グローバル参照はプログラム全体で
+      // 予約すべき名前（identifiersInUse）としてここで集計する。
+      const resolved = resolveScopes(ast);
+      this.moduleResolve.set(moduleName, resolved);
+      resolved.globals.forEach((binding) =>
+        this.identifiersInUse.add(binding.name),
+      );
 
       this.moduleSourceText.set(moduleName, code);
       this.moduleAST.set(moduleName, ast);
