@@ -111,6 +111,12 @@ export const WORKING_CASES: FixtureCase[] = [
     fixture: "require-in-expression",
     mode: { moduleLikeLua: false },
   },
+  {
+    label:
+      "ドット区切りのモジュール名（サブディレクトリ）が解決される (-m モード, #21 Source Map確認)",
+    fixture: "nested-module",
+    mode: { moduleLikeLua: true },
+  },
 ];
 
 // 既知バグの再現ケース。現状は failing のため `test.todo` で登録する。

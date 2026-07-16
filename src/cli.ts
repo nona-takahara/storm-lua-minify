@@ -5,6 +5,7 @@ import path from "path";
 import { Command } from "commander";
 import { Options } from "luaparse";
 import { Minifier, MinifierMode } from "./minifier";
+import { buildMinifiedOutput } from "./output";
 
 const program = new Command();
 
@@ -48,14 +49,14 @@ luaFiles.forEach((fileName) => {
       name: parsedFileName.name,
       ext: parsedFileName.ext + ".map",
     });
-    map.add(
-      "\n--[[\n//# sourceMappingURL=" + path.basename(mapFileName) + "\n]]",
+    const { code, map: mapJson } = buildMinifiedOutput(
+      map,
+      minFileName,
+      mapFileName,
     );
 
-    const sourceAndMap = map.toStringWithSourceMap();
-
-    fs.writeFileSync(minFileName, sourceAndMap.code);
-    fs.writeFileSync(mapFileName, JSON.stringify(sourceAndMap.map));
+    fs.writeFileSync(minFileName, code);
+    fs.writeFileSync(mapFileName, mapJson);
   } else {
     console.error("No such file: " + fileName);
   }

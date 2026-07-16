@@ -66,7 +66,7 @@ export class Minifier {
             new SourceNode(
               comment.loc?.start.line ?? null,
               comment.loc?.start.column ?? null,
-              this.moduleNameAndFileName.get(this.entryModule) ?? null, // 本当に自分のファイル名でよいかは要検討
+              this.moduleNameAndFileName.get(this.entryModule) ?? null,
               comment.raw,
             ),
             "\n",
@@ -201,8 +201,8 @@ export class Minifier {
       visiting.add(moduleName);
       stack.push(moduleName);
 
-      const resolvePath = moduleName.replaceAll(".", path.sep) + ".lua";
-      const fullResolvePath = path.join(this.dir, resolvePath);
+      const fullResolvePath =
+        path.join(this.dir, ...moduleName.split(".")) + ".lua";
       if (!fs.existsSync(fullResolvePath)) {
         throw new Error(moduleName + " is not found");
       }
@@ -220,7 +220,12 @@ export class Minifier {
 
       this.moduleSourceText.set(moduleName, code);
       this.moduleAST.set(moduleName, ast);
-      this.moduleNameAndFileName.set(moduleName, resolvePath);
+      // Source Mapの`sources`はURLとして解釈されるため、OS依存のpath.sepではなく
+      // 常に"/"区切りで保持する（Windows上でのビルドでも壊れないように）。
+      this.moduleNameAndFileName.set(
+        moduleName,
+        moduleName.replaceAll(".", "/") + ".lua",
+      );
 
       findModuleReferences(ast).forEach((ref) => {
         visit(ref.moduleName);

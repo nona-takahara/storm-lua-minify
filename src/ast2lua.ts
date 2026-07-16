@@ -339,10 +339,12 @@ export class MinifyFile {
   ) {
     const line = node?.loc?.start.line;
     const column = node?.loc?.start.column;
+    // this.fileNameは常にこのMinifyFileインスタンスが担当するモジュール自身の
+    // ファイル名（Linkパスで解決済み）なので、ここで出力するノードの由来ファイルとして正しい。
     return new SourceNode(
       line == undefined ? null : line,
       column == undefined ? null : column,
-      this.fileName, // 本当に自分のファイル名でよいかは要検討
+      this.fileName,
       chuncks,
       name,
     );
