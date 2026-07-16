@@ -33,32 +33,40 @@ void test("buildMinifiedOutput: mapにfileフィールドが設定される", ()
   assert.equal(parsed.file, "main.min.lua");
 });
 
-// 既定(strictSourceMappingUrl未指定)の出力は、末尾のアノテーション行を含めて
+// 既定・legacyBlockCommentAnnotationいずれの出力も、末尾のアノテーションを含めて
 // 引き続き有効なLuaとして再パースできる。
-void test("buildMinifiedOutput: 既定では出力全体が有効なLuaのままである", () => {
+void test("buildMinifiedOutput: 既定・legacyBlockCommentAnnotationいずれも出力全体が有効なLuaのままである", () => {
   const node = new SourceNode(1, 0, "main.lua", "print(1)");
-  const { code } = buildMinifiedOutput(node, "main.min.lua", "main.lua.map");
+  const { code: defaultCode } = buildMinifiedOutput(
+    node,
+    "main.min.lua",
+    "main.lua.map",
+  );
+  assert.doesNotThrow(() => Parser.parse(defaultCode, { luaVersion: "5.3" }));
 
-  assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
+  const legacyNode = new SourceNode(1, 0, "main.lua", "print(1)");
+  const { code: legacyCode } = buildMinifiedOutput(
+    legacyNode,
+    "main.min.lua",
+    "main.lua.map",
+    { legacyBlockCommentAnnotation: true },
+  );
+  assert.doesNotThrow(() => Parser.parse(legacyCode, { luaVersion: "5.3" }));
 });
 
-// strictSourceMappingUrl: true では、Source Map仕様の慣習表記(`//# sourceMappingURL=...`)
-// をLuaコメントで包まずそのまま出力する。Luaには`//`行コメントが無い
-// （5.3以降では`//`は整数除算演算子のトークン）ため、この形は出力ファイルの
-// 最終行を有効なLua文ではなくする。この副作用そのものを固定化してオプションの
-// 意味を明確にしておく。
-void test("buildMinifiedOutput: strictSourceMappingUrlはLuaコメントで包まずアノテーションを出力する（Luaとしては構文エラーになる）", () => {
+// legacyBlockCommentAnnotation: true では、旧storm-lua-minifyと同じ複数行の
+// `--[[ ... ]]`ブロックコメントでsourceMappingURLを出力する（この形式を前提に
+// 読み込む既存ツールとの互換性のため）。この形式はアノテーション行の後に`]]`が
+// 続くため、ファイルの最終行そのものではない（Source Map仕様の「最終行」ルールには
+// 厳密には従わない）。
+void test("buildMinifiedOutput: legacyBlockCommentAnnotationは旧バージョンと同じ複数行ブロックコメントを出力する", () => {
   const node = new SourceNode(1, 0, "main.lua", "print(1)");
   const { code } = buildMinifiedOutput(node, "main.min.lua", "main.lua.map", {
-    strictSourceMappingUrl: true,
+    legacyBlockCommentAnnotation: true,
   });
 
-  const lines = code.split("\n");
-  while (lines.length > 0 && lines[lines.length - 1] === "") {
-    lines.pop();
-  }
-  const lastLine = lines[lines.length - 1];
-
-  assert.equal(lastLine, "//# sourceMappingURL=main.lua.map");
-  assert.throws(() => Parser.parse(code, { luaVersion: "5.3" }));
+  assert.ok(
+    code.includes("\n--[[\n//# sourceMappingURL=main.lua.map\n]]"),
+    `複数行ブロックコメントが含まれていること。実際: ${JSON.stringify(code)}`,
+  );
 });

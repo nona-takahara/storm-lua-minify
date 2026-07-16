@@ -18,8 +18,8 @@ program
   )
   .option("--no-rename", "識別子の短縮(リネーム)を無効にします（デバッグ用途）")
   .option(
-    "--strict-source-mapping-url",
-    "sourceMappingURLアノテーションをLuaコメントで包まず、Source Map仕様の慣習表記(//# sourceMappingURL=...)そのままの1行で出力します（出力ファイルの最終行は有効なLuaではなくなります）",
+    "--legacy-source-mapping-url",
+    "sourceMappingURLアノテーションを旧バージョンと同じ複数行の--[[ ]]ブロックコメントで出力します（この形式を前提に読み込む既存ツールとの互換性のため。既定は単一行の--コメントです）",
   );
 
 program.parse(process.argv);
@@ -34,10 +34,10 @@ const luaparseSetting: Partial<Options> = {
 };
 
 interface CliOptions extends MinifierMode {
-  strictSourceMappingUrl?: boolean;
+  legacySourceMappingUrl?: boolean;
 }
 
-const { strictSourceMappingUrl, ...mode }: CliOptions = program.opts();
+const { legacySourceMappingUrl, ...mode }: CliOptions = program.opts();
 
 luaFiles.forEach((fileName) => {
   const parsedFileName = path.parse(fileName);
@@ -58,7 +58,7 @@ luaFiles.forEach((fileName) => {
       map,
       minFileName,
       mapFileName,
-      { strictSourceMappingUrl },
+      { legacyBlockCommentAnnotation: legacySourceMappingUrl },
     );
 
     fs.writeFileSync(minFileName, code);

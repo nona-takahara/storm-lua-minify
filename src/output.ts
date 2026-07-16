@@ -8,14 +8,14 @@ export interface MinifiedOutput {
 
 export interface BuildMinifiedOutputOptions {
   /**
-   * trueの場合、sourceMappingURLアノテーションをLuaの`--`コメントで包まず、
-   * Source Map仕様の慣習表記（`//# sourceMappingURL=...`）をそのまま1行として
-   * 出力する。Luaには`//`行コメントが無く（Lua 5.3以降では`//`は整数除算演算子の
-   * トークンでもある）、この形は出力ファイルの最終行を有効なLua文ではなくする
-   * （luaparseで再パースするとエラーになる）。厳密な仕様準拠のマーカー文字列を
-   * 必要とする外部ツール向けのオプトインで、既定では使わない。
+   * trueの場合、sourceMappingURLアノテーションを旧storm-lua-minifyと同じ複数行の
+   * `--[[ ... ]]`ブロックコメントで出力する（`--[[\n//# sourceMappingURL=...\n]]`）。
+   * この形はSource Map仕様が定める「アノテーションは生成コードの最後の行（末尾が
+   * 空行の場合はその直前の行）に置く」というルールには厳密には従っていないが
+   * （アノテーション行の後に`]]`が続き最終行にならない）、この複数行コメント形式を
+   * 前提に読み込む既存ツールとの互換性のためのオプトイン。既定では使わない。
    */
-  strictSourceMappingUrl?: boolean;
+  legacyBlockCommentAnnotation?: boolean;
 }
 
 /**
@@ -25,9 +25,10 @@ export interface BuildMinifiedOutputOptions {
  * sourceMappingURLアノテーションは仕様上「生成コードの最後の行（末尾が空行の場合は
  * その直前の行）」に置かれていなければならない。既定では単一行の`--`ラインコメント
  * （`-- //# sourceMappingURL=...`）として追加し、末尾の空行を除けば出力の最終行に
- * なるようにする（これによりLuaとして引き続き実行可能な状態を保つ）。
- * `strictSourceMappingUrl`を指定した場合は`--`で包まず慣習表記そのままを出力する
- * （BuildMinifiedOutputOptionsのコメント参照）。
+ * なるようにする。`legacyBlockCommentAnnotation`を指定した場合は、代わりに旧
+ * storm-lua-minifyと同じ複数行の`--[[ ]]`ブロックコメントを出力する
+ * （BuildMinifiedOutputOptionsのコメント参照）。いずれの形式でも出力ファイルは
+ * 引き続き有効なLuaとして実行できる。
  */
 export function buildMinifiedOutput(
   sourceNode: SourceNode,
@@ -35,8 +36,10 @@ export function buildMinifiedOutput(
   mapFileName: string,
   options: BuildMinifiedOutputOptions = {},
 ): MinifiedOutput {
-  const marker = "//# sourceMappingURL=" + path.basename(mapFileName);
-  const annotation = options.strictSourceMappingUrl ? marker : "-- " + marker;
+  const url = path.basename(mapFileName);
+  const annotation = options.legacyBlockCommentAnnotation
+    ? "--[[\n//# sourceMappingURL=" + url + "\n]]"
+    : "-- //# sourceMappingURL=" + url;
   sourceNode.add("\n" + annotation + "\n");
   const sourceAndMap = sourceNode.toStringWithSourceMap({
     file: path.basename(minFileName),
