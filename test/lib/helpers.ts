@@ -101,6 +101,12 @@ export const WORKING_CASES: FixtureCase[] = [
   },
   {
     label:
+      "SLモードで戻り値を使わない単独のrequire文はdofileと同様functionで包まずそのまま展開される (#29対応確認)",
+    fixture: "bare-require",
+    mode: { moduleLikeLua: false },
+  },
+  {
+    label:
       "SLモードでrequireが式の一部（ネスト位置）に現れる場合はIIFEにフォールバックする (#29対応確認)",
     fixture: "require-in-expression",
     mode: { moduleLikeLua: false },

@@ -373,20 +373,7 @@ export class MinifyFile {
       return undefined;
     }
 
-    const initExpr = statement.init[0];
-    let base: Parser.Expression;
-    let argument: Parser.Expression | undefined;
-    if (initExpr.type === "CallExpression") {
-      base = initExpr.base;
-      argument = initExpr.arguments[0];
-    } else if (initExpr.type === "StringCallExpression") {
-      base = initExpr.base;
-      argument = initExpr.argument;
-    } else {
-      return undefined;
-    }
-
-    const moduleRef = this.matchModuleCall(base, argument);
+    const moduleRef = this.matchModuleCallExpression(statement.init[0]);
     if (!moduleRef || moduleRef.kind !== "require") {
       return undefined;
     }
@@ -410,6 +397,27 @@ export class MinifyFile {
     addWithSeparator(result, "=");
     addWithSeparator(result, spliced.finalExpression);
     return result;
+  }
+
+  /**
+   * SLモード限定: `require("m")` を戻り値を使わない単独の文として書いた場合、
+   * dofileと同じくfunctionで包まずそのまま展開する（Cプリプロセッサのincludeに
+   * 近い、LifeBoat Modeでの一般的な使い方に合わせるための対応。#29のレビュー対応）。
+   */
+  private tryInlineBareRequireStatement(
+    expr:
+      | Parser.CallExpression
+      | Parser.StringCallExpression
+      | Parser.TableCallExpression,
+  ): SourceNode | undefined {
+    if (this.mode.moduleLikeLua) {
+      return undefined;
+    }
+    const moduleRef = this.matchModuleCallExpression(expr);
+    if (!moduleRef || moduleRef.kind !== "require") {
+      return undefined;
+    }
+    return this.minifier.printModuleInline(moduleRef.moduleName);
   }
 
   private formatStatement(statement: Parser.Statement): SourceNode {
@@ -463,6 +471,12 @@ export class MinifyFile {
       }
       return result;
     } else if (statement.type == "CallStatement") {
+      const bareRequire = this.tryInlineBareRequireStatement(
+        statement.expression,
+      );
+      if (bareRequire) {
+        return bareRequire;
+      }
       return this.formatExpression(statement.expression); // NOTE: もう一度囲んでもいい
     } else if (statement.type == "IfStatement") {
       const result = this.sourceNodeHelper(statement, []);
@@ -709,10 +723,7 @@ export class MinifyFile {
       }
       return result;
     } else if (expression.type == "CallExpression") {
-      const moduleRef = this.matchModuleCall(
-        expression.base,
-        expression.arguments[0],
-      );
+      const moduleRef = this.matchModuleCallExpression(expression);
       if (moduleRef) {
         const replacement = this.formatModuleReference(expression, moduleRef);
         if (replacement) {
@@ -734,10 +745,7 @@ export class MinifyFile {
         this.formatExpression(expression.arguments),
       ]);
     } else if (expression.type == "StringCallExpression") {
-      const moduleRef = this.matchModuleCall(
-        expression.base,
-        expression.argument,
-      );
+      const moduleRef = this.matchModuleCallExpression(expression);
       if (moduleRef) {
         const replacement = this.formatModuleReference(expression, moduleRef);
         if (replacement) {
@@ -880,6 +888,19 @@ export class MinifyFile {
       return undefined;
     }
     return { kind: base.name, moduleName };
+  }
+
+  // CallExpression / StringCallExpression のどちらの構文でも呼べるmatchModuleCall
+  private matchModuleCallExpression(
+    expr: Parser.Expression,
+  ): { kind: "require" | "dofile"; moduleName: string } | undefined {
+    if (expr.type === "CallExpression") {
+      return this.matchModuleCall(expr.base, expr.arguments[0]);
+    }
+    if (expr.type === "StringCallExpression") {
+      return this.matchModuleCall(expr.base, expr.argument);
+    }
+    return undefined;
   }
 
   private formatModuleReference(
