@@ -1,2 +1,2 @@
-local G,H,I=1,2,3
-print(G|H&I)print((G|H)&I)print(G&H|I)print(G~H&I)print(G<<H+I)print((G<<H)+I)print(G//H//I)print(~G&H)
+local a,b,c=1,2,3
+print(a|b&c)print((a|b)&c)print(a&b|c)print(a~b&c)print(a<<b+c)print((a<<b)+c)print(a//b//c)print(~a&b)

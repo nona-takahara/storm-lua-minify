@@ -1,4 +1,5 @@
 function require(m,r)package=package or{loaded={}};if package.loaded[m]then return package.loaded[m]end
-if m=="common"then r=(function() return{value=42} end)()end
+if m=="mod"then r=(function() local function a()return"hello"end
+return{hello=a} end)()end
 package.loaded[m]=package.loaded[m]or r or true;return package.loaded[m]end
-local a=require("common")local b=require("common")print(a.value,b.value)
+local b=require"mod"print(b.hello())

@@ -5,6 +5,7 @@
 import Parser, { Comment } from "luaparse";
 import { SourceNode } from "source-map";
 import { Minifier, MinifierMode } from "./minifier";
+import { staticStringArgument } from "./linker";
 
 export type Chunk = Parser.Chunk & {
   globals?: (Parser.Base<"Identifer"> & {
@@ -42,7 +43,7 @@ const PRECEDENCE: Record<string, number> = {
   "^": 14,
 };
 
-const IDENTIFIER_PARTS = [
+export const IDENTIFIER_PARTS = [
   "a",
   "b",
   "c",
@@ -126,7 +127,7 @@ function generateZeroes(length: number) {
   return result;
 }
 
-function isKeyword(id: string) {
+export function isKeyword(id: string) {
   switch (id.length) {
     case 2:
       return "do" == id || "if" == id || "in" == id || "or" == id;
@@ -603,25 +604,14 @@ export class MinifyFile {
       }
       return result;
     } else if (expression.type == "CallExpression") {
-      // requireの展開モードは2種類: SLモード-その場に読み込み, FLモード-require相当の関数で呼び出し
-      const callExpr = this.formatBase(expression.base).toString();
-      if (
-        (callExpr === "require" || callExpr === "dofile") &&
-        expression?.arguments[0].type === "StringLiteral"
-      ) {
-        const moduleName = expression.arguments[0].raw
-          .replaceAll('"', "")
-          .replaceAll("'", "");
-
-        const res = this.minifier.parseModule(moduleName);
-
-        if (this.mode.moduleLikeLua) {
-          if (callExpr === "dofile") {
-            return res || this.sourceNodeHelper(undefined, "");
-          }
-          // requireならスキップ
-        } else {
-          return res || this.sourceNodeHelper(undefined, "");
+      const moduleRef = this.matchModuleCall(
+        expression.base,
+        expression.arguments[0],
+      );
+      if (moduleRef) {
+        const replacement = this.formatModuleReference(expression, moduleRef);
+        if (replacement) {
+          return replacement;
         }
       }
       const args = expression.arguments
@@ -639,6 +629,16 @@ export class MinifyFile {
         this.formatExpression(expression.arguments),
       ]);
     } else if (expression.type == "StringCallExpression") {
+      const moduleRef = this.matchModuleCall(
+        expression.base,
+        expression.argument,
+      );
+      if (moduleRef) {
+        const replacement = this.formatModuleReference(expression, moduleRef);
+        if (replacement) {
+          return replacement;
+        }
+      }
       return this.sourceNodeHelper(expression, [
         this.formatExpression(expression.base),
         this.formatExpression(expression.argument),
@@ -757,39 +757,57 @@ export class MinifyFile {
     return result;
   }
 
-  private static currentIdentifier = 0;
+  // require/dofileへの静的な呼び出しを検出する。実際のモジュール解決はLinkパス
+  // （Minifier.link）が事前に済ませているため、ここでは呼び出し形が
+  // require/dofile への静的文字列呼び出しかどうかを判定するだけでよい（#18）。
+  private matchModuleCall(
+    base: Parser.Expression,
+    argument: Parser.Expression | undefined,
+  ): { kind: "require" | "dofile"; moduleName: string } | undefined {
+    if (base.type !== "Identifier") {
+      return undefined;
+    }
+    if (base.name !== "require" && base.name !== "dofile") {
+      return undefined;
+    }
+    const moduleName = staticStringArgument(argument);
+    if (moduleName === undefined) {
+      return undefined;
+    }
+    return { kind: base.name, moduleName };
+  }
+
+  private formatModuleReference(
+    expression: Parser.Expression,
+    ref: { kind: "require" | "dofile"; moduleName: string },
+  ): SourceNode | undefined {
+    if (ref.kind === "dofile") {
+      // dofileは呼び出しごとに毎回展開しなおす（キャッシュしない）
+      return this.minifier.printModuleInline(ref.moduleName);
+    }
+
+    if (!this.mode.moduleLikeLua) {
+      // SLモード: Linkパスで確保済みのホイスト済みローカル変数への参照に置き換える
+      const localName = this.minifier.requireLocalNames.get(ref.moduleName);
+      if (localName) {
+        return this.sourceNodeHelper(expression, localName, ref.moduleName);
+      }
+    }
+
+    // -mモードのrequireはそのまま呼び出しとして出力し、実行時のrequire関数に委ねる
+    return undefined;
+  }
 
   private generateIdentifier(
     nameItem: Parser.Identifier,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- #18で対応予定のネストスコープ追跡用に予約
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- #19/#20で対応予定のネストスコープ追跡用に予約
     nested = false,
   ): SourceNode {
     if (nameItem.name === "self") {
       return this.sourceNodeHelper(nameItem, "self", "self");
     }
 
-    const defined = this.minifier.identifierMap.get(nameItem.name);
-    if (defined) {
-      return this.sourceNodeHelper(nameItem, defined, nameItem.name); // 第3引数は要調査
-    }
-
-    if (this.minifier.identifiersInUse.has(nameItem.name)) {
-      return this.sourceNodeHelper(nameItem, nameItem.name, nameItem.name);
-    }
-
-    let id = "";
-    do {
-      let p = MinifyFile.currentIdentifier++;
-      const l = IDENTIFIER_PARTS.length;
-      id = IDENTIFIER_PARTS[p % l];
-      p = Math.floor(p / l);
-      while (p >= l) {
-        id += IDENTIFIER_PARTS[p % l];
-        p = Math.floor(p / l);
-      }
-    } while (isKeyword(id) || this.minifier.identifiersInUse.has(id));
-
-    this.minifier.identifierMap.set(nameItem.name, id);
+    const id = this.minifier.allocateIdentifier(nameItem.name);
     return this.sourceNodeHelper(nameItem, id, nameItem.name);
   }
 }
