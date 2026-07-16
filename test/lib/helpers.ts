@@ -76,6 +76,11 @@ export const WORKING_CASES: FixtureCase[] = [
     fixture: "entry-scope-many-requires",
     mode: { moduleLikeLua: true },
   },
+  {
+    label: "ビット演算子・整数除算の優先順序 (#27回帰防止)",
+    fixture: "bitwise-precedence",
+    mode: { moduleLikeLua: false },
+  },
 ];
 
 // 既知バグの再現ケース。現状は failing のため `test.todo` で登録する。
