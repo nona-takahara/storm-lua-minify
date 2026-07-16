@@ -89,14 +89,20 @@ export const WORKING_CASES: FixtureCase[] = [
   },
   {
     label:
-      "SLモードでrequireしたモジュールがIIFEとしてその場展開される (#18/#11修正確認)",
+      "SLモードでrequireしたモジュールが文としてその場展開される (#18/#11修正確認)",
     fixture: "require-call",
     mode: { moduleLikeLua: false },
   },
   {
     label:
-      "SLモードで同一モジュールを多重requireすると呼び出しごとに独立してその場展開される (#18/#11修正確認)",
+      "SLモードで同一モジュールを多重requireすると呼び出しごとに独立して文展開される (#18/#11修正確認)",
     fixture: "multi-require",
+    mode: { moduleLikeLua: false },
+  },
+  {
+    label:
+      "SLモードでrequireが式の一部（ネスト位置）に現れる場合はIIFEにフォールバックする (#29対応確認)",
+    fixture: "require-in-expression",
     mode: { moduleLikeLua: false },
   },
 ];

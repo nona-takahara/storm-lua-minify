@@ -1,2 +1,1 @@
-local a=(function() local function b()return"hello"end
-return{hello=b} end)()print(a.hello())
+local function a()return"hello"end local b={hello=a}print(b.hello())

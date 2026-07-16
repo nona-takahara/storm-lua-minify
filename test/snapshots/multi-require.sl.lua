@@ -1,1 +1,1 @@
-local a=(function() return{value=42} end)()local b=(function() return{value=42} end)()print(a.value,b.value)
+local a={value=42}local b={value=42}print(a.value,b.value)

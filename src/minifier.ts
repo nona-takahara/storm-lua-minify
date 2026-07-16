@@ -89,6 +89,27 @@ export class Minifier {
     return this.printModule(moduleName);
   }
 
+  /**
+   * requireを式（IIFE）ではなく文として展開できる場合に使う。モジュール本体が
+   * 「単一の式を返すreturn文」で終わっている場合のみ結果を返す。それ以外は
+   * undefinedを返すので、呼び出し側は従来のIIFE方式にフォールバックする（#29）。
+   */
+  splitModuleForStatementSplice(
+    moduleName: string,
+  ): { statements: SourceNode; finalExpression: SourceNode } | undefined {
+    const ast = this.moduleAST.get(moduleName);
+    const fileName = this.moduleNameAndFileName.get(moduleName);
+    if (!ast || !fileName) {
+      throw new Error(moduleName + " is not found");
+    }
+    return new MinifyFile(
+      fileName,
+      ast,
+      this,
+      this.mode,
+    ).parseAsStatementsAndFinalExpression(moduleName === this.entryModule);
+  }
+
   allocateIdentifier(key: string): string {
     const defined = this.identifierMap.get(key);
     if (defined) {

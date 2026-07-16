@@ -292,6 +292,43 @@ export class MinifyFile {
     }
   }
 
+  /**
+   * モジュール本体の最後の文が「単一の式を返すreturn文」であるときに限り、
+   * それ以外の文と最後の式を分けて返す。requireを式（IIFE）ではなく文として
+   * 展開したい呼び出し側（#29のレビュー対応）が利用する。
+   * 該当しない場合はundefinedを返し、呼び出し側はIIFE方式へフォールバックする。
+   */
+  parseAsStatementsAndFinalExpression(
+    noComment: boolean,
+  ): { statements: SourceNode; finalExpression: SourceNode } | undefined {
+    const body = this.ast.body;
+    const last = body[body.length - 1];
+    if (
+      !last ||
+      last.type !== "ReturnStatement" ||
+      last.arguments.length !== 1
+    ) {
+      return undefined;
+    }
+
+    const statements = this.formatStatementList(body.slice(0, -1));
+    if (!noComment && this.ast.comments) {
+      this.ast.comments
+        .slice()
+        .reverse()
+        .filter((v) => v.raw.includes("--#") || v.raw.includes("[[#"))
+        .forEach((comment) => {
+          statements.prepend([
+            this.sourceNodeHelper(comment, comment.raw),
+            "\n",
+          ]);
+        });
+    }
+
+    const finalExpression = this.formatExpression(last.arguments[0]);
+    return { statements, finalExpression };
+  }
+
   private sourceNodeHelper(
     node: Parser.Node | undefined,
     chuncks: (SourceNode | string)[] | SourceNode | string,
@@ -316,7 +353,75 @@ export class MinifyFile {
     return result;
   }
 
+  /**
+   * SLモード限定: `local x = require("m")` / `x = require("m")` の形（変数1個・
+   * 初期化式1個）を、requireを式（IIFE）として埋め込むのではなく、モジュール本体の
+   * 文をそのまま展開し最後にターゲットへ代入する「文」の並びとして出力する
+   * （#29のレビュー対応。無オプション実行時の挙動互換性のため）。
+   *
+   * モジュール本体が「単一の式を返すreturn文」で終わっていない場合や、変数・
+   * 初期化式が複数ある場合、-mモードの場合は対象外とし、undefinedを返す
+   * （呼び出し側は従来のIIFE方式にフォールバックする）。
+   */
+  private trySpliceRequireStatement(
+    statement: Parser.LocalStatement | Parser.AssignmentStatement,
+  ): SourceNode | undefined {
+    if (this.mode.moduleLikeLua) {
+      return undefined;
+    }
+    if (statement.variables.length !== 1 || statement.init.length !== 1) {
+      return undefined;
+    }
+
+    const initExpr = statement.init[0];
+    let base: Parser.Expression;
+    let argument: Parser.Expression | undefined;
+    if (initExpr.type === "CallExpression") {
+      base = initExpr.base;
+      argument = initExpr.arguments[0];
+    } else if (initExpr.type === "StringCallExpression") {
+      base = initExpr.base;
+      argument = initExpr.argument;
+    } else {
+      return undefined;
+    }
+
+    const moduleRef = this.matchModuleCall(base, argument);
+    if (!moduleRef || moduleRef.kind !== "require") {
+      return undefined;
+    }
+
+    const spliced = this.minifier.splitModuleForStatementSplice(
+      moduleRef.moduleName,
+    );
+    if (!spliced) {
+      return undefined;
+    }
+
+    const isLocal = statement.type === "LocalStatement";
+    const target = statement.variables[0];
+    const targetNode = isLocal
+      ? this.generateIdentifier(target as Parser.Identifier)
+      : this.formatExpression(target);
+
+    const result = this.sourceNodeHelper(statement, []);
+    addWithSeparator(result, spliced.statements);
+    addWithSeparator(result, isLocal ? ["local ", targetNode] : [targetNode]);
+    addWithSeparator(result, "=");
+    addWithSeparator(result, spliced.finalExpression);
+    return result;
+  }
+
   private formatStatement(statement: Parser.Statement): SourceNode {
+    if (
+      statement.type == "AssignmentStatement" ||
+      statement.type == "LocalStatement"
+    ) {
+      const spliced = this.trySpliceRequireStatement(statement);
+      if (spliced) {
+        return spliced;
+      }
+    }
     if (statement.type == "AssignmentStatement") {
       // left-hand side
       const variables = statement.variables
