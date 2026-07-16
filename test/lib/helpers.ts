@@ -81,29 +81,38 @@ export const WORKING_CASES: FixtureCase[] = [
     fixture: "bitwise-precedence",
     mode: { moduleLikeLua: false },
   },
+  {
+    label:
+      'require "m" (括弧なし文字列呼び出し構文) が解決される (-m モード, #18/#11修正確認)',
+    fixture: "require-string-call",
+    mode: { moduleLikeLua: true },
+  },
+  {
+    label:
+      "SLモードでrequireしたモジュールが文としてその場展開される (#18/#11修正確認)",
+    fixture: "require-call",
+    mode: { moduleLikeLua: false },
+  },
+  {
+    label:
+      "SLモードで同一モジュールを多重requireすると呼び出しごとに独立して文展開される (#18/#11修正確認)",
+    fixture: "multi-require",
+    mode: { moduleLikeLua: false },
+  },
+  {
+    label:
+      "SLモードで戻り値を使わない単独のrequire文はdofileと同様functionで包まずそのまま展開される (#29対応確認)",
+    fixture: "bare-require",
+    mode: { moduleLikeLua: false },
+  },
+  {
+    label:
+      "SLモードでrequireが式の一部（ネスト位置）に現れる場合はIIFEにフォールバックする (#29対応確認)",
+    fixture: "require-in-expression",
+    mode: { moduleLikeLua: false },
+  },
 ];
 
 // 既知バグの再現ケース。現状は failing のため `test.todo` で登録する。
-// 修正 (#18/#20) が入ったら .todo を外して WORKING_CASES に合流させること。
-export const KNOWN_BUG_CASES: KnownBugCase[] = [
-  {
-    label: 'require "m" (括弧なし文字列呼び出し構文) が解決されない',
-    fixture: "require-string-call",
-    mode: { moduleLikeLua: true },
-    issue: 11,
-  },
-  {
-    label:
-      "SLモードでrequireしたモジュールの展開が式として埋め込まれ構文が壊れる",
-    fixture: "require-call",
-    mode: { moduleLikeLua: false },
-    issue: 11,
-  },
-  {
-    label:
-      "SLモードで同一モジュールを多重requireすると展開が式として壊れる（識別子重複を含む）",
-    fixture: "multi-require",
-    mode: { moduleLikeLua: false },
-    issue: 12,
-  },
-];
+// 修正が入ったら .todo を外して WORKING_CASES に合流させること。
+export const KNOWN_BUG_CASES: KnownBugCase[] = [];

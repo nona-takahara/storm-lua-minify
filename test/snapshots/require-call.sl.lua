@@ -1,0 +1,1 @@
+local function a()return"hello"end local b={hello=a}print(b.hello())

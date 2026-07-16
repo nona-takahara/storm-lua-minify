@@ -1,0 +1,2 @@
+require("mod")
+print("done")

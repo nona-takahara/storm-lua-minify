@@ -5,6 +5,7 @@
 import Parser, { Comment } from "luaparse";
 import { SourceNode } from "source-map";
 import { Minifier, MinifierMode } from "./minifier";
+import { staticStringArgument } from "./linker";
 
 export type Chunk = Parser.Chunk & {
   globals?: (Parser.Base<"Identifer"> & {
@@ -42,7 +43,7 @@ const PRECEDENCE: Record<string, number> = {
   "^": 14,
 };
 
-const IDENTIFIER_PARTS = [
+export const IDENTIFIER_PARTS = [
   "a",
   "b",
   "c",
@@ -126,7 +127,7 @@ function generateZeroes(length: number) {
   return result;
 }
 
-function isKeyword(id: string) {
+export function isKeyword(id: string) {
   switch (id.length) {
     case 2:
       return "do" == id || "if" == id || "in" == id || "or" == id;
@@ -291,6 +292,43 @@ export class MinifyFile {
     }
   }
 
+  /**
+   * モジュール本体の最後の文が「単一の式を返すreturn文」であるときに限り、
+   * それ以外の文と最後の式を分けて返す。requireを式（IIFE）ではなく文として
+   * 展開したい呼び出し側（#29のレビュー対応）が利用する。
+   * 該当しない場合はundefinedを返し、呼び出し側はIIFE方式へフォールバックする。
+   */
+  parseAsStatementsAndFinalExpression(
+    noComment: boolean,
+  ): { statements: SourceNode; finalExpression: SourceNode } | undefined {
+    const body = this.ast.body;
+    const last = body[body.length - 1];
+    if (
+      !last ||
+      last.type !== "ReturnStatement" ||
+      last.arguments.length !== 1
+    ) {
+      return undefined;
+    }
+
+    const statements = this.formatStatementList(body.slice(0, -1));
+    if (!noComment && this.ast.comments) {
+      this.ast.comments
+        .slice()
+        .reverse()
+        .filter((v) => v.raw.includes("--#") || v.raw.includes("[[#"))
+        .forEach((comment) => {
+          statements.prepend([
+            this.sourceNodeHelper(comment, comment.raw),
+            "\n",
+          ]);
+        });
+    }
+
+    const finalExpression = this.formatExpression(last.arguments[0]);
+    return { statements, finalExpression };
+  }
+
   private sourceNodeHelper(
     node: Parser.Node | undefined,
     chuncks: (SourceNode | string)[] | SourceNode | string,
@@ -315,7 +353,83 @@ export class MinifyFile {
     return result;
   }
 
+  /**
+   * SLモード限定: `local x = require("m")` / `x = require("m")` の形（変数1個・
+   * 初期化式1個）を、requireを式（IIFE）として埋め込むのではなく、モジュール本体の
+   * 文をそのまま展開し最後にターゲットへ代入する「文」の並びとして出力する
+   * （#29のレビュー対応。無オプション実行時の挙動互換性のため）。
+   *
+   * モジュール本体が「単一の式を返すreturn文」で終わっていない場合や、変数・
+   * 初期化式が複数ある場合、-mモードの場合は対象外とし、undefinedを返す
+   * （呼び出し側は従来のIIFE方式にフォールバックする）。
+   */
+  private trySpliceRequireStatement(
+    statement: Parser.LocalStatement | Parser.AssignmentStatement,
+  ): SourceNode | undefined {
+    if (this.mode.moduleLikeLua) {
+      return undefined;
+    }
+    if (statement.variables.length !== 1 || statement.init.length !== 1) {
+      return undefined;
+    }
+
+    const moduleRef = this.matchModuleCallExpression(statement.init[0]);
+    if (!moduleRef || moduleRef.kind !== "require") {
+      return undefined;
+    }
+
+    const spliced = this.minifier.splitModuleForStatementSplice(
+      moduleRef.moduleName,
+    );
+    if (!spliced) {
+      return undefined;
+    }
+
+    const isLocal = statement.type === "LocalStatement";
+    const target = statement.variables[0];
+    const targetNode = isLocal
+      ? this.generateIdentifier(target as Parser.Identifier)
+      : this.formatExpression(target);
+
+    const result = this.sourceNodeHelper(statement, []);
+    addWithSeparator(result, spliced.statements);
+    addWithSeparator(result, isLocal ? ["local ", targetNode] : [targetNode]);
+    addWithSeparator(result, "=");
+    addWithSeparator(result, spliced.finalExpression);
+    return result;
+  }
+
+  /**
+   * SLモード限定: `require("m")` を戻り値を使わない単独の文として書いた場合、
+   * dofileと同じくfunctionで包まずそのまま展開する（Cプリプロセッサのincludeに
+   * 近い、LifeBoat Modeでの一般的な使い方に合わせるための対応。#29のレビュー対応）。
+   */
+  private tryInlineBareRequireStatement(
+    expr:
+      | Parser.CallExpression
+      | Parser.StringCallExpression
+      | Parser.TableCallExpression,
+  ): SourceNode | undefined {
+    if (this.mode.moduleLikeLua) {
+      return undefined;
+    }
+    const moduleRef = this.matchModuleCallExpression(expr);
+    if (!moduleRef || moduleRef.kind !== "require") {
+      return undefined;
+    }
+    return this.minifier.printModuleInline(moduleRef.moduleName);
+  }
+
   private formatStatement(statement: Parser.Statement): SourceNode {
+    if (
+      statement.type == "AssignmentStatement" ||
+      statement.type == "LocalStatement"
+    ) {
+      const spliced = this.trySpliceRequireStatement(statement);
+      if (spliced) {
+        return spliced;
+      }
+    }
     if (statement.type == "AssignmentStatement") {
       // left-hand side
       const variables = statement.variables
@@ -357,6 +471,12 @@ export class MinifyFile {
       }
       return result;
     } else if (statement.type == "CallStatement") {
+      const bareRequire = this.tryInlineBareRequireStatement(
+        statement.expression,
+      );
+      if (bareRequire) {
+        return bareRequire;
+      }
       return this.formatExpression(statement.expression); // NOTE: もう一度囲んでもいい
     } else if (statement.type == "IfStatement") {
       const result = this.sourceNodeHelper(statement, []);
@@ -603,25 +723,11 @@ export class MinifyFile {
       }
       return result;
     } else if (expression.type == "CallExpression") {
-      // requireの展開モードは2種類: SLモード-その場に読み込み, FLモード-require相当の関数で呼び出し
-      const callExpr = this.formatBase(expression.base).toString();
-      if (
-        (callExpr === "require" || callExpr === "dofile") &&
-        expression?.arguments[0].type === "StringLiteral"
-      ) {
-        const moduleName = expression.arguments[0].raw
-          .replaceAll('"', "")
-          .replaceAll("'", "");
-
-        const res = this.minifier.parseModule(moduleName);
-
-        if (this.mode.moduleLikeLua) {
-          if (callExpr === "dofile") {
-            return res || this.sourceNodeHelper(undefined, "");
-          }
-          // requireならスキップ
-        } else {
-          return res || this.sourceNodeHelper(undefined, "");
+      const moduleRef = this.matchModuleCallExpression(expression);
+      if (moduleRef) {
+        const replacement = this.formatModuleReference(expression, moduleRef);
+        if (replacement) {
+          return replacement;
         }
       }
       const args = expression.arguments
@@ -639,6 +745,13 @@ export class MinifyFile {
         this.formatExpression(expression.arguments),
       ]);
     } else if (expression.type == "StringCallExpression") {
+      const moduleRef = this.matchModuleCallExpression(expression);
+      if (moduleRef) {
+        const replacement = this.formatModuleReference(expression, moduleRef);
+        if (replacement) {
+          return replacement;
+        }
+      }
       return this.sourceNodeHelper(expression, [
         this.formatExpression(expression.base),
         this.formatExpression(expression.argument),
@@ -757,39 +870,74 @@ export class MinifyFile {
     return result;
   }
 
-  private static currentIdentifier = 0;
+  // require/dofileへの静的な呼び出しを検出する。実際のモジュール解決はLinkパス
+  // （Minifier.link）が事前に済ませているため、ここでは呼び出し形が
+  // require/dofile への静的文字列呼び出しかどうかを判定するだけでよい（#18）。
+  private matchModuleCall(
+    base: Parser.Expression,
+    argument: Parser.Expression | undefined,
+  ): { kind: "require" | "dofile"; moduleName: string } | undefined {
+    if (base.type !== "Identifier") {
+      return undefined;
+    }
+    if (base.name !== "require" && base.name !== "dofile") {
+      return undefined;
+    }
+    const moduleName = staticStringArgument(argument);
+    if (moduleName === undefined) {
+      return undefined;
+    }
+    return { kind: base.name, moduleName };
+  }
+
+  // CallExpression / StringCallExpression のどちらの構文でも呼べるmatchModuleCall
+  private matchModuleCallExpression(
+    expr: Parser.Expression,
+  ): { kind: "require" | "dofile"; moduleName: string } | undefined {
+    if (expr.type === "CallExpression") {
+      return this.matchModuleCall(expr.base, expr.arguments[0]);
+    }
+    if (expr.type === "StringCallExpression") {
+      return this.matchModuleCall(expr.base, expr.argument);
+    }
+    return undefined;
+  }
+
+  private formatModuleReference(
+    expression: Parser.Expression,
+    ref: { kind: "require" | "dofile"; moduleName: string },
+  ): SourceNode | undefined {
+    if (ref.kind === "dofile") {
+      // dofileは呼び出しごとに毎回展開しなおす（キャッシュしない）
+      return this.minifier.printModuleInline(ref.moduleName);
+    }
+
+    if (!this.mode.moduleLikeLua) {
+      // SLモード（無オプション）: requireもキャッシュせずその場展開する
+      // （挙動互換性のため、ホイストした共有ローカルへの参照にはしない）。
+      // 式の位置に置けるようにIIFEで包む。
+      const body = this.minifier.printModuleInline(ref.moduleName);
+      return this.sourceNodeHelper(expression, [
+        "(function() ",
+        body,
+        " end)()",
+      ]);
+    }
+
+    // -mモードのrequireはそのまま呼び出しとして出力し、実行時のrequire関数に委ねる
+    return undefined;
+  }
 
   private generateIdentifier(
     nameItem: Parser.Identifier,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- #18で対応予定のネストスコープ追跡用に予約
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- #19/#20で対応予定のネストスコープ追跡用に予約
     nested = false,
   ): SourceNode {
     if (nameItem.name === "self") {
       return this.sourceNodeHelper(nameItem, "self", "self");
     }
 
-    const defined = this.minifier.identifierMap.get(nameItem.name);
-    if (defined) {
-      return this.sourceNodeHelper(nameItem, defined, nameItem.name); // 第3引数は要調査
-    }
-
-    if (this.minifier.identifiersInUse.has(nameItem.name)) {
-      return this.sourceNodeHelper(nameItem, nameItem.name, nameItem.name);
-    }
-
-    let id = "";
-    do {
-      let p = MinifyFile.currentIdentifier++;
-      const l = IDENTIFIER_PARTS.length;
-      id = IDENTIFIER_PARTS[p % l];
-      p = Math.floor(p / l);
-      while (p >= l) {
-        id += IDENTIFIER_PARTS[p % l];
-        p = Math.floor(p / l);
-      }
-    } while (isKeyword(id) || this.minifier.identifiersInUse.has(id));
-
-    this.minifier.identifierMap.set(nameItem.name, id);
+    const id = this.minifier.allocateIdentifier(nameItem.name);
     return this.sourceNodeHelper(nameItem, id, nameItem.name);
   }
 }
