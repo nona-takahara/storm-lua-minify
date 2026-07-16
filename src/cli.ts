@@ -5,7 +5,7 @@ import path from "path";
 import { Command } from "commander";
 import { Options } from "luaparse";
 import { Minifier, MinifierMode } from "./minifier";
-import { buildMinifiedOutput } from "./output";
+import { buildMinifiedOutput, SourceMappingUrlStyle } from "./output";
 
 const program = new Command();
 
@@ -18,8 +18,12 @@ program
   )
   .option("--no-rename", "識別子の短縮(リネーム)を無効にします（デバッグ用途）")
   .option(
-    "--legacy-source-mapping-url",
-    "sourceMappingURLアノテーションを旧バージョンと同じ複数行の--[[ ]]ブロックコメントで出力します（この形式を前提に読み込む既存ツールとの互換性のため。既定は単一行の--コメントです）",
+    "--single-line-source-mapping-url",
+    "sourceMappingURLアノテーションを単一行の--コメントで出力します（Source Map仕様の「最終行」ルールに従いますが、既定の複数行ブロックコメント形式を前提とするツールとは組み合わせられません）",
+  )
+  .option(
+    "--strict-source-mapping-url",
+    "sourceMappingURLアノテーションをLuaコメントで一切包まず、Source Map仕様のマーカー文字列(//# sourceMappingURL=...)そのままを出力します。Luaの文法上この形式と有効なLuaコードは両立できないため、出力ファイルの最終行は有効なLua文ではなくなります",
   );
 
 program.parse(process.argv);
@@ -34,10 +38,23 @@ const luaparseSetting: Partial<Options> = {
 };
 
 interface CliOptions extends MinifierMode {
-  legacySourceMappingUrl?: boolean;
+  singleLineSourceMappingUrl?: boolean;
+  strictSourceMappingUrl?: boolean;
 }
 
-const { legacySourceMappingUrl, ...mode }: CliOptions = program.opts();
+const {
+  singleLineSourceMappingUrl,
+  strictSourceMappingUrl,
+  ...mode
+}: CliOptions = program.opts();
+
+// 既定は旧バージョンと互換の複数行ブロックコメント("legacy")。
+// --strict-source-mapping-url > --single-line-source-mapping-url の優先順で上書きする。
+const sourceMappingUrlStyle: SourceMappingUrlStyle = strictSourceMappingUrl
+  ? "strict"
+  : singleLineSourceMappingUrl
+    ? "line"
+    : "legacy";
 
 luaFiles.forEach((fileName) => {
   const parsedFileName = path.parse(fileName);
@@ -58,7 +75,7 @@ luaFiles.forEach((fileName) => {
       map,
       minFileName,
       mapFileName,
-      { legacyBlockCommentAnnotation: legacySourceMappingUrl },
+      { sourceMappingUrlStyle },
     );
 
     fs.writeFileSync(minFileName, code);
