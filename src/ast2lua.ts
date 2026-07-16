@@ -23,16 +23,23 @@ const PRECEDENCE: Record<string, number> = {
   ">=": 3,
   "~=": 3,
   "==": 3,
-  "..": 5,
-  "+": 6,
-  "-": 6, // binary -
-  "*": 7,
-  "/": 7,
-  "%": 7,
-  unarynot: 8,
-  "unary#": 8,
-  "unary-": 8, // unary -
-  "^": 10,
+  "|": 4,
+  "~": 5, // binary ~ (bxor)
+  "&": 6,
+  "<<": 7,
+  ">>": 7,
+  "..": 9,
+  "+": 10,
+  "-": 10, // binary -
+  "*": 11,
+  "/": 11,
+  "//": 11,
+  "%": 11,
+  unarynot: 12,
+  "unary#": 12,
+  "unary-": 12, // unary -
+  "unary~": 12, // unary ~ (bnot)
+  "^": 14,
 };
 
 const IDENTIFIER_PARTS = [
