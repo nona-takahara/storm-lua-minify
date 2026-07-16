@@ -5,6 +5,7 @@ import path from "path";
 import { Command } from "commander";
 import { Options } from "luaparse";
 import { Minifier, MinifierMode } from "./minifier";
+import { buildMinifiedOutput, SourceMappingUrlStyle } from "./output";
 
 const program = new Command();
 
@@ -15,9 +16,14 @@ program
     "-m, --module-like-lua",
     "require・dofileの動作を実際のLuaに近づけます",
   )
+  .option("--no-rename", "識別子の短縮(リネーム)を無効にします（デバッグ用途）")
   .option(
-    "--no-rename",
-    "識別子の短縮(リネーム)を無効にします（デバッグ用途）",
+    "--single-line-source-mapping-url",
+    "sourceMappingURLアノテーションを単一行の--コメントで出力します（Source Map仕様の「最終行」ルールに従いますが、既定の複数行ブロックコメント形式を前提とするツールとは組み合わせられません）",
+  )
+  .option(
+    "--strict-source-mapping-url",
+    "sourceMappingURLアノテーションをLuaコメントで一切包まず、Source Map仕様のマーカー文字列(//# sourceMappingURL=...)そのままを出力します。Luaの文法上この形式と有効なLuaコードは両立できないため、出力ファイルの最終行は有効なLua文ではなくなります",
   );
 
 program.parse(process.argv);
@@ -31,7 +37,24 @@ const luaparseSetting: Partial<Options> = {
   scope: true,
 };
 
-const mode: MinifierMode = program.opts();
+interface CliOptions extends MinifierMode {
+  singleLineSourceMappingUrl?: boolean;
+  strictSourceMappingUrl?: boolean;
+}
+
+const {
+  singleLineSourceMappingUrl,
+  strictSourceMappingUrl,
+  ...mode
+}: CliOptions = program.opts();
+
+// 既定は旧バージョンと互換の複数行ブロックコメント("legacy")。
+// --strict-source-mapping-url > --single-line-source-mapping-url の優先順で上書きする。
+const sourceMappingUrlStyle: SourceMappingUrlStyle = strictSourceMappingUrl
+  ? "strict"
+  : singleLineSourceMappingUrl
+    ? "line"
+    : "legacy";
 
 luaFiles.forEach((fileName) => {
   const parsedFileName = path.parse(fileName);
@@ -48,14 +71,15 @@ luaFiles.forEach((fileName) => {
       name: parsedFileName.name,
       ext: parsedFileName.ext + ".map",
     });
-    map.add(
-      "\n--[[\n//# sourceMappingURL=" + path.basename(mapFileName) + "\n]]",
+    const { code, map: mapJson } = buildMinifiedOutput(
+      map,
+      minFileName,
+      mapFileName,
+      { sourceMappingUrlStyle },
     );
 
-    const sourceAndMap = map.toStringWithSourceMap();
-
-    fs.writeFileSync(minFileName, sourceAndMap.code);
-    fs.writeFileSync(mapFileName, JSON.stringify(sourceAndMap.map));
+    fs.writeFileSync(minFileName, code);
+    fs.writeFileSync(mapFileName, mapJson);
   } else {
     console.error("No such file: " + fileName);
   }
