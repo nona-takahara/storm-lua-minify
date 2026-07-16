@@ -16,9 +16,10 @@ program
     "-m, --module-like-lua",
     "require・dofileの動作を実際のLuaに近づけます",
   )
+  .option("--no-rename", "識別子の短縮(リネーム)を無効にします（デバッグ用途）")
   .option(
-    "--no-rename",
-    "識別子の短縮(リネーム)を無効にします（デバッグ用途）",
+    "--strict-source-mapping-url",
+    "sourceMappingURLアノテーションをLuaコメントで包まず、Source Map仕様の慣習表記(//# sourceMappingURL=...)そのままの1行で出力します（出力ファイルの最終行は有効なLuaではなくなります）",
   );
 
 program.parse(process.argv);
@@ -32,7 +33,11 @@ const luaparseSetting: Partial<Options> = {
   scope: true,
 };
 
-const mode: MinifierMode = program.opts();
+interface CliOptions extends MinifierMode {
+  strictSourceMappingUrl?: boolean;
+}
+
+const { strictSourceMappingUrl, ...mode }: CliOptions = program.opts();
 
 luaFiles.forEach((fileName) => {
   const parsedFileName = path.parse(fileName);
@@ -53,6 +58,7 @@ luaFiles.forEach((fileName) => {
       map,
       minFileName,
       mapFileName,
+      { strictSourceMappingUrl },
     );
 
     fs.writeFileSync(minFileName, code);

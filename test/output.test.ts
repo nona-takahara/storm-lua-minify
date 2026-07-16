@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import Parser from "luaparse";
 import { SourceNode } from "source-map";
 import { buildMinifiedOutput } from "../src/output";
 
@@ -30,4 +31,34 @@ void test("buildMinifiedOutput: mapにfileフィールドが設定される", ()
 
   const parsed = JSON.parse(map) as { file?: string };
   assert.equal(parsed.file, "main.min.lua");
+});
+
+// 既定(strictSourceMappingUrl未指定)の出力は、末尾のアノテーション行を含めて
+// 引き続き有効なLuaとして再パースできる。
+void test("buildMinifiedOutput: 既定では出力全体が有効なLuaのままである", () => {
+  const node = new SourceNode(1, 0, "main.lua", "print(1)");
+  const { code } = buildMinifiedOutput(node, "main.min.lua", "main.lua.map");
+
+  assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
+});
+
+// strictSourceMappingUrl: true では、Source Map仕様の慣習表記(`//# sourceMappingURL=...`)
+// をLuaコメントで包まずそのまま出力する。Luaには`//`行コメントが無い
+// （5.3以降では`//`は整数除算演算子のトークン）ため、この形は出力ファイルの
+// 最終行を有効なLua文ではなくする。この副作用そのものを固定化してオプションの
+// 意味を明確にしておく。
+void test("buildMinifiedOutput: strictSourceMappingUrlはLuaコメントで包まずアノテーションを出力する（Luaとしては構文エラーになる）", () => {
+  const node = new SourceNode(1, 0, "main.lua", "print(1)");
+  const { code } = buildMinifiedOutput(node, "main.min.lua", "main.lua.map", {
+    strictSourceMappingUrl: true,
+  });
+
+  const lines = code.split("\n");
+  while (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  const lastLine = lines[lines.length - 1];
+
+  assert.equal(lastLine, "//# sourceMappingURL=main.lua.map");
+  assert.throws(() => Parser.parse(code, { luaVersion: "5.3" }));
 });
