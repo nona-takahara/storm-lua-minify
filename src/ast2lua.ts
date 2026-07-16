@@ -260,17 +260,20 @@ function insertSeparator(
 
 export class MinifyFile {
   private fileName: string;
+  private moduleName: string;
   private ast: Chunk;
   private minifier: Minifier;
   private mode: MinifierMode;
 
   constructor(
     fileName: string,
+    moduleName: string,
     ast: Chunk,
     minifier: Minifier,
     mode: MinifierMode,
   ) {
     this.fileName = fileName;
+    this.moduleName = moduleName;
     this.ast = ast;
     this.minifier = minifier;
     this.mode = mode;
@@ -618,15 +621,7 @@ export class MinifyFile {
     argOptions?: ExpressionOptoions,
   ): SourceNode {
     if (expression.type == "Identifier") {
-      return this.sourceNodeHelper(
-        expression,
-        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-        //@ts-ignore
-        expression.isLocal
-          ? this.generateIdentifier(expression, true)
-          : expression.name,
-        expression.name,
-      );
+      return this.generateIdentifier(expression);
     } else if (
       expression.type == "StringLiteral" ||
       expression.type == "NumericLiteral" ||
@@ -928,16 +923,16 @@ export class MinifyFile {
     return undefined;
   }
 
-  private generateIdentifier(
-    nameItem: Parser.Identifier,
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- #19/#20で対応予定のネストスコープ追跡用に予約
-    nested = false,
-  ): SourceNode {
-    if (nameItem.name === "self") {
-      return this.sourceNodeHelper(nameItem, "self", "self");
-    }
-
-    const id = this.minifier.allocateIdentifier(nameItem.name);
-    return this.sourceNodeHelper(nameItem, id, nameItem.name);
+  // Renameパス（#20）が解決済みシンボルテーブルをもとに割り当てた短縮名を参照する。
+  // 対応するローカルシンボルが無い場合（グローバル参照や"self"）は元の名前のまま出力する。
+  private generateIdentifier(nameItem: Parser.Identifier): SourceNode {
+    const renamed = this.minifier
+      .getRenameResult(this.moduleName)
+      .nameOf(nameItem);
+    return this.sourceNodeHelper(
+      nameItem,
+      renamed ?? nameItem.name,
+      nameItem.name,
+    );
   }
 }

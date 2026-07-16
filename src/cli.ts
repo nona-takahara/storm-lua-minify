@@ -14,6 +14,10 @@ program
   .option(
     "-m, --module-like-lua",
     "require・dofileの動作を実際のLuaに近づけます",
+  )
+  .option(
+    "--no-rename",
+    "識別子の短縮(リネーム)を無効にします（デバッグ用途）",
   );
 
 program.parse(process.argv);
