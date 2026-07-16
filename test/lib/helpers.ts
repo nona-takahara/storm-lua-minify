@@ -89,13 +89,13 @@ export const WORKING_CASES: FixtureCase[] = [
   },
   {
     label:
-      "SLモードでrequireしたモジュールがホイスト済みローカルへの参照になる (#18/#11修正確認)",
+      "SLモードでrequireしたモジュールがIIFEとしてその場展開される (#18/#11修正確認)",
     fixture: "require-call",
     mode: { moduleLikeLua: false },
   },
   {
     label:
-      "SLモードで同一モジュールを多重requireしても単一のホイスト済みローカルに集約される (#18/#11修正確認)",
+      "SLモードで同一モジュールを多重requireすると呼び出しごとに独立してその場展開される (#18/#11修正確認)",
     fixture: "multi-require",
     mode: { moduleLikeLua: false },
   },

@@ -787,11 +787,15 @@ export class MinifyFile {
     }
 
     if (!this.mode.moduleLikeLua) {
-      // SLモード: Linkパスで確保済みのホイスト済みローカル変数への参照に置き換える
-      const localName = this.minifier.requireLocalNames.get(ref.moduleName);
-      if (localName) {
-        return this.sourceNodeHelper(expression, localName, ref.moduleName);
-      }
+      // SLモード（無オプション）: requireもキャッシュせずその場展開する
+      // （挙動互換性のため、ホイストした共有ローカルへの参照にはしない）。
+      // 式の位置に置けるようにIIFEで包む。
+      const body = this.minifier.printModuleInline(ref.moduleName);
+      return this.sourceNodeHelper(expression, [
+        "(function() ",
+        body,
+        " end)()",
+      ]);
     }
 
     // -mモードのrequireはそのまま呼び出しとして出力し、実行時のrequire関数に委ねる

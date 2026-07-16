@@ -9,19 +9,12 @@ export interface MinifierMode {
   moduleLikeLua: boolean;
 }
 
-// require()の宛先ごとにホイスト済みローカル変数名を確保する際に使う予約キーの接頭辞。
-// 空白はLuaの識別子に現れないため、実在の変数名（Parser.Identifier#name）とは
-// 絶対に衝突しない。
-const REQUIRE_LOCAL_KEY_PREFIX = " require:";
-
 export class Minifier {
   readonly identifierMap: Map<string, string>;
   readonly identifiersInUse: Set<string>;
   readonly moduleSourceText: Map<string, string>;
   readonly moduleAST: Map<string, Chunk>;
   readonly moduleNameAndFileName: Map<string, string>;
-  // SLモードで、require()の呼び出し箇所を置き換える先のホイスト済みローカル変数名
-  readonly requireLocalNames: Map<string, string>;
   readonly dir: string;
   readonly entryModule: string;
   readonly mode: MinifierMode;
@@ -41,7 +34,6 @@ export class Minifier {
     this.moduleSourceText = new Map<string, string>();
     this.moduleAST = new Map<string, Chunk>();
     this.moduleNameAndFileName = new Map<string, string>();
-    this.requireLocalNames = new Map<string, string>();
     this.luaParseSettings = luaParseSettings;
     this.mode = mode;
     const pn = path.parse(entryFilePath);
@@ -51,10 +43,6 @@ export class Minifier {
 
   parse(): SourceNode {
     this.link();
-
-    if (!this.mode.moduleLikeLua) {
-      this.resolveRequireLocalNames();
-    }
 
     const parts: (SourceNode | string)[] = [];
 
@@ -77,8 +65,6 @@ export class Minifier {
 
     if (this.mode.moduleLikeLua) {
       parts.push(this.buildRequireWrapper());
-    } else {
-      parts.push(...this.buildHoistedRequireLocals());
     }
 
     parts.push(this.printModule(this.entryModule));
@@ -211,43 +197,6 @@ export class Minifier {
       });
     });
     return targets;
-  }
-
-  private resolveRequireLocalNames() {
-    const targets = this.collectRequireTargets();
-    // 依存されている側から先に確保することで、ホイスト済みローカルの宣言順序が
-    // 依存関係と矛盾しないようにする（後段のローカルが前段のローカルを参照できる）
-    this.linkOrder.forEach((moduleName) => {
-      if (targets.has(moduleName)) {
-        this.requireLocalNames.set(
-          moduleName,
-          this.allocateIdentifier(REQUIRE_LOCAL_KEY_PREFIX + moduleName),
-        );
-      }
-    });
-  }
-
-  private buildHoistedRequireLocals(): SourceNode[] {
-    const result: SourceNode[] = [];
-    this.linkOrder.forEach((moduleName) => {
-      if (moduleName === this.entryModule) {
-        return;
-      }
-      const localName = this.requireLocalNames.get(moduleName);
-      if (!localName) {
-        return;
-      }
-      result.push(
-        new SourceNode(null, null, null, [
-          "local ",
-          localName,
-          "=(function() ",
-          this.printModule(moduleName),
-          " end)()\n",
-        ]),
-      );
-    });
-    return result;
   }
 
   private buildRequireWrapper(): SourceNode {
