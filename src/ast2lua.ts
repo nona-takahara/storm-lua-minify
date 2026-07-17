@@ -5,6 +5,7 @@
 import Parser, { Comment } from "luaparse";
 import { SourceNode } from "source-map";
 import { Minifier, MinifierMode } from "./minifier";
+import { staticStringArgument } from "./linker";
 
 export type Chunk = Parser.Chunk & {
   globals?: (Parser.Base<"Identifer"> & {
@@ -23,29 +24,26 @@ const PRECEDENCE: Record<string, number> = {
   ">=": 3,
   "~=": 3,
   "==": 3,
-  "..": 5,
-  "+": 6,
-  "-": 6, // binary -
-  "*": 7,
-  "/": 7,
-  "%": 7,
-  unarynot: 8,
-  "unary#": 8,
-  "unary-": 8, // unary -
-  "^": 10,
+  "|": 4,
+  "~": 5, // binary ~ (bxor)
+  "&": 6,
+  "<<": 7,
+  ">>": 7,
+  "..": 9,
+  "+": 10,
+  "-": 10, // binary -
+  "*": 11,
+  "/": 11,
+  "//": 11,
+  "%": 11,
+  unarynot: 12,
+  "unary#": 12,
+  "unary-": 12, // unary -
+  "unary~": 12, // unary ~ (bnot)
+  "^": 14,
 };
 
-const IDENTIFIER_PARTS = [
-  "0",
-  "1",
-  "2",
-  "3",
-  "4",
-  "5",
-  "6",
-  "7",
-  "8",
-  "9",
+export const IDENTIFIER_PARTS = [
   "a",
   "b",
   "c",
@@ -108,6 +106,7 @@ function wrapArray<T>(obj: T | T[]): T[] {
   return [obj];
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- 現時点では未参照だが、オリジナル(luamin)由来のコードのため残置
 function generateZeroes(length: number) {
   let zero = "0";
   let result = "";
@@ -121,7 +120,6 @@ function generateZeroes(length: number) {
     if (length & 1) {
       result += zero;
     }
-    // eslint-disable-next-line no-cond-assign
     if ((length >>= 1)) {
       zero += zero;
     }
@@ -129,7 +127,7 @@ function generateZeroes(length: number) {
   return result;
 }
 
-function isKeyword(id: string) {
+export function isKeyword(id: string) {
   switch (id.length) {
     case 2:
       return "do" == id || "if" == id || "in" == id || "or" == id;
@@ -217,14 +215,14 @@ interface ExpressionOptoions {
 function addWithSeparator(
   val: SourceNode,
   adding: (string | SourceNode)[] | SourceNode | string,
-  separator = " "
+  separator = " ",
 ) {
   if (
     isNeedSeparator(
       val.toString(),
       wrapArray(adding)
         .map((p) => p.toString())
-        .join()
+        .join(),
     )
   ) {
     val.add(separator);
@@ -236,14 +234,14 @@ function addWithSeparator(
 function prependWithSeparator(
   val: SourceNode,
   prepending: (string | SourceNode)[] | SourceNode | string,
-  separator = " "
+  separator = " ",
 ) {
   if (
     isNeedSeparator(
       wrapArray(prepending)
         .map((p) => p.toString())
         .join(),
-      val.toString()
+      val.toString(),
     )
   ) {
     val.prepend(separator);
@@ -255,24 +253,27 @@ function prependWithSeparator(
 function insertSeparator(
   a: string | SourceNode,
   b: string | SourceNode,
-  separator = " "
+  separator = " ",
 ) {
   return isNeedSeparator(a.toString(), b.toString()) ? separator : undefined;
 }
 
 export class MinifyFile {
   private fileName: string;
+  private moduleName: string;
   private ast: Chunk;
   private minifier: Minifier;
   private mode: MinifierMode;
 
   constructor(
     fileName: string,
+    moduleName: string,
     ast: Chunk,
     minifier: Minifier,
-    mode: MinifierMode
+    mode: MinifierMode,
   ) {
     this.fileName = fileName;
+    this.moduleName = moduleName;
     this.ast = ast;
     this.minifier = minifier;
     this.mode = mode;
@@ -281,29 +282,71 @@ export class MinifyFile {
   parse(noComment: boolean) {
     const body = this.formatStatementList(this.ast.body);
     if (!noComment && this.ast.comments) {
-      const comments = this.ast.comments as Comment[];
-      comments.reverse().filter(v => v.raw.includes("--#") || v.raw.includes("[[#")).forEach(comment => {
-        body.prepend([this.sourceNodeHelper(comment, comment.raw), "\n"]);
-      })
+      const comments = this.ast.comments;
+      comments
+        .reverse()
+        .filter((v) => v.raw.includes("--#") || v.raw.includes("[[#"))
+        .forEach((comment) => {
+          body.prepend([this.sourceNodeHelper(comment, comment.raw), "\n"]);
+        });
       return body;
     } else {
       return body;
     }
   }
 
+  /**
+   * モジュール本体の最後の文が「単一の式を返すreturn文」であるときに限り、
+   * それ以外の文と最後の式を分けて返す。requireを式（IIFE）ではなく文として
+   * 展開したい呼び出し側（#29のレビュー対応）が利用する。
+   * 該当しない場合はundefinedを返し、呼び出し側はIIFE方式へフォールバックする。
+   */
+  parseAsStatementsAndFinalExpression(
+    noComment: boolean,
+  ): { statements: SourceNode; finalExpression: SourceNode } | undefined {
+    const body = this.ast.body;
+    const last = body[body.length - 1];
+    if (
+      !last ||
+      last.type !== "ReturnStatement" ||
+      last.arguments.length !== 1
+    ) {
+      return undefined;
+    }
+
+    const statements = this.formatStatementList(body.slice(0, -1));
+    if (!noComment && this.ast.comments) {
+      this.ast.comments
+        .slice()
+        .reverse()
+        .filter((v) => v.raw.includes("--#") || v.raw.includes("[[#"))
+        .forEach((comment) => {
+          statements.prepend([
+            this.sourceNodeHelper(comment, comment.raw),
+            "\n",
+          ]);
+        });
+    }
+
+    const finalExpression = this.formatExpression(last.arguments[0]);
+    return { statements, finalExpression };
+  }
+
   private sourceNodeHelper(
     node: Parser.Node | undefined,
     chuncks: (SourceNode | string)[] | SourceNode | string,
-    name?: string
+    name?: string,
   ) {
     const line = node?.loc?.start.line;
     const column = node?.loc?.start.column;
+    // this.fileNameは常にこのMinifyFileインスタンスが担当するモジュール自身の
+    // ファイル名（Linkパスで解決済み）なので、ここで出力するノードの由来ファイルとして正しい。
     return new SourceNode(
       line == undefined ? null : line,
       column == undefined ? null : column,
-      this.fileName, // 本当に自分のファイル名でよいかは要検討
+      this.fileName,
       chuncks,
-      name
+      name,
     );
   }
 
@@ -315,7 +358,83 @@ export class MinifyFile {
     return result;
   }
 
+  /**
+   * SLモード限定: `local x = require("m")` / `x = require("m")` の形（変数1個・
+   * 初期化式1個）を、requireを式（IIFE）として埋め込むのではなく、モジュール本体の
+   * 文をそのまま展開し最後にターゲットへ代入する「文」の並びとして出力する
+   * （#29のレビュー対応。無オプション実行時の挙動互換性のため）。
+   *
+   * モジュール本体が「単一の式を返すreturn文」で終わっていない場合や、変数・
+   * 初期化式が複数ある場合、-mモードの場合は対象外とし、undefinedを返す
+   * （呼び出し側は従来のIIFE方式にフォールバックする）。
+   */
+  private trySpliceRequireStatement(
+    statement: Parser.LocalStatement | Parser.AssignmentStatement,
+  ): SourceNode | undefined {
+    if (this.mode.moduleLikeLua) {
+      return undefined;
+    }
+    if (statement.variables.length !== 1 || statement.init.length !== 1) {
+      return undefined;
+    }
+
+    const moduleRef = this.matchModuleCallExpression(statement.init[0]);
+    if (!moduleRef || moduleRef.kind !== "require") {
+      return undefined;
+    }
+
+    const spliced = this.minifier.splitModuleForStatementSplice(
+      moduleRef.moduleName,
+    );
+    if (!spliced) {
+      return undefined;
+    }
+
+    const isLocal = statement.type === "LocalStatement";
+    const target = statement.variables[0];
+    const targetNode = isLocal
+      ? this.generateIdentifier(target as Parser.Identifier)
+      : this.formatExpression(target);
+
+    const result = this.sourceNodeHelper(statement, []);
+    addWithSeparator(result, spliced.statements);
+    addWithSeparator(result, isLocal ? ["local ", targetNode] : [targetNode]);
+    addWithSeparator(result, "=");
+    addWithSeparator(result, spliced.finalExpression);
+    return result;
+  }
+
+  /**
+   * SLモード限定: `require("m")` を戻り値を使わない単独の文として書いた場合、
+   * dofileと同じくfunctionで包まずそのまま展開する（Cプリプロセッサのincludeに
+   * 近い、LifeBoat Modeでの一般的な使い方に合わせるための対応。#29のレビュー対応）。
+   */
+  private tryInlineBareRequireStatement(
+    expr:
+      | Parser.CallExpression
+      | Parser.StringCallExpression
+      | Parser.TableCallExpression,
+  ): SourceNode | undefined {
+    if (this.mode.moduleLikeLua) {
+      return undefined;
+    }
+    const moduleRef = this.matchModuleCallExpression(expr);
+    if (!moduleRef || moduleRef.kind !== "require") {
+      return undefined;
+    }
+    return this.minifier.printModuleInline(moduleRef.moduleName);
+  }
+
   private formatStatement(statement: Parser.Statement): SourceNode {
+    if (
+      statement.type == "AssignmentStatement" ||
+      statement.type == "LocalStatement"
+    ) {
+      const spliced = this.trySpliceRequireStatement(statement);
+      if (spliced) {
+        return spliced;
+      }
+    }
     if (statement.type == "AssignmentStatement") {
       // left-hand side
       const variables = statement.variables
@@ -327,12 +446,12 @@ export class MinifyFile {
 
       const result = this.sourceNodeHelper(
         statement,
-        this.sourceNodeHelper(undefined, variables.slice(0, -1))
+        this.sourceNodeHelper(undefined, variables.slice(0, -1)),
       );
       addWithSeparator(result, "=");
       addWithSeparator(
         result,
-        this.sourceNodeHelper(undefined, inits.slice(0, -1))
+        this.sourceNodeHelper(undefined, inits.slice(0, -1)),
       );
       return result;
     } else if (statement.type == "LocalStatement") {
@@ -352,11 +471,17 @@ export class MinifyFile {
         addWithSeparator(result, "=");
         addWithSeparator(
           result,
-          this.sourceNodeHelper(undefined, inits.slice(0, -1))
+          this.sourceNodeHelper(undefined, inits.slice(0, -1)),
         );
       }
       return result;
     } else if (statement.type == "CallStatement") {
+      const bareRequire = this.tryInlineBareRequireStatement(
+        statement.expression,
+      );
+      if (bareRequire) {
+        return bareRequire;
+      }
       return this.formatExpression(statement.expression); // NOTE: もう一度囲んでもいい
     } else if (statement.type == "IfStatement") {
       const result = this.sourceNodeHelper(statement, []);
@@ -410,7 +535,7 @@ export class MinifyFile {
     } else if (statement.type == "FunctionDeclaration") {
       const result = this.sourceNodeHelper(
         statement,
-        (statement.isLocal ? "local " : "") + "function "
+        (statement.isLocal ? "local " : "") + "function ",
       );
       if (statement.identifier) {
         addWithSeparator(result, this.formatExpression(statement.identifier));
@@ -484,7 +609,7 @@ export class MinifyFile {
       ]);
     } else {
       throw TypeError(
-        "Unknown statement type: `" + JSON.stringify(statement) + "`"
+        "Unknown statement type: `" + JSON.stringify(statement) + "`",
       );
     }
   }
@@ -495,19 +620,10 @@ export class MinifyFile {
 
   private formatExpression(
     expression: Parser.Expression,
-    argOptions?: ExpressionOptoions
+    argOptions?: ExpressionOptoions,
   ): SourceNode {
     if (expression.type == "Identifier") {
-      return this.sourceNodeHelper(
-        expression,
-        // eslint-disable-next-line @typescript-eslint/ban-ts-comment, @typescript-eslint/prefer-ts-expect-error
-        //@ts-ignore
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-        expression.isLocal
-          ? this.generateIdentifier(expression, true)
-          : expression.name,
-        expression.name
-      );
+      return this.generateIdentifier(expression);
     } else if (
       expression.type == "StringLiteral" ||
       expression.type == "NumericLiteral" ||
@@ -558,7 +674,7 @@ export class MinifyFile {
             insertSeparator(operator, rightHand),
             rightHand,
             ")",
-          ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined)
+          ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined),
         );
       }
       return this.sourceNodeHelper(
@@ -569,7 +685,7 @@ export class MinifyFile {
           operator,
           insertSeparator(operator, rightHand),
           rightHand,
-        ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined)
+        ].filter((p): p is Exclude<typeof p, undefined> => p !== undefined),
       );
     } else if (expression.type == "UnaryExpression") {
       const operator = expression.operator;
@@ -585,8 +701,8 @@ export class MinifyFile {
       const result = this.sourceNodeHelper(
         expression,
         [operator, insertSeparator(operator, p2), p2].filter(
-          (p): p is Exclude<typeof p, undefined> => p !== undefined
-        )
+          (p): p is Exclude<typeof p, undefined> => p !== undefined,
+        ),
       );
 
       if (
@@ -604,29 +720,11 @@ export class MinifyFile {
       }
       return result;
     } else if (expression.type == "CallExpression") {
-      // requireの展開モードは2種類: SLモード-その場に読み込み, FLモード-require相当の関数で呼び出し
-      const callExpr = this.formatBase(expression.base).toString();
-      if (
-        (callExpr === "require" || callExpr === "dofile") &&
-        expression?.arguments[0].type === "StringLiteral"
-      ) {
-        const moduleName = expression.arguments[0].raw
-          .replaceAll('"', "")
-          .replaceAll("'", "");
-
-        const res = this.minifier.parseModule(moduleName);
-        
-        if (this.mode.moduleLikeLua) {
-          if (callExpr === "dofile") {
-            return (
-              res || this.sourceNodeHelper(undefined, "")
-            );
-          }
-          // requireならスキップ
-        } else {
-          return (
-            res || this.sourceNodeHelper(undefined, "")
-          );
+      const moduleRef = this.matchModuleCallExpression(expression);
+      if (moduleRef) {
+        const replacement = this.formatModuleReference(expression, moduleRef);
+        if (replacement) {
+          return replacement;
         }
       }
       const args = expression.arguments
@@ -644,6 +742,13 @@ export class MinifyFile {
         this.formatExpression(expression.arguments),
       ]);
     } else if (expression.type == "StringCallExpression") {
+      const moduleRef = this.matchModuleCallExpression(expression);
+      if (moduleRef) {
+        const replacement = this.formatModuleReference(expression, moduleRef);
+        if (replacement) {
+          return replacement;
+        }
+      }
       return this.sourceNodeHelper(expression, [
         this.formatExpression(expression.base),
         this.formatExpression(expression.argument),
@@ -674,7 +779,7 @@ export class MinifyFile {
                 parameter,
                 parameter.type === "Identifier"
                   ? this.generateIdentifier(parameter)
-                  : parameter.value
+                  : parameter.value,
               ),
               ",",
             ];
@@ -711,12 +816,12 @@ export class MinifyFile {
                 this.formatExpression(field.value),
                 comma,
               ].filter(
-                (p): p is Exclude<typeof p, undefined> => p !== undefined
-              )
+                (p): p is Exclude<typeof p, undefined> => p !== undefined,
+              ),
             );
           } else if (field.type == "TableValue") {
             return [this.formatExpression(field.value), comma].filter(
-              (p): p is Exclude<typeof p, undefined> => p !== undefined
+              (p): p is Exclude<typeof p, undefined> => p !== undefined,
             );
           } else {
             // at this point, `field.type == 'TableKeyString'`
@@ -729,8 +834,8 @@ export class MinifyFile {
                 this.formatExpression(field.value),
                 comma,
               ].filter(
-                (p): p is Exclude<typeof p, undefined> => p !== undefined
-              )
+                (p): p is Exclude<typeof p, undefined> => p !== undefined,
+              ),
             );
           }
         })
@@ -740,7 +845,7 @@ export class MinifyFile {
       return result;
     } else {
       throw TypeError(
-        "Unknown expression type: `" + JSON.stringify(expression) + "`"
+        "Unknown expression type: `" + JSON.stringify(expression) + "`",
       );
     }
   }
@@ -762,51 +867,74 @@ export class MinifyFile {
     return result;
   }
 
-  private currentIdentifier = "";
+  // require/dofileへの静的な呼び出しを検出する。実際のモジュール解決はLinkパス
+  // （Minifier.link）が事前に済ませているため、ここでは呼び出し形が
+  // require/dofile への静的文字列呼び出しかどうかを判定するだけでよい（#18）。
+  private matchModuleCall(
+    base: Parser.Expression,
+    argument: Parser.Expression | undefined,
+  ): { kind: "require" | "dofile"; moduleName: string } | undefined {
+    if (base.type !== "Identifier") {
+      return undefined;
+    }
+    if (base.name !== "require" && base.name !== "dofile") {
+      return undefined;
+    }
+    const moduleName = staticStringArgument(argument);
+    if (moduleName === undefined) {
+      return undefined;
+    }
+    return { kind: base.name, moduleName };
+  }
 
-  private generateIdentifier(
-    nameItem: Parser.Identifier,
-    nested = false
-  ): SourceNode {
-    if (nameItem.name === "self") {
-      return this.sourceNodeHelper(nameItem, "self", "self");
+  // CallExpression / StringCallExpression のどちらの構文でも呼べるmatchModuleCall
+  private matchModuleCallExpression(
+    expr: Parser.Expression,
+  ): { kind: "require" | "dofile"; moduleName: string } | undefined {
+    if (expr.type === "CallExpression") {
+      return this.matchModuleCall(expr.base, expr.arguments[0]);
+    }
+    if (expr.type === "StringCallExpression") {
+      return this.matchModuleCall(expr.base, expr.argument);
+    }
+    return undefined;
+  }
+
+  private formatModuleReference(
+    expression: Parser.Expression,
+    ref: { kind: "require" | "dofile"; moduleName: string },
+  ): SourceNode | undefined {
+    if (ref.kind === "dofile") {
+      // dofileは呼び出しごとに毎回展開しなおす（キャッシュしない）
+      return this.minifier.printModuleInline(ref.moduleName);
     }
 
-    const defined = this.minifier.identifierMap.get(nameItem.name);
-    if (defined) {
-      return this.sourceNodeHelper(nameItem, defined, nameItem.name); // 第3引数は要調査
+    if (!this.mode.moduleLikeLua) {
+      // SLモード（無オプション）: requireもキャッシュせずその場展開する
+      // （挙動互換性のため、ホイストした共有ローカルへの参照にはしない）。
+      // 式の位置に置けるようにIIFEで包む。
+      const body = this.minifier.printModuleInline(ref.moduleName);
+      return this.sourceNodeHelper(expression, [
+        "(function() ",
+        body,
+        " end)()",
+      ]);
     }
 
-    const length = this.currentIdentifier.length;
-    let position = length - 1;
-    let character: string;
-    let index;
-    while (position >= 0) {
-      character = this.currentIdentifier.charAt(position);
-      index = IDENTIFIER_PARTS.indexOf(character);
-      if (index != IDENTIFIER_PARTS.length - 1) {
-        this.currentIdentifier =
-          this.currentIdentifier.substring(0, position) +
-          IDENTIFIER_PARTS[index + 1] +
-          generateZeroes(length - (position + 1));
-        if (
-          isKeyword(this.currentIdentifier) ||
-          this.minifier.identifiersInUse.has(this.currentIdentifier)
-        ) {
-          return this.generateIdentifier(nameItem, nested);
-        }
-        this.minifier.identifierMap.set(nameItem.name, this.currentIdentifier);
-        return this.generateIdentifier(nameItem, nested);
-      }
-      --position;
-    }
-    this.currentIdentifier = "a" + generateZeroes(length);
-    if (this.minifier.identifiersInUse.has(this.currentIdentifier)) {
-      return this.generateIdentifier(nameItem, nested);
-    }
-    this.minifier.identifierMap.set(nameItem.name, this.currentIdentifier);
-    return this.generateIdentifier(nameItem, nested);
+    // -mモードのrequireはそのまま呼び出しとして出力し、実行時のrequire関数に委ねる
+    return undefined;
+  }
 
-    //    return this.sourceNodeHelper(nameItem, nameItem.name, nested ? nameItem.name : undefined);
+  // Renameパス（#20）が解決済みシンボルテーブルをもとに割り当てた短縮名を参照する。
+  // 対応するローカルシンボルが無い場合（グローバル参照や"self"）は元の名前のまま出力する。
+  private generateIdentifier(nameItem: Parser.Identifier): SourceNode {
+    const renamed = this.minifier
+      .getRenameResult(this.moduleName)
+      .nameOf(nameItem);
+    return this.sourceNodeHelper(
+      nameItem,
+      renamed ?? nameItem.name,
+      nameItem.name,
+    );
   }
 }

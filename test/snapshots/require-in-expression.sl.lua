@@ -1,0 +1,1 @@
+print(((function() return{hello=function()return"hello"end} end)()).hello())
