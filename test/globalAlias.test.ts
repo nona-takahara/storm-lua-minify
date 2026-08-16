@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import Parser from "luaparse";
 import { resolveScopes } from "../src/resolver";
 import { insertGlobalAliases } from "../src/transform";
+import { runMinifier } from "./lib/helpers";
 
 // #8b: 外部グローバル識別子のローカル代入短縮の単体テスト。
 // しきい値判定、対象範囲の除外（require/dofile、8aで直接リネームされるもの）、
@@ -115,4 +116,23 @@ void test("a field name that happens to share an aliased global's spelling is le
   const fieldAssign = chunk.body[2] as Parser.AssignmentStatement;
   const fieldTarget = fieldAssign.variables[0] as Parser.MemberExpression;
   assert.equal(fieldTarget.identifier.name, "screen");
+});
+
+// Minifier全体（8a+8bの配線）を通した回帰テスト。insertGlobalAliases単体への
+// excludeNamesは正しく機能していても、呼び出し側(minifier.ts)が
+// mode.neverRenameGlobalsをexcludeNamesに含め忘れると、8aの対象にならない
+// （＝一度も代入されていない）保護対象グローバルが8bで書き換えられてしまう。
+void test("mode.neverRenameGlobals also protects a global from #8b aliasing, not just #8a renaming", () => {
+  const { code } = runMinifier({
+    fixture: "global-alias",
+    mode: {
+      moduleLikeLua: false,
+      neverRenameGlobals: new Set(["screen"]),
+    },
+  });
+
+  assert.ok(
+    code.includes("screen.setColor"),
+    `screenがエイリアス化されずそのまま残ること。実際の出力: ${code}`,
+  );
 });

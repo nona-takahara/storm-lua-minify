@@ -204,7 +204,13 @@ export class Minifier {
    * なり）、意味が壊れる（要修正が発覚した実例）。
    */
   private transformAll() {
-    const excludeGlobalNames = new Set(this.globalRenames.keys());
+    // globalRenames.keys()は8aが実際にリネームした（=代入もされていた）名前のみ。
+    // neverRenameGlobalsは代入されていない名前にも及ぶ保護指定なので、8bのエイリアス化
+    // が誤ってそれらを書き換えてしまわないよう、必ず両方をあわせてexcludeNamesに渡す。
+    const excludeGlobalNames = new Set([
+      ...this.globalRenames.keys(),
+      ...(this.mode.neverRenameGlobals ?? []),
+    ]);
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
       let resolved = this.moduleResolve.get(moduleName);

@@ -52,6 +52,18 @@ export interface InsertGlobalAliasesOptions {
 // Renameパスが決めるため、この仮名自体が出力に残ることはない）。
 const ALIAS_TEMP_NAME_PREFIX = "__mergeAlias";
 
+// エイリアス化で`.name`を書き換えた参照ノードについて、Source Mapに載せる
+// べき「元の名前」を記録する。ast2lua.tsのgenerateIdentifierはこれを参照し、
+// 位置情報(loc)はそのままなのにSource Mapのnamesフィールドだけ書き換え後の
+// 仮名（あるいは最終的な短縮名）になってしまう不具合を避ける。
+const aliasedOriginalNames = new WeakMap<Parser.Identifier, string>();
+
+export function originalNameOf(
+  identifier: Parser.Identifier,
+): string | undefined {
+  return aliasedOriginalNames.get(identifier);
+}
+
 // 代入コスト（`local X=`相当、8バイト）を、参照1回あたりの節約バイト数
 // （元の名前の長さ-1文字、エイリアス名を1文字と仮定）で上回るかどうかで判定する。
 function isWorthAliasing(name: string, referenceCount: number): boolean {
@@ -88,6 +100,7 @@ export function insertGlobalAliases(
 
     const tempName = ALIAS_TEMP_NAME_PREFIX + String(aliasCounter++);
     binding.references.forEach((ref) => {
+      aliasedOriginalNames.set(ref, ref.name);
       ref.name = tempName;
     });
     newLocals.push({
