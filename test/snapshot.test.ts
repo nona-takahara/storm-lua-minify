@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "fs";
 import path from "path";
@@ -8,7 +8,7 @@ import { WORKING_CASES, runMinifier, slug, SNAPSHOTS_DIR } from "./lib/helpers";
 const UPDATE = process.env.UPDATE_SNAPSHOTS === "1";
 
 for (const c of WORKING_CASES) {
-  void test(`snapshot: ${c.label}`, () => {
+  test(`snapshot: ${c.label}`, () => {
     const { code } = runMinifier(c);
     const snapshotPath = path.join(SNAPSHOTS_DIR, `${slug(c)}.lua`);
 

@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import Parser from "luaparse";
 import { SourceNode } from "source-map";
@@ -8,7 +8,7 @@ function makeNode(): SourceNode {
   return new SourceNode(1, 0, "main.lua", "print(1)");
 }
 
-void test("buildMinifiedOutput: mapにfileフィールドが設定される", () => {
+test("buildMinifiedOutput: mapにfileフィールドが設定される", () => {
   const { map } = buildMinifiedOutput(
     makeNode(),
     "main.min.lua",
@@ -21,7 +21,7 @@ void test("buildMinifiedOutput: mapにfileフィールドが設定される", ()
 
 // "legacy"（既定・未指定）: 旧storm-lua-minifyと完全に同じ複数行の`--[[ ]]`
 // ブロックコメントを出力する。互換性維持のため、既定はこの形式のままにする。
-void test('buildMinifiedOutput: 既定("legacy")は旧バージョンと同じ複数行ブロックコメントを出力し、有効なLuaのままである', () => {
+test('buildMinifiedOutput: 既定("legacy")は旧バージョンと同じ複数行ブロックコメントを出力し、有効なLuaのままである', () => {
   const { code } = buildMinifiedOutput(
     makeNode(),
     "main.min.lua",
@@ -32,7 +32,7 @@ void test('buildMinifiedOutput: 既定("legacy")は旧バージョンと同じ�
   assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
 });
 
-void test('buildMinifiedOutput: sourceMappingUrlStyle: "legacy"を明示しても既定と同じ出力になる', () => {
+test('buildMinifiedOutput: sourceMappingUrlStyle: "legacy"を明示しても既定と同じ出力になる', () => {
   const { code } = buildMinifiedOutput(
     makeNode(),
     "main.min.lua",
@@ -48,7 +48,7 @@ void test('buildMinifiedOutput: sourceMappingUrlStyle: "legacy"を明示して�
 // "line": 単一行の`--`ラインコメント。Source Map仕様の「アノテーションは
 // 最終行（末尾が空行の場合はその直前の行）に置く」というルールを満たしつつ、
 // 有効なLuaのままにするための妥協案。
-void test('buildMinifiedOutput: sourceMappingUrlStyle: "line"はsourceMappingURLが出力の最終行(末尾空行を除く)になり、有効なLuaのままである', () => {
+test('buildMinifiedOutput: sourceMappingUrlStyle: "line"はsourceMappingURLが出力の最終行(末尾空行を除く)になり、有効なLuaのままである', () => {
   const { code } = buildMinifiedOutput(
     makeNode(),
     "main.min.lua",
@@ -74,7 +74,7 @@ void test('buildMinifiedOutput: sourceMappingUrlStyle: "line"はsourceMappingURL
 // `/`・`//`は二項演算子のトークンであり文の先頭には来られないため、この形式は
 // 有効なLuaと両立できない（調査の結果、回避不能と判断した）。この副作用を
 // テストで固定化しておく。
-void test('buildMinifiedOutput: sourceMappingUrlStyle: "strict"はLuaコメントで包まずアノテーションを出力し、Luaとしては構文エラーになる', () => {
+test('buildMinifiedOutput: sourceMappingUrlStyle: "strict"はLuaコメントで包まずアノテーションを出力し、Luaとしては構文エラーになる', () => {
   const { code } = buildMinifiedOutput(
     makeNode(),
     "main.min.lua",
