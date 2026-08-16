@@ -103,3 +103,79 @@ void test("sourcemap: ドット区切りモジュール名のsourcesはOSに依�
     `sources に "sub/deep.lua" が含まれていること。実際: ${JSON.stringify(map.sources)}`,
   );
 });
+
+// `locateInGenerated`の元ソース版。ミニファイでは空白・改行が除去され各文が
+// 詰めて出力されるため、あるキーワード文字列のN回目の出現は、元ソース側でも
+// 同じN回目の出現に対応する（#14: 各キーワードトークンが自身の出現位置を
+// 個別に持つようになったことの検証に使う）。
+function locateInOriginal(
+  source: string,
+  needle: string,
+  occurrence: number,
+): { line: number; column: number } {
+  return locateInGenerated(source, needle, occurrence);
+}
+
+void test("sourcemap: if/then/elseif/else/end等のキーワードトークンが、それぞれ独立して元ソース上の自身の出現位置にマップされる (#14)", () => {
+  const { code, map } = runMinifier({
+    fixture: "control-flow-keywords",
+    mode: { moduleLikeLua: false },
+  });
+  const source = fs.readFileSync(
+    fixtureEntryPath("control-flow-keywords"),
+    "utf8",
+  );
+
+  // [キーワード文字列, 生成コード側での出現回数(0始まり)]。
+  // 以前は`then`/`do`/`until`/ブロックを閉じる`end`が、対応する文の先頭
+  // （if/while/do/repeat/for/function自身の位置）に丸ごと吸収されてマップ
+  // されていた。修正後は、それぞれが自分自身の実際の出現位置にマップされる
+  // ことを、生成コード中の出現ごとに元ソースの対応する出現と突き合わせて確認する。
+  const occurrences: [string, number][] = [
+    ["if", 0],
+    ["then", 0], // IfClauseのthen
+    ["elseif", 0],
+    ["then", 1], // ElseifClauseのthen
+    ["else", 0],
+    ["end", 0], // IfStatementを閉じるend
+    ["while", 0],
+    ["do", 0], // WhileStatementのdo
+    ["end", 1], // WhileStatementを閉じるend
+    ["do", 1], // 単独のDoStatement
+    ["end", 2], // DoStatementを閉じるend
+    ["repeat", 0],
+    ["until", 0],
+    ["for", 0],
+    ["do", 2], // ForGenericStatementのdo
+    ["end", 3], // ForGenericStatementを閉じるend
+    ["for", 1],
+    ["do", 3], // ForNumericStatementのdo
+    ["end", 4], // ForNumericStatementを閉じるend
+    // 注: `local function add(...)`の"function"自体(0回目)はここに含めない。
+    // `(isLocal ? "local " : "") + "function "`が1つの先頭チャンクとして
+    // statement自身の位置(=`local`の位置)にまとめて割り当てられるのは
+    // 今回のバグ修正の対象外（他の"先頭キーワード"と同じ既存の挙動）であり、
+    // 別途で扱う。
+    ["end", 5], // local function文を閉じるend
+    ["function", 1], // 無名関数式（`local `を伴わないため自身の位置で正しい）
+    ["end", 6], // 上記を閉じるend
+  ];
+
+  return SourceMapConsumer.with(map, null, (consumer) => {
+    occurrences.forEach(([keyword, occurrence]) => {
+      const generatedPos = locateInGenerated(code, keyword, occurrence);
+      const resolved = consumer.originalPositionFor(generatedPos);
+      const expected = locateInOriginal(source, keyword, occurrence);
+      assert.equal(
+        resolved.line,
+        expected.line,
+        `"${keyword}" (${String(occurrence)}回目) の行`,
+      );
+      assert.equal(
+        resolved.column,
+        expected.column,
+        `"${keyword}" (${String(occurrence)}回目) の列`,
+      );
+    });
+  });
+});
