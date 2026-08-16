@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import Parser from "luaparse";
 import { resolveScopes } from "../src/resolver";
@@ -10,7 +10,7 @@ function parse(code: string): Parser.Chunk {
   return Parser.parse(code, { luaVersion: "5.3" });
 }
 
-void test("resolves references to their declaring local symbol", () => {
+test("resolves references to their declaring local symbol", () => {
   const chunk = parse(`
     local x = 1
     print(x)
@@ -38,7 +38,7 @@ void test("resolves references to their declaring local symbol", () => {
   );
 });
 
-void test("shadowed locals in a nested block resolve to a distinct symbol", () => {
+test("shadowed locals in a nested block resolve to a distinct symbol", () => {
   const chunk = parse(`
     local x = 1
     do
@@ -72,7 +72,7 @@ void test("shadowed locals in a nested block resolve to a distinct symbol", () =
   assert.equal(result.symbolOf(outerPrintArg), outerSymbol);
 });
 
-void test("re-declaring a local in the same block shadows only subsequent references", () => {
+test("re-declaring a local in the same block shadows only subsequent references", () => {
   const chunk = parse(`
     local x = 1
     print(x)
@@ -102,7 +102,7 @@ void test("re-declaring a local in the same block shadows only subsequent refere
   assert.equal(result.symbolOf(secondPrintArg), secondSymbol);
 });
 
-void test("a function parameter shadows an outer local of the same name", () => {
+test("a function parameter shadows an outer local of the same name", () => {
   const chunk = parse(`
     local x = 1
     local function f(x)
@@ -128,7 +128,7 @@ void test("a function parameter shadows an outer local of the same name", () => 
   assert.equal(result.symbolOf(returnArg), paramSymbol);
 });
 
-void test("a local function can refer to itself recursively", () => {
+test("a local function can refer to itself recursively", () => {
   const chunk = parse(`
     local function fact(n)
       if n <= 1 then return 1 end
@@ -149,7 +149,7 @@ void test("a local function can refer to itself recursively", () => {
   assert.equal(result.symbolOf(callee), declSymbol);
 });
 
-void test("a numeric for-loop variable is scoped to the loop body only", () => {
+test("a numeric for-loop variable is scoped to the loop body only", () => {
   const chunk = parse(`
     for i = 1, 10 do
       print(i)
@@ -177,7 +177,7 @@ void test("a numeric for-loop variable is scoped to the loop body only", () => {
   assert.ok(result.globals.has("i"));
 });
 
-void test("unresolved identifiers are collected as globals, not symbols, and field/key names are ignored", () => {
+test("unresolved identifiers are collected as globals, not symbols, and field/key names are ignored", () => {
   const chunk = parse(`
     screen.setColor(1, 2, 3)
     local w, h = screen.getWidth(), screen.getHeight()

@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "fs";
 import { SourceMapConsumer } from "source-map";
@@ -33,16 +33,19 @@ function locateInGenerated(
   );
 }
 
-void test("sourcemap: mapファイルにfileフィールドが設定される", () => {
+test("sourcemap: mapファイルにfileフィールドが設定される", () => {
   const { map } = runMinifier({
+    label: "sourcemap: mapファイルにfileフィールドが設定される",
     fixture: "multi-require",
     mode: { moduleLikeLua: true },
   });
   assert.equal(map.file, "multi-require.min.lua");
 });
 
-void test("sourcemap: sourcesContentに各モジュールの元テキストがそのまま埋め込まれる", async () => {
+test("sourcemap: sourcesContentに各モジュールの元テキストがそのまま埋め込まれる", async () => {
   const { map } = runMinifier({
+    label:
+      "sourcemap: sourcesContentに各モジュールの元テキストがそのまま埋め込まれる",
     fixture: "multi-require",
     mode: { moduleLikeLua: true },
   });
@@ -62,8 +65,10 @@ void test("sourcemap: sourcesContentに各モジュールの元テキストが�
   });
 });
 
-void test("sourcemap: 別モジュール由来のトークンがそれぞれ正しい元ファイル・位置にマップされる", async () => {
+test("sourcemap: 別モジュール由来のトークンがそれぞれ正しい元ファイル・位置にマップされる", async () => {
   const { code, map } = runMinifier({
+    label:
+      "sourcemap: 別モジュール由来のトークンがそれぞれ正しい元ファイル・位置にマップされる",
     fixture: "multi-require",
     mode: { moduleLikeLua: false },
   });
@@ -93,8 +98,10 @@ void test("sourcemap: 別モジュール由来のトークンがそれぞれ正�
   });
 });
 
-void test("sourcemap: ドット区切りモジュール名のsourcesはOSに依存せず'/'区切りになる", () => {
+test("sourcemap: ドット区切りモジュール名のsourcesはOSに依存せず'/'区切りになる", () => {
   const { map } = runMinifier({
+    label:
+      "sourcemap: ドット区切りモジュール名のsourcesはOSに依存せず'/'区切りになる",
     fixture: "nested-module",
     mode: { moduleLikeLua: true },
   });
