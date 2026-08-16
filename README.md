@@ -54,20 +54,22 @@ npx storm-lua-minify script.lua
 
 そのような規約（例: Stormworksのマイクロコントローラーでエンジン側が呼び出す特定名のコールバック関数など）が対象のスクリプトにある場合は、必ず`--reserved-globals-config`でその名前を保護対象として指定してください。規約を把握していない場合は、安全のため`--no-global-rename`で本機能自体を無効にすることを推奨します。
 
-# テスト
+# 開発・テスト
+
+開発はpnpmに変更になっています（v0.3.0リリース時点より）
 
 ```
-npm ci
-npm run build
-npm test
+pnpm ci
+pnpm run build
+pnpm test
 ```
 
 # Lint / Format
 
 ```
-npm run lint          # ESLint
-npm run format:check  # Prettierのフォーマットチェック
-npm run format        # Prettierでフォーマット
+pnpm run lint          # ESLint
+pnpm run format:check  # Prettierのフォーマットチェック
+pnpm run format        # Prettierでフォーマット
 ```
 
 `test/` 以下にスナップショット・ラウンドトリップパース・識別子衝突検知のテストがあります。

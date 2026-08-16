@@ -1,7 +1,14 @@
 {
   "name": "storm-lua-minify",
   "description": "A Lua minifier also outputs source map",
-  "version": "0.2.0",
+  "version": "0.3.0",
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist"
+  ],
   "dependencies": {
     "commander": "^12.1.0",
     "luaparse": "^0.3.1",
@@ -9,8 +16,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
-    "@types/node": "^22.20.1",
     "@types/luaparse": "^0.2.13",
+    "@types/node": "^22.20.1",
     "eslint": "^9.39.5",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.7.0",
@@ -21,12 +28,13 @@
   },
   "bin": "dist/cli.js",
   "scripts": {
-    "start": "node ./dist/index.js",
-    "build": "npx tsc",
-    "test": "npx tsc -p tsconfig.eslint.json && npx vitest run",
+    "start": "node ./dist/cli.js",
+    "build": "tsc",
+    "test": "tsc -p tsconfig.eslint.json && npx vitest run",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "prepack": "pnpm run build"
   },
   "author": "Nona Takahara <nona_t_2612@yahoo.co.jp>",
   "license": "MIT"
