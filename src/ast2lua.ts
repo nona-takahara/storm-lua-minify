@@ -7,6 +7,7 @@ import { SourceNode } from "source-map";
 import { Minifier, MinifierMode } from "./minifier";
 import { staticStringArgument } from "./linker";
 import { KeywordLocator } from "./keywordLocator";
+import { originalNameOf } from "./transform";
 
 export type Chunk = Parser.Chunk & {
   globals?: (Parser.Base<"Identifer"> & {
@@ -1015,10 +1016,14 @@ export class MinifyFile {
     const renamed = this.minifier
       .getRenameResult(this.moduleName)
       .nameOf(nameItem);
+    // #8bのエイリアス化はノードの`.name`自体を書き換えるため、loc（元のソース上の
+    // 位置）はそのままでもnameItem.nameはもう元の識別子名ではない。Source Mapの
+    // namesフィールドには常に「元のソースで書かれていた名前」を載せる必要がある。
+    const originalName = originalNameOf(nameItem) ?? nameItem.name;
     return this.sourceNodeHelper(
       nameItem,
       renamed ?? nameItem.name,
-      nameItem.name,
+      originalName,
     );
   }
 }

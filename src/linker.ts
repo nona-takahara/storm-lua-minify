@@ -5,6 +5,19 @@ export interface ModuleReference {
   moduleName: string;
 }
 
+// require/dofileは、Linkパス（このファイルのfindModuleReferences）だけでなく
+// Printパス（ast2lua.tsのmatchModuleCallExpression、minifier.tsの
+// buildRequireWrapper/collectRequireTargets）でも、この2つの名前文字列を
+// 手がかりに呼び出しを再検出している。そのため、識別子リネーム系のパス
+// （#8a: globalRename.ts、#8b: transform.tsのinsertGlobalAliases）は、
+// これらの名前を書き換え候補から常に除外しなければならない。書き換えると
+// Printパスがrequire/dofile呼び出しを検出できなくなり、モジュール解決が
+// 静かに壊れる（ディスパッチテーブルの生成漏れ等）。
+export const RESERVED_MODULE_FUNCTION_NAMES: ReadonlySet<string> = new Set([
+  "require",
+  "dofile",
+]);
+
 /**
  * Chunk配下を型を問わず再帰的に走査するジェネリックウォーカー。
  * printerとは独立に、AST全体からrequire/dofile呼び出しを見つけ出すために使う（#18）。

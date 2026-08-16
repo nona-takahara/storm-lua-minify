@@ -18,6 +18,22 @@ program
   )
   .option("--no-rename", "識別子の短縮(リネーム)を無効にします（デバッグ用途）")
   .option(
+    "--no-global-rename",
+    "内部でのみ使用するグローバル識別子の短縮を無効にします（デバッグ用途）",
+  )
+  .option(
+    "--no-merge-locals",
+    "連続するローカル変数宣言のまとめ上げを無効にします（デバッグ用途）",
+  )
+  .option(
+    "--no-global-alias",
+    "外部グローバル識別子（リネームできないもの）のローカル代入短縮を無効にします（デバッグ用途）",
+  )
+  .option(
+    "--reserved-globals-config <path>",
+    '代入されていても短縮しないグローバル名を列挙したJSON設定ファイルのパス（{"neverRenameGlobals":["onTick",...]}形式）。エンジン側のコールバック規約名など、常に元の名前のまま残す必要がある識別子を指定します',
+  )
+  .option(
     "--single-line-source-mapping-url",
     "sourceMappingURLアノテーションを単一行の--コメントで出力します（Source Map仕様の「最終行」ルールに従いますが、既定の複数行ブロックコメント形式を前提とするツールとは組み合わせられません）",
   )
@@ -40,13 +56,50 @@ const luaparseSetting: Partial<Options> = {
 interface CliOptions extends MinifierMode {
   singleLineSourceMappingUrl?: boolean;
   strictSourceMappingUrl?: boolean;
+  reservedGlobalsConfig?: string;
+}
+
+interface ReservedGlobalsConfig {
+  neverRenameGlobals: string[];
+}
+
+function isReservedGlobalsConfig(
+  value: unknown,
+): value is ReservedGlobalsConfig {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as { neverRenameGlobals?: unknown };
+  return (
+    Array.isArray(candidate.neverRenameGlobals) &&
+    candidate.neverRenameGlobals.every((name) => typeof name === "string")
+  );
+}
+
+function loadNeverRenameGlobals(configPath: string): Set<string> {
+  if (!fs.existsSync(configPath)) {
+    throw new Error("Reserved globals config not found: " + configPath);
+  }
+  const parsed: unknown = JSON.parse(fs.readFileSync(configPath).toString());
+  if (!isReservedGlobalsConfig(parsed)) {
+    throw new Error(
+      configPath +
+        ' must be a JSON object of the form {"neverRenameGlobals": ["name", ...]}',
+    );
+  }
+  return new Set(parsed.neverRenameGlobals);
 }
 
 const {
   singleLineSourceMappingUrl,
   strictSourceMappingUrl,
+  reservedGlobalsConfig,
   ...mode
 }: CliOptions = program.opts();
+
+if (reservedGlobalsConfig) {
+  mode.neverRenameGlobals = loadNeverRenameGlobals(reservedGlobalsConfig);
+}
 
 // 既定は旧バージョンと互換の複数行ブロックコメント("legacy")。
 // --strict-source-mapping-url > --single-line-source-mapping-url の優先順で上書きする。

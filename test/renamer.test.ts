@@ -128,3 +128,50 @@ test("usedNames reflects exactly the short names handed out", () => {
   assert.ok(yName);
   assert.deepEqual(result.usedNames, new Set([xName, yName]));
 });
+
+test("globalRenames applies to genuine global references (#8a)", () => {
+  const chunk = parse(`
+    counter = 0
+    counter = counter + 1
+  `);
+  const resolved = resolveScopes(chunk);
+  const result = assignRenames(
+    resolved,
+    new Set(),
+    new Map([["counter", "g"]]),
+  );
+
+  const firstAssignTarget = (chunk.body[0] as Parser.AssignmentStatement)
+    .variables[0] as Parser.Identifier;
+  assert.equal(result.nameOf(firstAssignTarget), "g");
+});
+
+test("globalRenames never renames a field name that happens to share a global's spelling (#8a)", () => {
+  const chunk = parse(`
+    counter = 0
+    local t = {}
+    t.counter = 1
+    print(t.counter)
+  `);
+  const resolved = resolveScopes(chunk);
+  const result = assignRenames(
+    resolved,
+    new Set(),
+    new Map([["counter", "g"]]),
+  );
+
+  const fieldAssignTarget = (
+    (chunk.body[2] as Parser.AssignmentStatement)
+      .variables[0] as Parser.MemberExpression
+  ).identifier;
+  const fieldReadTarget = (
+    (
+      (chunk.body[3] as Parser.CallStatement)
+        .expression as Parser.CallExpression
+    ).arguments[0] as Parser.MemberExpression
+  ).identifier;
+
+  // フィールド名"counter"はグローバル"counter"のリネームに巻き込まれてはいけない
+  assert.equal(result.nameOf(fieldAssignTarget), undefined);
+  assert.equal(result.nameOf(fieldReadTarget), undefined);
+});

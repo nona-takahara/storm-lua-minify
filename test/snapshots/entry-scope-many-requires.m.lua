@@ -11,4 +11,4 @@ if m=="dep_india"then r=(function() local i="dep_india"return{id=i} end)()end
 if m=="dep_juliet"then r=(function() local j="dep_juliet"return{id=j} end)()end
 if m=="dep_kilo"then r=(function() local k="dep_kilo"return{id=k} end)()end
 package.loaded[m]=package.loaded[m]or r or true;return package.loaded[m]end
-local l=require("dep_alpha")local m=require("dep_bravo")local n=require("dep_charlie")local o=require("dep_delta")local p=require("dep_echo")local q=require("dep_foxtrot")local r=require("dep_golf")local s=require("dep_hotel")local t=require("dep_india")local u=require("dep_juliet")local v=require("dep_kilo")print(l,m,n,o,p,q,r,s,t,u,v)
+local l,m,n,o,p,q,r,s,t,u,v=require("dep_alpha"),require("dep_bravo"),require("dep_charlie"),require("dep_delta"),require("dep_echo"),require("dep_foxtrot"),require("dep_golf"),require("dep_hotel"),require("dep_india"),require("dep_juliet"),require("dep_kilo")print(l,m,n,o,p,q,r,s,t,u,v)

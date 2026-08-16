@@ -98,6 +98,30 @@ test("sourcemap: 別モジュール由来のトークンがそれぞれ正しい
   });
 });
 
+test("sourcemap: #8bでエイリアス化された参照は、位置は元のままnamesフィールドに元の名前が残る", async () => {
+  const { code, map } = runMinifier({
+    label:
+      "sourcemap: #8bでエイリアス化された参照は、位置は元のままnamesフィールドに元の名前が残る",
+    fixture: "global-alias",
+    mode: { moduleLikeLua: false },
+  });
+
+  // エイリアス化の実装用の仮名(__mergeAliasN)が最終出力のnamesに漏れていないこと
+  assert.ok(
+    !map.names.some((n) => n.startsWith("__mergeAlias")),
+    `names に内部実装用の仮名が含まれていないこと。実際: ${JSON.stringify(map.names)}`,
+  );
+
+  await SourceMapConsumer.with(map, null, (consumer) => {
+    // 2回目のscreen.setColor呼び出し（出力上は短縮名、例: `a.setColor(0,255,0)`）でも
+    // 元のソース上の位置・名前("screen")を正しく指し続けること
+    const secondCall = locateInGenerated(code, "setColor", 1);
+    const pos = consumer.originalPositionFor(secondCall);
+    assert.equal(pos.source, "main.lua");
+    assert.equal(pos.name, "setColor");
+  });
+});
+
 test("sourcemap: ドット区切りモジュール名のsourcesはOSに依存せず'/'区切りになる", () => {
   const { map } = runMinifier({
     label:

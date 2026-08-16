@@ -204,3 +204,49 @@ test("unresolved identifiers are collected as globals, not symbols, and field/ke
     ["h", "t", "w"],
   );
 });
+
+test("GlobalBinding.writes only records assignment-target occurrences (#8a)", () => {
+  const chunk = parse(`
+    print(readOnly)
+    writable = 1
+    writable = writable + 1
+    function onTick() end
+  `);
+  const result = resolveScopes(chunk);
+
+  const readOnlyBinding = result.globals.get("readOnly");
+  assert.ok(readOnlyBinding);
+  assert.equal(readOnlyBinding.references.length, 1);
+  assert.equal(readOnlyBinding.writes.length, 0);
+
+  const writableBinding = result.globals.get("writable");
+  assert.ok(writableBinding);
+  // 代入先2回 + 加算式の右辺での読み取り1回 = 参照3回
+  assert.equal(writableBinding.references.length, 3);
+  assert.equal(writableBinding.writes.length, 2);
+
+  // `function name() end`形式のグローバル宣言も代入先として扱われる
+  const onTickBinding = result.globals.get("onTick");
+  assert.ok(onTickBinding);
+  assert.equal(onTickBinding.references.length, 1);
+  assert.equal(onTickBinding.writes.length, 1);
+});
+
+test("isGlobalReference distinguishes real global references from field names with the same spelling (#8a)", () => {
+  const chunk = parse(`
+    counter = 1
+    local t = {}
+    t.counter = 2
+  `);
+  const result = resolveScopes(chunk);
+
+  const globalAssignTarget = (chunk.body[0] as Parser.AssignmentStatement)
+    .variables[0] as Parser.Identifier;
+  assert.equal(result.isGlobalReference(globalAssignTarget), true);
+
+  const fieldAssignTarget = (
+    (chunk.body[2] as Parser.AssignmentStatement)
+      .variables[0] as Parser.MemberExpression
+  ).identifier;
+  assert.equal(result.isGlobalReference(fieldAssignTarget), false);
+});
