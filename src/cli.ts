@@ -10,7 +10,7 @@ import { buildMinifiedOutput, SourceMappingUrlStyle } from "./output";
 const program = new Command();
 
 program
-  .version("0.1.3")
+  .version("0.3.0")
   .description("A Lua minifier also outputs source map")
   .option(
     "-m, --module-like-lua",
