@@ -123,8 +123,10 @@ function locateInOriginal(
   return locateInGenerated(source, needle, occurrence);
 }
 
-void test("sourcemap: if/then/elseif/else/end等のキーワードトークンが、それぞれ独立して元ソース上の自身の出現位置にマップされる (#14)", () => {
+test("sourcemap: if/then/elseif/else/end等のキーワードトークンが、それぞれ独立して元ソース上の自身の出現位置にマップされる (#14)", () => {
   const { code, map } = runMinifier({
+    label:
+      "sourcemap: if/then/elseif/else/end等のキーワードトークンが、それぞれ独立して元ソース上の自身の出現位置にマップされる (#14)",
     fixture: "control-flow-keywords",
     mode: { moduleLikeLua: false },
   });
