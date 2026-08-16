@@ -6,11 +6,24 @@ import { Chunk, MinifyFile } from "./ast2lua";
 import { findModuleReferences } from "./linker";
 import { resolveScopes, ResolveResult } from "./resolver";
 import { assignRenames, RenameResult } from "./renamer";
+import { classifyAndRenameGlobals } from "./globalRename";
+import { mergeLocalDeclarations, insertGlobalAliases } from "./transform";
 
 export interface MinifierMode {
   moduleLikeLua: boolean;
   // 識別子の短縮(リネーム)を行うかどうか。デバッグ用途でfalseにできる。省略時はtrue扱い。
   rename?: boolean;
+  // 内部でのみ使用するグローバル識別子の短縮（#8a）を行うかどうか。省略時はtrue扱い。
+  // renameがfalseの場合はこちらの値に関わらず無効になる。
+  globalRename?: boolean;
+  // 代入されていてもリネームしないグローバル名（エンジン側のコールバック規約名など）。
+  // CLIの--reserved-globals-configで指定された設定ファイルから読み込む想定。
+  neverRenameGlobals?: ReadonlySet<string>;
+  // 連続するlocal変数宣言のまとめ上げ（#9）を行うかどうか。省略時はtrue扱い。
+  mergeLocals?: boolean;
+  // 外部グローバル識別子（リネーム不可のもの）のローカル代入短縮（#8b）を
+  // 行うかどうか。省略時はtrue扱い。renameがfalseの場合は常に無効になる。
+  globalAlias?: boolean;
 }
 
 const NO_RENAME: RenameResult = {
@@ -34,6 +47,8 @@ export class Minifier {
   private readonly moduleResolve = new Map<string, ResolveResult>();
   // モジュールごとのRenameパスの結果（初回アクセス時に計算しキャッシュする）
   private readonly renameCache = new Map<string, RenameResult>();
+  // #8a: プログラム全体を横断して決定された「内部グローバル名 -> 短縮名」の対応
+  private globalRenames = new Map<string, string>();
 
   constructor(
     entryFilePath: string,
@@ -53,6 +68,8 @@ export class Minifier {
 
   parse(): SourceNode {
     this.link();
+    this.computeGlobalRenames();
+    this.transformAll();
     this.renameAll();
 
     const parts: (SourceNode | string)[] = [];
@@ -158,9 +175,84 @@ export class Minifier {
       if (!resolved) {
         throw new Error(moduleName + " is not found");
       }
-      const result = assignRenames(resolved, this.identifiersInUse);
+      const result = assignRenames(
+        resolved,
+        this.identifiersInUse,
+        this.globalRenames,
+      );
       this.renameCache.set(moduleName, result);
       result.usedNames.forEach((name) => this.identifiersInUse.add(name));
+    });
+  }
+
+  /**
+   * Transformパス（#8b, #9）: モジュールごとにASTレベルの最適化を適用する。
+   * computeGlobalRenamesの後・renameAllの前に実行する必要がある（renameは
+   * このパスが確定させた最終的な文構造を前提に短縮名を割り当てるため）。
+   *
+   * 実行順序は 8b（エイリアス挿入）→ #9（local宣言のまとめ上げ）。
+   * 8bが挿入する複数の1変数1式local文は、#9のまとめ上げ対象としてそのまま
+   * 束ねられるため、8bを先に行うことで両者の効果が重なる。
+   *
+   * 8bは新しい識別子ノード（エイリアスの宣言と、書き換えられた参照）を生成する。
+   * これらのノードは元のResolveパス結果には存在しないため、#9のハザード1判定
+   * （「候補文がグループ内で宣言済みの変数を参照していないか」）が正しく働くには、
+   * 8bの直後・#9の直前でResolveパスを再実行しておく必要がある。この順序を
+   * 誤ると、8bがrequire等の頻出グローバルをエイリアス化した際に、そのエイリアス
+   * 宣言自体と「エイリアス経由で呼び出す側」の文を#9が誤って1つのlocal文に
+   * まとめてしまい（エイリアス変数がまだ束縛される前のスコープで参照される形に
+   * なり）、意味が壊れる（要修正が発覚した実例）。
+   */
+  private transformAll() {
+    const excludeGlobalNames = new Set(this.globalRenames.keys());
+    this.linkOrder.forEach((moduleName) => {
+      const ast = this.moduleAST.get(moduleName);
+      let resolved = this.moduleResolve.get(moduleName);
+      if (!ast || !resolved) {
+        throw new Error(moduleName + " is not found");
+      }
+
+      if (this.mode.rename !== false && this.mode.globalAlias !== false) {
+        insertGlobalAliases(ast, resolved, {
+          excludeNames: excludeGlobalNames,
+        });
+        resolved = resolveScopes(ast);
+      }
+
+      if (this.mode.mergeLocals !== false) {
+        mergeLocalDeclarations(ast, resolved, {
+          preserveRequireSplice: !this.mode.moduleLikeLua,
+        });
+      }
+
+      this.moduleResolve.set(moduleName, resolved);
+    });
+  }
+
+  /**
+   * #8aのGlobal Renameパス: リンクされた全モジュールを横断して、代入されている
+   * グローバル（neverRenameGlobalsに含まれるものを除く）に短縮名を割り当てる。
+   * グローバルは1つのランタイム束縛をモジュール間で共有するため、この判定・採番は
+   * renameAll（モジュールごとに独立して行うローカルのリネーム）より前に、
+   * 一度だけ行う必要がある。
+   *
+   * 選ばれた短縮名はrenameAllの前にidentifiersInUseへ予約し、元の長い名前の予約は
+   * 解除する（もう出力に現れないため）。順序を誤ると、
+   * ローカルの短縮名がグローバルの新しい短縮名と衝突しうる。
+   */
+  private computeGlobalRenames() {
+    if (this.mode.rename === false || this.mode.globalRename === false) {
+      return;
+    }
+    const neverRename = this.mode.neverRenameGlobals ?? new Set<string>();
+    this.globalRenames = classifyAndRenameGlobals(
+      this.moduleResolve,
+      neverRename,
+      this.identifiersInUse,
+    );
+    this.globalRenames.forEach((shortName, originalName) => {
+      this.identifiersInUse.add(shortName);
+      this.identifiersInUse.delete(originalName);
     });
   }
 

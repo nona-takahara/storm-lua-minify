@@ -1,0 +1,5 @@
+screen.setColor(255, 0, 0)
+screen.drawText(0, 0, "hello")
+screen.drawText(1, 1, "world")
+screen.drawText(2, 2, "again")
+screen.setColor(0, 255, 0)

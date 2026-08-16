@@ -30,14 +30,17 @@ export interface RenameResult {
   readonly usedNames: ReadonlySet<string>;
 }
 
-function isAvailable(id: string, reserved: ReadonlySet<string>): boolean {
+export function isAvailable(
+  id: string,
+  reserved: ReadonlySet<string>,
+): boolean {
   return id !== "self" && !isKeyword(id) && !reserved.has(id);
 }
 
 // 0始まりのカウンタから短縮名候補を生成する（バイジェクティブ基数記数法）。
 // 通常の位取り記数法と違い同じ文字列を2つのカウンタ値が指すことがないため、
 // カウンタを増やし続けるだけで重複なく識別子候補を列挙できる。
-function generateCandidate(counter: number): string {
+export function generateCandidate(counter: number): string {
   const l = IDENTIFIER_PARTS.length;
   let num = counter + 1;
   let id = "";
@@ -82,6 +85,10 @@ function assignSlots(
 export function assignRenames(
   resolveResult: ResolveResult,
   reserved: ReadonlySet<string>,
+  // #8a: プログラム全体を横断して決定されたグローバル識別子の短縮名。
+  // 全モジュールに対して同じマップを渡すことで、モジュールをまたいで
+  // 共有される1つのランタイム束縛に一貫した短縮名を割り当てられる。
+  globalRenames?: ReadonlyMap<string, string>,
 ): RenameResult {
   const slotOf = assignSlots(resolveResult.chunkScope, new Set());
 
@@ -127,7 +134,15 @@ export function assignRenames(
         return undefined;
       }
       const symbol = resolveResult.symbolOf(identifier);
-      return symbol ? nameOfSymbol.get(symbol) : undefined;
+      if (symbol) {
+        return nameOfSymbol.get(symbol);
+      }
+      // フィールド名（`.foo`）はここに来るが、これらはisGlobalReferenceが
+      // falseになるため名前文字列がたまたま一致しても誤ってリネームしない。
+      if (globalRenames && resolveResult.isGlobalReference(identifier)) {
+        return globalRenames.get(identifier.name);
+      }
+      return undefined;
     },
     usedNames: new Set(nameOfSlot.values()),
   };

@@ -117,6 +117,24 @@ export const WORKING_CASES: FixtureCase[] = [
     fixture: "nested-module",
     mode: { moduleLikeLua: true },
   },
+  {
+    label:
+      "連続するrequire文はまとめ上げられるが、参照順序ハザードのある宣言は分割のまま (-m モード, #9確認)",
+    fixture: "merge-locals",
+    mode: { moduleLikeLua: true },
+  },
+  {
+    label:
+      "SLモードでは連続するrequire文はrequire splice最適化(#29)を優先しまとめ上げない (#9確認)",
+    fixture: "merge-locals",
+    mode: { moduleLikeLua: false },
+  },
+  {
+    label:
+      "頻出するリネーム不可グローバルはローカル代入エイリアスに短縮される (#8b確認)",
+    fixture: "global-alias",
+    mode: { moduleLikeLua: false },
+  },
 ];
 
 // 既知バグの再現ケース。現状は failing のため `test.todo` で登録する。
