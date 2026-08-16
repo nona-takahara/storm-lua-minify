@@ -43,4 +43,3 @@ jobs:
 
       - name: Check package contents
         run: pnpm pack --dry-run
-
