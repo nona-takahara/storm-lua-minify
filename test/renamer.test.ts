@@ -129,7 +129,7 @@ test("usedNames reflects exactly the short names handed out", () => {
   assert.deepEqual(result.usedNames, new Set([xName, yName]));
 });
 
-void test("globalRenames applies to genuine global references (#8a)", () => {
+test("globalRenames applies to genuine global references (#8a)", () => {
   const chunk = parse(`
     counter = 0
     counter = counter + 1
@@ -146,7 +146,7 @@ void test("globalRenames applies to genuine global references (#8a)", () => {
   assert.equal(result.nameOf(firstAssignTarget), "g");
 });
 
-void test("globalRenames never renames a field name that happens to share a global's spelling (#8a)", () => {
+test("globalRenames never renames a field name that happens to share a global's spelling (#8a)", () => {
   const chunk = parse(`
     counter = 0
     local t = {}

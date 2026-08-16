@@ -205,7 +205,7 @@ test("unresolved identifiers are collected as globals, not symbols, and field/ke
   );
 });
 
-void test("GlobalBinding.writes only records assignment-target occurrences (#8a)", () => {
+test("GlobalBinding.writes only records assignment-target occurrences (#8a)", () => {
   const chunk = parse(`
     print(readOnly)
     writable = 1
@@ -232,7 +232,7 @@ void test("GlobalBinding.writes only records assignment-target occurrences (#8a)
   assert.equal(onTickBinding.writes.length, 1);
 });
 
-void test("isGlobalReference distinguishes real global references from field names with the same spelling (#8a)", () => {
+test("isGlobalReference distinguishes real global references from field names with the same spelling (#8a)", () => {
   const chunk = parse(`
     counter = 1
     local t = {}

@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import Parser from "luaparse";
 import { resolveScopes } from "../src/resolver";
@@ -23,7 +23,7 @@ function alias(
   return chunk;
 }
 
-void test("a global referenced many times above the threshold gets aliased at the top of the chunk", () => {
+test("a global referenced many times above the threshold gets aliased at the top of the chunk", () => {
   const chunk = alias(`
     screen.setColor(1)
     screen.setColor(2)
@@ -46,7 +46,7 @@ void test("a global referenced many times above the threshold gets aliased at th
   }
 });
 
-void test("a global below the reference threshold is left untouched", () => {
+test("a global below the reference threshold is left untouched", () => {
   const chunk = alias(`
     screen.setColor(1)
   `);
@@ -55,7 +55,7 @@ void test("a global below the reference threshold is left untouched", () => {
   assert.equal(chunk.body[0].type, "CallStatement");
 });
 
-void test("excludeNames prevents double-processing a global already handled by #8a", () => {
+test("excludeNames prevents double-processing a global already handled by #8a", () => {
   const chunk = alias(
     `
       screen.setColor(1)
@@ -71,7 +71,7 @@ void test("excludeNames prevents double-processing a global already handled by #
   assert.equal(chunk.body[0].type, "CallStatement");
 });
 
-void test("a global that is ever assigned to is never aliased (that is #8a's domain)", () => {
+test("a global that is ever assigned to is never aliased (that is #8a's domain)", () => {
   const chunk = alias(`
     counter = counter or 0
     counter = counter + 1
@@ -84,7 +84,7 @@ void test("a global that is ever assigned to is never aliased (that is #8a's dom
   assert.equal(chunk.body.length, 5);
 });
 
-void test("require and dofile are never aliased even when referenced frequently", () => {
+test("require and dofile are never aliased even when referenced frequently", () => {
   const chunk = alias(`
     local a = require("m1")
     local b = require("m2")
@@ -102,7 +102,7 @@ void test("require and dofile are never aliased even when referenced frequently"
   });
 });
 
-void test("a field name that happens to share an aliased global's spelling is left untouched", () => {
+test("a field name that happens to share an aliased global's spelling is left untouched", () => {
   const chunk = alias(`
     local t = {}
     t.screen = "not the global"
@@ -122,8 +122,9 @@ void test("a field name that happens to share an aliased global's spelling is le
 // excludeNamesは正しく機能していても、呼び出し側(minifier.ts)が
 // mode.neverRenameGlobalsをexcludeNamesに含め忘れると、8aの対象にならない
 // （＝一度も代入されていない）保護対象グローバルが8bで書き換えられてしまう。
-void test("mode.neverRenameGlobals also protects a global from #8b aliasing, not just #8a renaming", () => {
+test("mode.neverRenameGlobals also protects a global from #8b aliasing, not just #8a renaming", () => {
   const { code } = runMinifier({
+    label: "mode.neverRenameGlobals also protects a global from #8b aliasing",
     fixture: "global-alias",
     mode: {
       moduleLikeLua: false,

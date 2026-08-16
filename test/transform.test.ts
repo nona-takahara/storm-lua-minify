@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import Parser from "luaparse";
 import { resolveScopes } from "../src/resolver";
@@ -25,7 +25,7 @@ function localStatements(chunk: Parser.Chunk): Parser.LocalStatement[] {
   );
 }
 
-void test("consecutive single-var/single-init locals are merged into one statement", () => {
+test("consecutive single-var/single-init locals are merged into one statement", () => {
   const chunk = merge(`
     local a = require("x")
     local b = require("y")
@@ -41,7 +41,7 @@ void test("consecutive single-var/single-init locals are merged into one stateme
   assert.equal(merged.init.length, 3);
 });
 
-void test("hazard 1: a later statement referencing a just-declared variable blocks merging", () => {
+test("hazard 1: a later statement referencing a just-declared variable blocks merging", () => {
   const chunk = merge(`
     local a = 1
     local b = a
@@ -50,7 +50,7 @@ void test("hazard 1: a later statement referencing a just-declared variable bloc
   assert.equal(localStatements(chunk).length, 2);
 });
 
-void test("hazard 1 (nested closure): a lexically-captured reference inside a function literal still blocks merging", () => {
+test("hazard 1 (nested closure): a lexically-captured reference inside a function literal still blocks merging", () => {
   const chunk = merge(`
     local a = 1
     local f = function() return a end
@@ -59,7 +59,7 @@ void test("hazard 1 (nested closure): a lexically-captured reference inside a fu
   assert.equal(localStatements(chunk).length, 2);
 });
 
-void test("hazard 1: an unrelated global reference of the same spelling does not block merging", () => {
+test("hazard 1: an unrelated global reference of the same spelling does not block merging", () => {
   // ここでの`a`はグローバル参照であり、直前の`local a`とは無関係
   const chunk = merge(`
     local x = 1
@@ -69,7 +69,7 @@ void test("hazard 1: an unrelated global reference of the same spelling does not
   assert.equal(localStatements(chunk).length, 1);
 });
 
-void test("hazard 2 (deficit + expandable last expression): must not become non-terminal", () => {
+test("hazard 2 (deficit + expandable last expression): must not become non-terminal", () => {
   const chunk = merge(`
     local a, b = f()
     local c = 1
@@ -79,7 +79,7 @@ void test("hazard 2 (deficit + expandable last expression): must not become non-
   assert.equal(localStatements(chunk).length, 2);
 });
 
-void test("hazard 2 (deficit, safely paddable): merges with explicit nil padding", () => {
+test("hazard 2 (deficit, safely paddable): merges with explicit nil padding", () => {
   const chunk = merge(`
     local a, b = 1
     local c = 2
@@ -97,7 +97,7 @@ void test("hazard 2 (deficit, safely paddable): merges with explicit nil padding
   );
 });
 
-void test("hazard 2 (surplus): must not become non-terminal", () => {
+test("hazard 2 (surplus): must not become non-terminal", () => {
   const chunk = merge(`
     local a = 1, g()
     local b = 2
@@ -106,7 +106,7 @@ void test("hazard 2 (surplus): must not become non-terminal", () => {
   assert.equal(localStatements(chunk).length, 2);
 });
 
-void test("a group-terminal statement may have any variable/init shape", () => {
+test("a group-terminal statement may have any variable/init shape", () => {
   const chunk = merge(`
     local x = 1
     local a, b = f()
@@ -124,7 +124,7 @@ void test("a group-terminal statement may have any variable/init shape", () => {
   );
 });
 
-void test("trailing synthetic nils are stripped from the merged init list", () => {
+test("trailing synthetic nils are stripped from the merged init list", () => {
   const chunk = merge(`
     local a
     local b
@@ -143,7 +143,7 @@ void test("trailing synthetic nils are stripped from the merged init list", () =
   );
 });
 
-void test("`local function` breaks a run of consecutive local statements", () => {
+test("`local function` breaks a run of consecutive local statements", () => {
   const chunk = merge(`
     local a = 1
     local function f() end
@@ -154,7 +154,7 @@ void test("`local function` breaks a run of consecutive local statements", () =>
   assert.equal(chunk.body.length, 3);
 });
 
-void test("hazard 4: SL-mode splice-eligible require statements are kept as their own group when preserveRequireSplice is set", () => {
+test("hazard 4: SL-mode splice-eligible require statements are kept as their own group when preserveRequireSplice is set", () => {
   const chunk = merge(
     `
       local a = require("x")
@@ -166,7 +166,7 @@ void test("hazard 4: SL-mode splice-eligible require statements are kept as thei
   assert.equal(localStatements(chunk).length, 2);
 });
 
-void test("without preserveRequireSplice, require statements merge like any other", () => {
+test("without preserveRequireSplice, require statements merge like any other", () => {
   const chunk = merge(
     `
       local a = require("x")
@@ -178,7 +178,7 @@ void test("without preserveRequireSplice, require statements merge like any othe
   assert.equal(localStatements(chunk).length, 1);
 });
 
-void test("merging recurses into nested blocks", () => {
+test("merging recurses into nested blocks", () => {
   const chunk = merge(`
     if true then
       local a = 1
@@ -196,7 +196,7 @@ void test("merging recurses into nested blocks", () => {
   );
 });
 
-void test("merging preserves node identity so resolveResult.symbolOf keeps working after the merge", () => {
+test("merging preserves node identity so resolveResult.symbolOf keeps working after the merge", () => {
   const chunk = parse(`
     local a = 1
     local b = 2
