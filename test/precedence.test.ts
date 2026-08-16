@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { runMinifier } from "./lib/helpers";
 
@@ -6,11 +6,14 @@ import { runMinifier } from "./lib/helpers";
 // 定義されておらず、比較結果が常に偽になることで必要な括弧が失われ、
 // 意味が変わってしまうバグの回帰防止テスト。
 // 括弧が必要な箇所では保持され、不要な箇所では省略されることを確認する。
-void test("ビット演算子・整数除算の優先順序が壊れない (#27)", () => {
+test("ビット演算子・整数除算の優先順序が壊れない (#27)", () => {
   const { code } = runMinifier({
     label: "bitwise-precedence",
     fixture: "bitwise-precedence",
-    mode: { moduleLikeLua: false },
+    // このテストの主眼は演算子の優先順序であり、識別子リネームとは無関係。
+    // #8bの外部グローバルエイリアス化がprintを短縮してしまうと下の正規表現が
+    // 意味論的に無関係な理由で壊れるため、ここでは無効にしておく。
+    mode: { moduleLikeLua: false, globalAlias: false },
   });
 
   // `&` は `|` より強いので、意味を変えずに括弧を省略できる

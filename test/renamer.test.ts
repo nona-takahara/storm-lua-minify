@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import Parser from "luaparse";
 import { resolveScopes } from "../src/resolver";
@@ -11,7 +11,7 @@ function parse(code: string): Parser.Chunk {
   return Parser.parse(code, { luaVersion: "5.3" });
 }
 
-void test("sibling scopes (non-overlapping) reuse the same short name", () => {
+test("sibling scopes (non-overlapping) reuse the same short name", () => {
   const chunk = parse(`
     do
       local x = 1
@@ -38,7 +38,7 @@ void test("sibling scopes (non-overlapping) reuse the same short name", () => {
   assert.equal(firstName, secondName);
 });
 
-void test("symbols live in the same scope never receive the same short name", () => {
+test("symbols live in the same scope never receive the same short name", () => {
   const chunk = parse(`
     local a = 1
     local b = 2
@@ -54,7 +54,7 @@ void test("symbols live in the same scope never receive the same short name", ()
   assert.equal(new Set(names).size, 3);
 });
 
-void test("more frequently referenced symbols get shorter names", () => {
+test("more frequently referenced symbols get shorter names", () => {
   const chunk = parse(`
     local hot = 1
     local cold = 2
@@ -75,7 +75,7 @@ void test("more frequently referenced symbols get shorter names", () => {
   assert.notEqual(hotName, coldName);
 });
 
-void test("reserved names (globals/keywords) are never assigned to a symbol", () => {
+test("reserved names (globals/keywords) are never assigned to a symbol", () => {
   const chunk = parse(`
     local x = 1
     print(x)
@@ -88,7 +88,7 @@ void test("reserved names (globals/keywords) are never assigned to a symbol", ()
   assert.notEqual(result.nameOf(decl), "a");
 });
 
-void test("self is never renamed and never assigned to another symbol", () => {
+test("self is never renamed and never assigned to another symbol", () => {
   const chunk = parse(`
     local function m(self, x)
       return self, x
@@ -105,7 +105,7 @@ void test("self is never renamed and never assigned to another symbol", () => {
   assert.notEqual(result.nameOf(xParam), "self");
 });
 
-void test("usedNames reflects exactly the short names handed out", () => {
+test("usedNames reflects exactly the short names handed out", () => {
   const chunk = parse(`
     local x = 1
     do
@@ -127,4 +127,51 @@ void test("usedNames reflects exactly the short names handed out", () => {
   assert.ok(xName);
   assert.ok(yName);
   assert.deepEqual(result.usedNames, new Set([xName, yName]));
+});
+
+test("globalRenames applies to genuine global references (#8a)", () => {
+  const chunk = parse(`
+    counter = 0
+    counter = counter + 1
+  `);
+  const resolved = resolveScopes(chunk);
+  const result = assignRenames(
+    resolved,
+    new Set(),
+    new Map([["counter", "g"]]),
+  );
+
+  const firstAssignTarget = (chunk.body[0] as Parser.AssignmentStatement)
+    .variables[0] as Parser.Identifier;
+  assert.equal(result.nameOf(firstAssignTarget), "g");
+});
+
+test("globalRenames never renames a field name that happens to share a global's spelling (#8a)", () => {
+  const chunk = parse(`
+    counter = 0
+    local t = {}
+    t.counter = 1
+    print(t.counter)
+  `);
+  const resolved = resolveScopes(chunk);
+  const result = assignRenames(
+    resolved,
+    new Set(),
+    new Map([["counter", "g"]]),
+  );
+
+  const fieldAssignTarget = (
+    (chunk.body[2] as Parser.AssignmentStatement)
+      .variables[0] as Parser.MemberExpression
+  ).identifier;
+  const fieldReadTarget = (
+    (
+      (chunk.body[3] as Parser.CallStatement)
+        .expression as Parser.CallExpression
+    ).arguments[0] as Parser.MemberExpression
+  ).identifier;
+
+  // フィールド名"counter"はグローバル"counter"のリネームに巻き込まれてはいけない
+  assert.equal(result.nameOf(fieldAssignTarget), undefined);
+  assert.equal(result.nameOf(fieldReadTarget), undefined);
 });

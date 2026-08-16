@@ -1,0 +1,8 @@
+function require(m,r)package=package or{loaded={}};if package.loaded[m]then return package.loaded[m]end
+if m=="dep1"then r=(function() return{id="dep1"} end)()end
+if m=="dep2"then r=(function() return{id="dep2"} end)()end
+if m=="dep3"then r=(function() return{id="dep3"} end)()end
+package.loaded[m]=package.loaded[m]or r or true;return package.loaded[m]end
+local a,b,c=require("dep1"),require("dep2"),require("dep3")print(a,b,c)local d=1
+local e=d+1
+print(e)

@@ -6,6 +6,8 @@ import Parser, { Comment } from "luaparse";
 import { SourceNode } from "source-map";
 import { Minifier, MinifierMode } from "./minifier";
 import { staticStringArgument } from "./linker";
+import { KeywordLocator } from "./keywordLocator";
+import { originalNameOf } from "./transform";
 
 export type Chunk = Parser.Chunk & {
   globals?: (Parser.Base<"Identifer"> & {
@@ -350,6 +352,68 @@ export class MinifyFile {
     );
   }
 
+  private _keywordLocator: KeywordLocator | undefined;
+
+  /**
+   * luaparseのASTはキーワード単体の位置を持たないため、`then`/`do`/`until`の
+   * ような「文・式の間に挟まるキーワード」の正確な位置は、モジュールの
+   * ソースを再トークン化して求める（#14）。初回アクセス時に1回だけ構築する。
+   */
+  private keywordLocator(): KeywordLocator {
+    if (!this._keywordLocator) {
+      const sourceText = this.minifier.moduleSourceText.get(this.moduleName);
+      if (sourceText == undefined) {
+        throw new Error(this.moduleName + " is not found");
+      }
+      this._keywordLocator = new KeywordLocator(
+        sourceText,
+        this.minifier.luaParseSettings,
+      );
+    }
+    return this._keywordLocator;
+  }
+
+  /**
+   * `anchor`ノードの直後（`anchor.loc.end`以降）で最初に現れる`value`という
+   * 値のキーワードトークンを探し、その位置を持つ`SourceNode`を返す。
+   * `anchor`は「探しているキーワードの直前に必ず存在する、既に位置が分かって
+   * いるノード」（例: `then`の場合は条件式）を渡す。ASTの入れ子構造上、
+   * その直前ノードの`loc.end`以降を走査すれば、ネストした同名キーワード
+   * （入れ子の`if...then`等）を誤って拾うことはない。
+   */
+  private keywordAfter(anchor: Parser.Node, value: string): SourceNode {
+    return this.keywordFrom(anchor.loc?.end, value);
+  }
+
+  private keywordFrom(
+    from: { line: number; column: number } | undefined,
+    value: string,
+  ): SourceNode {
+    const pos = from ? this.keywordLocator().findFrom(from, value) : undefined;
+    return new SourceNode(
+      pos?.line ?? null,
+      pos?.column ?? null,
+      this.fileName,
+      value,
+    );
+  }
+
+  /**
+   * `if`/`while`/`do`/`for`/`function`を締める`end`キーワードの位置を返す。
+   * これらの文は必ず`end`で終わり、末尾に余計な内容が続かないため、
+   * 文全体の`loc.end`（luaparseが既に計算済み）から`end`の文字数(3)を
+   * 引くだけで、再トークン化なしに正確な位置を求められる。
+   */
+  private endKeyword(node: Parser.Node): SourceNode {
+    const end = node.loc?.end;
+    return new SourceNode(
+      end?.line ?? null,
+      end == undefined ? null : end.column - 3,
+      this.fileName,
+      "end",
+    );
+  }
+
   private formatStatementList(body: Parser.Statement[] | Parser.Statement) {
     const result = this.sourceNodeHelper(undefined, []);
     wrapArray(body).forEach((statement) => {
@@ -490,30 +554,36 @@ export class MinifyFile {
         if (clause.type == "IfClause") {
           addWithSeparator(clauseMap, "if");
           addWithSeparator(clauseMap, this.formatExpression(clause.condition));
-          addWithSeparator(clauseMap, "then");
+          addWithSeparator(
+            clauseMap,
+            this.keywordAfter(clause.condition, "then"),
+          );
         } else if (clause.type == "ElseifClause") {
           addWithSeparator(clauseMap, "elseif");
           addWithSeparator(clauseMap, this.formatExpression(clause.condition));
-          addWithSeparator(clauseMap, "then");
+          addWithSeparator(
+            clauseMap,
+            this.keywordAfter(clause.condition, "then"),
+          );
         } else {
           addWithSeparator(clauseMap, "else");
         }
         addWithSeparator(clauseMap, this.formatStatementList(clause.body));
         addWithSeparator(result, clauseMap);
       });
-      addWithSeparator(result, "end");
+      addWithSeparator(result, this.endKeyword(statement));
       return result;
     } else if (statement.type == "WhileStatement") {
       const result = this.sourceNodeHelper(statement, "while");
       addWithSeparator(result, this.formatExpression(statement.condition));
-      addWithSeparator(result, "do");
+      addWithSeparator(result, this.keywordAfter(statement.condition, "do"));
       addWithSeparator(result, this.formatStatementList(statement.body));
-      addWithSeparator(result, "end");
+      addWithSeparator(result, this.endKeyword(statement));
       return result;
     } else if (statement.type == "DoStatement") {
       const result = this.sourceNodeHelper(statement, "do");
       addWithSeparator(result, this.formatStatementList(statement.body));
-      addWithSeparator(result, "end");
+      addWithSeparator(result, this.endKeyword(statement));
       return result;
     } else if (statement.type == "ReturnStatement") {
       const result = this.sourceNodeHelper(statement, "return");
@@ -529,7 +599,13 @@ export class MinifyFile {
     } else if (statement.type == "RepeatStatement") {
       const result = this.sourceNodeHelper(statement, "repeat");
       addWithSeparator(result, this.formatStatementList(statement.body));
-      addWithSeparator(result, "until");
+      // body内の最後の文があればその直後、無ければ`repeat`キーワード自身の
+      // 開始位置から`until`を探す（bodyが空でも、その手前には`repeat`しか
+      // 存在しないため安全に検索できる）。
+      const untilAnchor = statement.body.length
+        ? statement.body[statement.body.length - 1].loc?.end
+        : statement.loc?.start;
+      addWithSeparator(result, this.keywordFrom(untilAnchor, "until"));
       addWithSeparator(result, this.formatExpression(statement.condition));
       return result;
     } else if (statement.type == "FunctionDeclaration") {
@@ -558,7 +634,7 @@ export class MinifyFile {
 
       addWithSeparator(result, ")");
       addWithSeparator(result, this.formatStatementList(statement.body));
-      addWithSeparator(result, "end");
+      addWithSeparator(result, this.endKeyword(statement));
       return result;
     } else if (statement.type == "ForGenericStatement") {
       // see also `ForNumericStatement`
@@ -572,9 +648,15 @@ export class MinifyFile {
       addWithSeparator(result, variables.slice(0, -1));
       addWithSeparator(result, "in");
       addWithSeparator(result, iterators.slice(0, -1));
-      addWithSeparator(result, "do");
+      addWithSeparator(
+        result,
+        this.keywordAfter(
+          statement.iterators[statement.iterators.length - 1],
+          "do",
+        ),
+      );
       addWithSeparator(result, this.formatStatementList(statement.body));
-      addWithSeparator(result, "end");
+      addWithSeparator(result, this.endKeyword(statement));
       return result;
     } else if (statement.type == "ForNumericStatement") {
       // The variables in a `ForNumericStatement` are always local
@@ -590,9 +672,12 @@ export class MinifyFile {
         addWithSeparator(result, this.formatExpression(statement.step));
       }
 
-      addWithSeparator(result, "do");
+      addWithSeparator(
+        result,
+        this.keywordAfter(statement.step ?? statement.end, "do"),
+      );
       addWithSeparator(result, this.formatStatementList(statement.body));
-      addWithSeparator(result, "end");
+      addWithSeparator(result, this.endKeyword(statement));
       return result;
     } else if (statement.type == "LabelStatement") {
       // The identifier names in a `LabelStatement` can safely be renamed
@@ -790,7 +875,7 @@ export class MinifyFile {
       result.add(")");
       const body = this.formatStatementList(expression.body);
       addWithSeparator(result, body);
-      addWithSeparator(result, "end");
+      addWithSeparator(result, this.endKeyword(expression));
       return result;
     } else if (expression.type == "TableConstructorExpression") {
       const result = this.sourceNodeHelper(expression, "{");
@@ -931,10 +1016,14 @@ export class MinifyFile {
     const renamed = this.minifier
       .getRenameResult(this.moduleName)
       .nameOf(nameItem);
+    // #8bのエイリアス化はノードの`.name`自体を書き換えるため、loc（元のソース上の
+    // 位置）はそのままでもnameItem.nameはもう元の識別子名ではない。Source Mapの
+    // namesフィールドには常に「元のソースで書かれていた名前」を載せる必要がある。
+    const originalName = originalNameOf(nameItem) ?? nameItem.name;
     return this.sourceNodeHelper(
       nameItem,
       renamed ?? nameItem.name,
-      nameItem.name,
+      originalName,
     );
   }
 }

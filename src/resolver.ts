@@ -26,6 +26,10 @@ export interface Symbol {
 export interface GlobalBinding {
   readonly name: string;
   readonly references: Parser.Identifier[];
+  // 代入先（AssignmentStatementの左辺、または`function name() end`形式の宣言）
+  // として出現した箇所のみ。一度もここに現れないグローバルは、エンジン等の
+  // 外部から供給される値を読むだけの識別子とみなせる（#8a）。
+  readonly writes: Parser.Identifier[];
 }
 
 export interface ResolveResult {
@@ -36,6 +40,11 @@ export interface ResolveResult {
   // 宣言・参照どちらの識別子ノードからも対応するシンボルを引ける。
   // グローバル参照やフィールド名など、シンボルを持たない識別子はundefinedを返す。
   symbolOf(identifier: Parser.Identifier): Symbol | undefined;
+  // このノードが実際にグローバル参照として解決されたものであればtrue。
+  // フィールド名（`.foo`）やテーブルキー名は、たまたま同じ名前文字列の
+  // グローバルが存在してもここではfalseになる（#8a: ノード同一性ベースで
+  // 判定するため、名前文字列だけを見た誤リネームを防ぐ）。
+  isGlobalReference(identifier: Parser.Identifier): boolean;
 }
 
 interface MutableScope extends Scope {
@@ -50,6 +59,7 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
   const allSymbols: Symbol[] = [];
   const globals = new Map<string, GlobalBinding>();
   const identifierSymbols = new WeakMap<Parser.Identifier, Symbol>();
+  const globalReferenceNodes = new WeakSet<Parser.Identifier>();
 
   function createScope(
     kind: Scope["kind"],
@@ -127,7 +137,11 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
     return undefined;
   }
 
-  function reference(scope: MutableScope, node: Parser.Identifier) {
+  function reference(
+    scope: MutableScope,
+    node: Parser.Identifier,
+    isWrite = false,
+  ) {
     const symbol = lookupBinding(scope, node.name);
     if (symbol) {
       symbol.references.push(node);
@@ -136,10 +150,14 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
     }
     let binding = globals.get(node.name);
     if (!binding) {
-      binding = { name: node.name, references: [] };
+      binding = { name: node.name, references: [], writes: [] };
       globals.set(node.name, binding);
     }
     binding.references.push(node);
+    if (isWrite) {
+      binding.writes.push(node);
+    }
+    globalReferenceNodes.add(node);
   }
 
   // ラベルはブロック内での宣言位置に関わらずブロック全体から参照できる
@@ -178,7 +196,7 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
         });
         statement.variables.forEach((v) => {
           if (v.type === "Identifier") {
-            reference(scope, v);
+            reference(scope, v, true);
           } else {
             resolveExpression(v, scope);
           }
@@ -275,7 +293,7 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
           declare(scope, fn.identifier, "local");
         } else {
           // 非local: 既存のローカル/グローバルへの代入として扱う（新規宣言ではない）
-          reference(scope, fn.identifier);
+          reference(scope, fn.identifier, true);
         }
       } else {
         resolveExpression(fn.identifier, scope);
@@ -374,5 +392,6 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
     symbols: allSymbols,
     globals,
     symbolOf: (identifier) => identifierSymbols.get(identifier),
+    isGlobalReference: (identifier) => globalReferenceNodes.has(identifier),
   };
 }
