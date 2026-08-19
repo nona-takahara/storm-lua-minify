@@ -8,6 +8,7 @@ import { Minifier, MinifierMode } from "./minifier";
 import { staticStringArgument } from "./linker";
 import { KeywordLocator } from "./keywordLocator";
 import { originalNameOf } from "./transform";
+import { isPreservedComment } from "./sourceMetadata";
 
 export type Chunk = Parser.Chunk & {
   globals?: (Parser.Base<"Identifer"> & {
@@ -281,20 +282,16 @@ export class MinifyFile {
     this.mode = mode;
   }
 
-  parse(noComment: boolean) {
+  parse() {
     const body = this.formatStatementList(this.ast.body);
-    if (!noComment && this.ast.comments) {
-      const comments = this.ast.comments;
-      comments
-        .reverse()
-        .filter((v) => v.raw.includes("--#") || v.raw.includes("[[#"))
-        .forEach((comment) => {
-          body.prepend([this.sourceNodeHelper(comment, comment.raw), "\n"]);
-        });
-      return body;
-    } else {
-      return body;
-    }
+    this.minifier
+      .getSourceMetadata(this.moduleName)
+      .afterModuleComments()
+      .filter(isPreservedComment)
+      .forEach((comment) => {
+        body.add(["\n", this.sourceNodeHelper(comment, comment.raw)]);
+      });
+    return body;
   }
 
   /**
@@ -303,9 +300,8 @@ export class MinifyFile {
    * 展開したい呼び出し側（#29のレビュー対応）が利用する。
    * 該当しない場合はundefinedを返し、呼び出し側はIIFE方式へフォールバックする。
    */
-  parseAsStatementsAndFinalExpression(
-    noComment: boolean,
-  ): { statements: SourceNode; finalExpression: SourceNode } | undefined {
+  parseAsStatementsAndFinalExpression():
+    { statements: SourceNode; finalExpression: SourceNode } | undefined {
     const body = this.ast.body;
     const last = body[body.length - 1];
     if (
@@ -317,18 +313,21 @@ export class MinifyFile {
     }
 
     const statements = this.formatStatementList(body.slice(0, -1));
-    if (!noComment && this.ast.comments) {
-      this.ast.comments
-        .slice()
-        .reverse()
-        .filter((v) => v.raw.includes("--#") || v.raw.includes("[[#"))
-        .forEach((comment) => {
-          statements.prepend([
-            this.sourceNodeHelper(comment, comment.raw),
-            "\n",
-          ]);
-        });
-    }
+
+    const metadata = this.minifier.getSourceMetadata(this.moduleName);
+    [
+      ...metadata.beforeOf(last),
+      ...metadata.trailingOf(last),
+      ...metadata.afterModuleComments(),
+    ]
+      .filter(isPreservedComment)
+      .forEach((comment) => {
+        statements.add([
+          "\n",
+          this.sourceNodeHelper(comment, comment.raw),
+          "\n",
+        ]);
+      });
 
     const finalExpression = this.formatExpression(last.arguments[0]);
     return { statements, finalExpression };
@@ -416,8 +415,30 @@ export class MinifyFile {
 
   private formatStatementList(body: Parser.Statement[] | Parser.Statement) {
     const result = this.sourceNodeHelper(undefined, []);
+    const metadata = this.minifier.getSourceMetadata(this.moduleName);
     wrapArray(body).forEach((statement) => {
-      addWithSeparator(result, this.formatStatement(statement), "\n");
+      const statementNode = this.sourceNodeHelper(undefined, []);
+      metadata
+        .beforeOf(statement)
+        .filter(isPreservedComment)
+        .forEach((comment) => {
+          statementNode.add([
+            this.sourceNodeHelper(comment, comment.raw),
+            "\n",
+          ]);
+        });
+      statementNode.add(this.formatStatement(statement));
+      metadata
+        .trailingOf(statement)
+        .filter(isPreservedComment)
+        .forEach((comment) => {
+          statementNode.add([
+            " ",
+            this.sourceNodeHelper(comment, comment.raw),
+            "\n",
+          ]);
+        });
+      addWithSeparator(result, statementNode, "\n");
     });
     return result;
   }

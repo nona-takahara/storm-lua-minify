@@ -13,6 +13,7 @@
 import Parser from "luaparse";
 import { ResolveResult, Symbol } from "./resolver";
 import { staticStringArgument, RESERVED_MODULE_FUNCTION_NAMES } from "./linker";
+import { SourceMetadata } from "./sourceMetadata";
 
 export interface MergeLocalsOptions {
   // SLモード（moduleLikeLua:false）では`local x = require("m")`形式の文を
@@ -27,8 +28,9 @@ export function mergeLocalDeclarations(
   chunk: Parser.Chunk,
   resolveResult: ResolveResult,
   options: MergeLocalsOptions,
+  metadata?: SourceMetadata,
 ): void {
-  processBlock(chunk.body, resolveResult, options);
+  processBlock(chunk.body, resolveResult, options, metadata);
 }
 
 // #8b: リネームできない外部グローバル識別子（screen等）をチャンク先頭で
@@ -286,17 +288,18 @@ function processBlock(
   body: Parser.Statement[],
   resolveResult: ResolveResult,
   options: MergeLocalsOptions,
+  metadata?: SourceMetadata,
 ): void {
   // 先に子ブロック（ネストしたスコープ）を処理する。子ブロックは別配列なので
   // このレベルでのまとめ上げには影響しない。
   body.forEach((statement) => {
     walkStatement(statement, {
       onBlock: (nested) => {
-        processBlock(nested, resolveResult, options);
+        processBlock(nested, resolveResult, options, metadata);
       },
     });
   });
-  mergeRunsInPlace(body, resolveResult, options);
+  mergeRunsInPlace(body, resolveResult, options, metadata);
 }
 
 // あるexpr（候補文のinit式）の中に現れる識別子参照をすべて収集する。
@@ -460,6 +463,7 @@ function mergeRun(
   run: readonly Parser.LocalStatement[],
   resolveResult: ResolveResult,
   options: MergeLocalsOptions,
+  metadata?: SourceMetadata,
 ): Parser.LocalStatement[] {
   const output: Parser.LocalStatement[] = [];
   let groupStart = 0;
@@ -469,7 +473,13 @@ function mergeRun(
       return;
     }
     const group = run.slice(groupStart, endExclusive);
-    output.push(group.length >= 2 ? combineGroup(group) : group[0]);
+    if (group.length >= 2) {
+      const combined = combineGroup(group);
+      metadata?.transferStatements(group, combined);
+      output.push(combined);
+    } else {
+      output.push(group[0]);
+    }
   };
 
   for (let k = 0; k < run.length; k++) {
@@ -508,6 +518,7 @@ function mergeRunsInPlace(
   body: Parser.Statement[],
   resolveResult: ResolveResult,
   options: MergeLocalsOptions,
+  metadata?: SourceMetadata,
 ): void {
   const result: Parser.Statement[] = [];
   let i = 0;
@@ -524,7 +535,7 @@ function mergeRunsInPlace(
       run.push(body[j] as Parser.LocalStatement);
       j++;
     }
-    result.push(...mergeRun(run, resolveResult, options));
+    result.push(...mergeRun(run, resolveResult, options, metadata));
     i = j;
   }
   body.splice(0, body.length, ...result);
