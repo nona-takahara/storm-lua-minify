@@ -88,3 +88,25 @@ local b = call()`;
     ["--# first", "--# second"],
   );
 });
+
+test("moves outer comments to the first and last statement of a replacement", () => {
+  const code = `--# leading
+local a, b = first(), second() --# trailing`;
+  const { chunk, metadata: result } = metadata(code);
+  const source = chunk.body[0];
+  const original = source as Parser.LocalStatement;
+  const replacements = original.init.map(
+    (expression) =>
+      ({ type: "CallStatement", expression }) as Parser.CallStatement,
+  );
+  result.replaceStatement(source, replacements);
+  assert.deepEqual(
+    result.beforeOf(replacements[0]).map((comment) => comment.raw),
+    ["--# leading"],
+  );
+  assert.deepEqual(
+    result.trailingOf(replacements[1]).map((comment) => comment.raw),
+    ["--# trailing"],
+  );
+  assert.equal(result.trailingOf(replacements[0]).length, 0);
+});

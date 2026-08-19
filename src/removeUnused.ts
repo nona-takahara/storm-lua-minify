@@ -22,11 +22,8 @@ function nestedBodies(statement: Parser.Statement): Parser.Statement[][] {
   }
 }
 
-function removableInitializer(statement: Parser.LocalStatement): boolean {
-  if (statement.variables.length !== 1) return false;
-  if (statement.init.length === 0) return true;
-  if (statement.init.length !== 1) return false;
-  switch (statement.init[0].type) {
+function isDiscardableInitializer(expression: Parser.Expression): boolean {
+  switch (expression.type) {
     case "NilLiteral":
     case "BooleanLiteral":
     case "NumericLiteral":
@@ -36,6 +33,33 @@ function removableInitializer(statement: Parser.LocalStatement): boolean {
     default:
       return false;
   }
+}
+
+function isStatementCall(
+  expression: Parser.Expression,
+): expression is
+  | Parser.CallExpression
+  | Parser.TableCallExpression
+  | Parser.StringCallExpression {
+  return (
+    expression.type === "CallExpression" ||
+    expression.type === "TableCallExpression" ||
+    expression.type === "StringCallExpression"
+  );
+}
+
+function callStatement(
+  expression:
+    | Parser.CallExpression
+    | Parser.TableCallExpression
+    | Parser.StringCallExpression,
+): Parser.CallStatement {
+  return {
+    type: "CallStatement",
+    expression,
+    loc: expression.loc,
+    range: rangeOf(expression),
+  } as Parser.CallStatement;
 }
 
 function hasExternalReference(
@@ -64,9 +88,9 @@ function removeFromBlock(
     });
   });
 
-  const removed = new Set<Parser.Statement>();
-  const kept = body.filter((statement) => {
-    if (metadata.annotationsOf(statement).keep) return true;
+  const replacements = new Map<Parser.Statement, Parser.Statement[]>();
+  body.forEach((statement) => {
+    if (metadata.annotationsOf(statement).keep) return;
     if (
       statement.type === "FunctionDeclaration" &&
       statement.isLocal &&
@@ -75,32 +99,95 @@ function removeFromBlock(
       const symbol = resolved.symbolOf(statement.identifier);
       if (symbol && !hasExternalReference(statement, symbol.references)) {
         changed = true;
-        removed.add(statement);
-        return false;
+        replacements.set(statement, []);
+        return;
       }
     }
-    if (
-      statement.type === "LocalStatement" &&
-      removableInitializer(statement)
-    ) {
-      const symbol = resolved.symbolOf(statement.variables[0]);
-      if (symbol && symbol.references.length === 0) {
-        changed = true;
-        removed.add(statement);
-        return false;
-      }
-    }
-    return true;
-  });
-  if (kept.length !== body.length) {
-    body.forEach((statement, index) => {
-      if (!removed.has(statement)) return;
-      const next = body
-        .slice(index + 1)
-        .find((candidate) => !removed.has(candidate));
-      metadata.removeStatement(statement, next);
+    if (statement.type !== "LocalStatement") return;
+
+    const unused = statement.variables.map((variable) => {
+      const symbol = resolved.symbolOf(variable);
+      return Boolean(symbol && symbol.references.length === 0);
     });
-    body.splice(0, body.length, ...kept);
+    if (!unused.some(Boolean)) return;
+
+    if (unused.every(Boolean)) {
+      if (
+        statement.init.every(
+          (expression) =>
+            isDiscardableInitializer(expression) || isStatementCall(expression),
+        )
+      ) {
+        const calls = statement.init.filter(isStatementCall).map(callStatement);
+        changed = true;
+        replacements.set(statement, calls);
+      }
+      return;
+    }
+
+    let variables = [...statement.variables];
+    let init = [...statement.init];
+    let unusedAfterPairRemoval = [...unused];
+
+    // 初期値なしなら全変数の値はnilで固定され、位置対応を維持する必要がない。
+    if (init.length === 0) {
+      variables = variables.filter((_, index) => !unused[index]);
+      unusedAfterPairRemoval = unused.filter((value) => !value);
+    }
+
+    // 要素数が一致するときだけ、変数とRHSの対応を崩さず安全なペアを抜ける。
+    if (init.length > 0 && variables.length === init.length) {
+      const retainedIndexes = variables
+        .map((_, index) => index)
+        .filter(
+          (index) => !(unused[index] && isDiscardableInitializer(init[index])),
+        );
+      variables = retainedIndexes.map((index) => variables[index]);
+      init = retainedIndexes.map((index) => init[index]);
+      unusedAfterPairRemoval = retainedIndexes.map((index) => unused[index]);
+    }
+
+    // 末尾の未使用名は、対応RHSを余剰式として評価させたまま名前だけ除ける。
+    let retainedVariableCount = variables.length;
+    while (
+      retainedVariableCount > 0 &&
+      unusedAfterPairRemoval[retainedVariableCount - 1]
+    ) {
+      retainedVariableCount--;
+    }
+    variables = variables.slice(0, retainedVariableCount);
+
+    if (variables.length === statement.variables.length) return;
+    changed = true;
+    const replacement = {
+      ...statement,
+      variables,
+      init,
+    } as Parser.LocalStatement;
+    replacements.set(statement, [replacement]);
+  });
+
+  if (replacements.size > 0) {
+    const nextBody: Parser.Statement[] = [];
+    body.forEach((statement, index) => {
+      const replacement = replacements.get(statement);
+      if (!replacement) {
+        nextBody.push(statement);
+        return;
+      }
+      if (replacement.length > 0) {
+        metadata.replaceStatement(statement, replacement);
+        nextBody.push(...replacement);
+        return;
+      }
+      const next = body.slice(index + 1).find((candidate) => {
+        const candidateReplacement = replacements.get(candidate);
+        return !candidateReplacement || candidateReplacement.length > 0;
+      });
+      const nextReplacement = next ? replacements.get(next) : undefined;
+      metadata.removeStatement(statement, nextReplacement?.[0] ?? next);
+    });
+    body.splice(0, body.length, ...nextBody);
   }
   return changed;
 }
