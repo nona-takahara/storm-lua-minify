@@ -507,6 +507,15 @@ export class MinifyFile {
     if (!moduleRef || moduleRef.kind !== "require") {
       return undefined;
     }
+    // 戻り値を使わないrequireでは、依存モジュール末尾のreturn式も不要になる。
+    // return文ごと展開すると呼び出し元を途中でreturnし、後続文がある場合は
+    // 構文上も不正になるため、分離可能なら副作用を持つ先行文だけを出力する。
+    const spliced = this.minifier.splitModuleForStatementSplice(
+      moduleRef.moduleName,
+    );
+    if (spliced) {
+      return spliced.statements;
+    }
     return this.minifier.printModuleInline(moduleRef.moduleName);
   }
 

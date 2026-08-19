@@ -239,6 +239,35 @@ export class SourceMetadata {
     }
   }
 
+  /**
+   * 1つの文を複数文へ置換するとき、文境界に属する情報を外側の境界へ移す。
+   * leading/detachedは最初、trailingは最後へ置くことで、置換後もコメントの
+   * 前後関係を変えない。アノテーションは変換判断に使った後も、後続パスが
+   * 同じ保護指定を観測できるよう全置換文へ引き継ぐ。
+   */
+  replaceStatement(
+    source: Parser.Statement,
+    replacements: readonly Parser.Statement[],
+  ): void {
+    if (replacements.length === 0) return;
+    const first = replacements[0];
+    const last = replacements[replacements.length - 1];
+
+    const detached = this.detachedBefore.get(source);
+    const before = this.before.get(source);
+    const trailing = this.trailing.get(source);
+    if (detached?.length) this.detachedBefore.set(first, detached);
+    if (before?.length) this.before.set(first, before);
+    if (trailing?.length) this.trailing.set(last, trailing);
+
+    const annotations = this.annotations.get(source);
+    if (annotations) {
+      replacements.forEach((statement) =>
+        this.annotations.set(statement, annotations),
+      );
+    }
+  }
+
   removeStatement(
     statement: Parser.Statement,
     nextStatement?: Parser.Statement,
