@@ -1,0 +1,62 @@
+import { test } from "vitest";
+import assert from "node:assert/strict";
+import Parser from "luaparse";
+import { runMinifier } from "./lib/helpers";
+
+test("annotations protect declarations and preserved comments stay near their statements", () => {
+  const { code } = runMinifier({
+    label: "annotations",
+    fixture: "annotations",
+    mode: { moduleLikeLua: false, mergeLocals: false, globalAlias: false },
+  });
+  assert.match(code, /--# file header\nfunction onTick/);
+  assert.match(code, /local descriptive=2/);
+  assert.doesNotMatch(code, /retained/);
+  assert.match(code, /--# before call\nprint\([a-zA-Z_]\)/);
+  assert.match(code, /print\([a-zA-Z_]\) --# after call/);
+  assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
+  assert.doesNotMatch(code, /unused/);
+});
+
+test("annotation and configured global-name protection are combined", () => {
+  const { code } = runMinifier({
+    label: "annotation and config protection",
+    fixture: "annotations",
+    mode: {
+      moduleLikeLua: false,
+      mergeLocals: false,
+      globalAlias: false,
+      neverRenameGlobals: new Set(["configuredGlobal"]),
+    },
+  });
+  assert.match(code, /function onTick/);
+  assert.match(code, /configuredGlobal=4/);
+});
+
+test("removeUnused false preserves otherwise removable locals", () => {
+  const { code } = runMinifier({
+    label: "annotations no removal",
+    fixture: "annotations",
+    mode: {
+      moduleLikeLua: false,
+      removeUnused: false,
+      mergeLocals: false,
+      globalAlias: false,
+    },
+  });
+  assert.match(code, /local [a-zA-Z_]=3/);
+});
+
+test("disabling future global removal does not disable local removal", () => {
+  const { code } = runMinifier({
+    label: "annotations local removal",
+    fixture: "annotations",
+    mode: {
+      moduleLikeLua: false,
+      removeUnusedGlobals: false,
+      mergeLocals: false,
+      globalAlias: false,
+    },
+  });
+  assert.doesNotMatch(code, /unused/);
+});

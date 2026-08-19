@@ -89,6 +89,7 @@ export function assignRenames(
   // 全モジュールに対して同じマップを渡すことで、モジュールをまたいで
   // 共有される1つのランタイム束縛に一貫した短縮名を割り当てられる。
   globalRenames?: ReadonlyMap<string, string>,
+  keepNames: ReadonlySet<Symbol> = new Set(),
 ): RenameResult {
   const slotOf = assignSlots(resolveResult.chunkScope, new Set());
 
@@ -108,17 +109,23 @@ export function assignRenames(
   );
 
   const nameOfSlot = new Map<number, string>();
+  const unavailableNames = new Set(reserved);
+  keepNames.forEach((symbol) => unavailableNames.add(symbol.name));
   let counter = 0;
   orderedSlots.forEach((slot) => {
     let candidate: string;
     do {
       candidate = generateCandidate(counter++);
-    } while (!isAvailable(candidate, reserved));
+    } while (!isAvailable(candidate, unavailableNames));
+    unavailableNames.add(candidate);
     nameOfSlot.set(slot, candidate);
   });
 
   const nameOfSymbol = new Map<Symbol, string>();
   slotOf.forEach((slot, symbol) => {
+    if (keepNames.has(symbol)) {
+      return;
+    }
     const name = nameOfSlot.get(slot);
     if (name !== undefined) {
       nameOfSymbol.set(symbol, name);

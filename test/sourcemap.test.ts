@@ -152,7 +152,9 @@ test("sourcemap: if/then/elseif/else/end等のキーワードトークンが、�
     label:
       "sourcemap: if/then/elseif/else/end等のキーワードトークンが、それぞれ独立して元ソース上の自身の出現位置にマップされる (#14)",
     fixture: "control-flow-keywords",
-    mode: { moduleLikeLua: false },
+    // このテストは未使用関数内の`end`も含めた位置対応を検証するため、
+    // unused除去を無効にして入力中の全キーワードを出力へ残す。
+    mode: { moduleLikeLua: false, removeUnused: false },
   });
   const source = fs.readFileSync(
     fixtureEntryPath("control-flow-keywords"),

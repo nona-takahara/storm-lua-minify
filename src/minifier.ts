@@ -8,6 +8,8 @@ import { resolveScopes, ResolveResult } from "./resolver";
 import { assignRenames, RenameResult } from "./renamer";
 import { classifyAndRenameGlobals } from "./globalRename";
 import { mergeLocalDeclarations, insertGlobalAliases } from "./transform";
+import { SourceMetadata } from "./sourceMetadata";
+import { removeUnusedLocals } from "./removeUnused";
 
 export interface MinifierMode {
   moduleLikeLua: boolean;
@@ -24,6 +26,10 @@ export interface MinifierMode {
   // 外部グローバル識別子（リネーム不可のもの）のローカル代入短縮（#8b）を
   // 行うかどうか。省略時はtrue扱い。renameがfalseの場合は常に無効になる。
   globalAlias?: boolean;
+  // 未使用ローカル宣言の安全な範囲での削除。省略時はtrue扱い。
+  removeUnused?: boolean;
+  // 将来の未使用グローバル削除用スイッチ。removeUnused=falseなら常に無効。
+  removeUnusedGlobals?: boolean;
 }
 
 const NO_RENAME: RenameResult = {
@@ -49,6 +55,7 @@ export class Minifier {
   private readonly renameCache = new Map<string, RenameResult>();
   // #8a: プログラム全体を横断して決定された「内部グローバル名 -> 短縮名」の対応
   private globalRenames = new Map<string, string>();
+  private readonly moduleMetadata = new Map<string, SourceMetadata>();
 
   constructor(
     entryFilePath: string,
@@ -59,7 +66,14 @@ export class Minifier {
     this.moduleSourceText = new Map<string, string>();
     this.moduleAST = new Map<string, Chunk>();
     this.moduleNameAndFileName = new Map<string, string>();
-    this.luaParseSettings = luaParseSettings;
+    // コメントの所有関係と自己再帰参照の判定は位置情報を不変条件とする。
+    // 呼び出し側が省略・無効化しても、内部パスに必要な情報は常に収集する。
+    this.luaParseSettings = {
+      ...luaParseSettings,
+      comments: true,
+      locations: true,
+      ranges: true,
+    };
     this.mode = mode;
     const pn = path.parse(entryFilePath);
     this.dir = pn.dir;
@@ -68,28 +82,13 @@ export class Minifier {
 
   parse(): SourceNode {
     this.link();
+    this.removeUnusedAll();
+    this.rebuildIdentifiersInUse();
     this.computeGlobalRenames();
     this.transformAll();
     this.renameAll();
 
     const parts: (SourceNode | string)[] = [];
-
-    const entryComments = this.moduleAST.get(this.entryModule)?.comments;
-    if (entryComments) {
-      entryComments
-        .filter((v) => v.raw.includes("--#") || v.raw.includes("[[#"))
-        .forEach((comment) => {
-          parts.push(
-            new SourceNode(
-              comment.loc?.start.line ?? null,
-              comment.loc?.start.column ?? null,
-              this.moduleNameAndFileName.get(this.entryModule) ?? null,
-              comment.raw,
-            ),
-            "\n",
-          );
-        });
-    }
 
     if (this.mode.moduleLikeLua) {
       parts.push(this.buildRequireWrapper());
@@ -136,7 +135,7 @@ export class Minifier {
       ast,
       this,
       this.mode,
-    ).parseAsStatementsAndFinalExpression(moduleName === this.entryModule);
+    ).parseAsStatementsAndFinalExpression();
   }
 
   /**
@@ -152,6 +151,14 @@ export class Minifier {
       throw new Error(moduleName + " is not found");
     }
     return cached;
+  }
+
+  getSourceMetadata(moduleName: string): SourceMetadata {
+    const metadata = this.moduleMetadata.get(moduleName);
+    if (!metadata) {
+      throw new Error(moduleName + " is not found");
+    }
+    return metadata;
   }
 
   /**
@@ -179,6 +186,14 @@ export class Minifier {
         resolved,
         this.identifiersInUse,
         this.globalRenames,
+        new Set(
+          resolved.symbols.filter(
+            (symbol) =>
+              this.getSourceMetadata(moduleName).annotationsOfIdentifier(
+                symbol.declaration,
+              ).keepName,
+          ),
+        ),
       );
       this.renameCache.set(moduleName, result);
       result.usedNames.forEach((name) => this.identifiersInUse.add(name));
@@ -210,6 +225,7 @@ export class Minifier {
     const excludeGlobalNames = new Set([
       ...this.globalRenames.keys(),
       ...(this.mode.neverRenameGlobals ?? []),
+      ...this.annotationProtectedGlobals(),
     ]);
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
@@ -226,9 +242,14 @@ export class Minifier {
       }
 
       if (this.mode.mergeLocals !== false) {
-        mergeLocalDeclarations(ast, resolved, {
-          preserveRequireSplice: !this.mode.moduleLikeLua,
-        });
+        mergeLocalDeclarations(
+          ast,
+          resolved,
+          {
+            preserveRequireSplice: !this.mode.moduleLikeLua,
+          },
+          this.getSourceMetadata(moduleName),
+        );
       }
 
       this.moduleResolve.set(moduleName, resolved);
@@ -250,7 +271,10 @@ export class Minifier {
     if (this.mode.rename === false || this.mode.globalRename === false) {
       return;
     }
-    const neverRename = this.mode.neverRenameGlobals ?? new Set<string>();
+    const neverRename = new Set([
+      ...(this.mode.neverRenameGlobals ?? []),
+      ...this.annotationProtectedGlobals(),
+    ]);
     this.globalRenames = classifyAndRenameGlobals(
       this.moduleResolve,
       neverRename,
@@ -268,9 +292,47 @@ export class Minifier {
     if (!ast || !fileName) {
       throw new Error(moduleName + " is not found");
     }
-    return new MinifyFile(fileName, moduleName, ast, this, this.mode).parse(
-      moduleName === this.entryModule,
-    );
+    return new MinifyFile(fileName, moduleName, ast, this, this.mode).parse();
+  }
+
+  private annotationProtectedGlobals(): Set<string> {
+    const protectedNames = new Set<string>();
+    this.moduleResolve.forEach((resolved, moduleName) => {
+      const metadata = this.getSourceMetadata(moduleName);
+      resolved.globals.forEach((binding) => {
+        if (
+          binding.writes.some(
+            (write) => metadata.annotationsOfIdentifier(write).keepName,
+          )
+        ) {
+          protectedNames.add(binding.name);
+        }
+      });
+    });
+    return protectedNames;
+  }
+
+  private removeUnusedAll(): void {
+    if (this.mode.removeUnused === false) return;
+    this.linkOrder.forEach((moduleName) => {
+      const ast = this.moduleAST.get(moduleName);
+      const metadata = this.getSourceMetadata(moduleName);
+      let resolved = this.moduleResolve.get(moduleName);
+      if (!ast || !resolved) throw new Error(moduleName + " is not found");
+      while (removeUnusedLocals(ast, resolved, metadata)) {
+        resolved = resolveScopes(ast);
+      }
+      this.moduleResolve.set(moduleName, resolved);
+    });
+  }
+
+  private rebuildIdentifiersInUse(): void {
+    this.identifiersInUse.clear();
+    this.moduleResolve.forEach((resolved) => {
+      resolved.globals.forEach((binding) =>
+        this.identifiersInUse.add(binding.name),
+      );
+    });
   }
 
   /**
@@ -307,15 +369,13 @@ export class Minifier {
       const code = fs.readFileSync(fullResolvePath).toString();
       const ast = Parser.parse(code, this.luaParseSettings) as Chunk;
 
+      this.moduleMetadata.set(moduleName, new SourceMetadata(ast, code));
+
       // Resolveパス（#19）: このモジュールのスコープ/シンボルを解析し、Renameパスの
       // 入力として使い回せるようキャッシュする。グローバル参照はプログラム全体で
       // 予約すべき名前（identifiersInUse）としてここで集計する。
       const resolved = resolveScopes(ast);
       this.moduleResolve.set(moduleName, resolved);
-      resolved.globals.forEach((binding) =>
-        this.identifiersInUse.add(binding.name),
-      );
-
       this.moduleSourceText.set(moduleName, code);
       this.moduleAST.set(moduleName, ast);
       // Source Mapの`sources`はURLとして解釈されるため、OS依存のpath.sepではなく
