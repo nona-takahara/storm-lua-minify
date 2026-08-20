@@ -4,7 +4,9 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import Parser from "luaparse";
+import { SourceMapConsumer } from "source-map";
 import { resolveScopes } from "../src/resolver";
+import { fixtureEntryPath, runMinifier } from "./lib/helpers";
 import {
   foldConstants,
   constantValueOf,
@@ -40,7 +42,7 @@ function foldExpr(exprSource: string): Parser.Expression {
 
 // 実際にMinifierを通して、opt-in有効時の出力文字列を得る（一時ファイル経由）。
 // 「出力を再パースして壊れていないことを確認する」系のテストに使う。
-function runMinifier(code: string, foldConstants: boolean): string {
+function minifyWith(code: string, foldConstants: boolean): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "storm-const-fold-test-"));
   const filePath = path.join(dir, "main.lua");
   fs.writeFileSync(filePath, code);
@@ -58,13 +60,13 @@ function runMinifier(code: string, foldConstants: boolean): string {
 }
 
 function runFoldedMinifier(code: string): string {
-  return runMinifier(code, true);
+  return minifyWith(code, true);
 }
 
 // 畳み込みを有効にしたときの出力が、無効なときより長くなっていないことを
 // 確かめる比較対象として使う。
 function runPlainMinifier(code: string): string {
-  return runMinifier(code, false);
+  return minifyWith(code, false);
 }
 
 // リテラル/単項マイナスのリテラルのみを対象に、AST上のrawからLuaソース断片を
@@ -480,6 +482,77 @@ test("method-call base propagation avoidance survives the full Minifier and re-p
     return s:upper()
   `);
   assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
+});
+
+// ============================================================
+// Source Map
+// ============================================================
+
+// 生成コード中で`needle`が最初に現れる位置を、source-map準拠の座標
+// （行は1始まり、列は0始まり）で返す。
+function locateInGenerated(
+  code: string,
+  needle: string,
+): { line: number; column: number } {
+  const lines = code.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const column = lines[i].indexOf(needle);
+    if (column >= 0) return { line: i + 1, column };
+  }
+  throw new Error("生成コードに見つかりません: " + needle);
+}
+
+// 元ソース中で`needle`を含む最初の行番号（1始まり）を返す。
+function lineOfSource(source: string, needle: string): number {
+  const lines = source.split("\n");
+  const index = lines.findIndex((line) => line.includes(needle));
+  if (index < 0) throw new Error("元ソースに見つかりません: " + needle);
+  return index + 1;
+}
+
+// このパスは畳み込み・伝搬のたびに新しいASTノードを作り、位置情報を手で
+// 引き継ぐ。引き継ぎを誤ると、出力は正しいのにSource Mapだけが黙って壊れる。
+test("const-fold fixture keeps a source map that points into the original file", async () => {
+  const { code, map } = runMinifier({
+    label: "定数の事前計算と定数伝搬",
+    fixture: "const-fold",
+    mode: { moduleLikeLua: false, foldConstants: true },
+  });
+  const source = fs.readFileSync(fixtureEntryPath("const-fold"), "utf8");
+  const sourceLineCount = source.split("\n").length;
+
+  assert.ok(map.sources.includes("main.lua"));
+  assert.ok(map.mappings.length > 0);
+
+  await SourceMapConsumer.with(map, null, (consumer) => {
+    // 元ファイルに存在しない行を指すマッピングが無いこと。
+    // 生成側にしか対応の無いマッピングでは、型定義に反して実際にはnullが入る。
+    // 型を信じずに実行時の値で振り分けるため、いったんunknownとして集める。
+    const originalLines: unknown[] = [];
+    consumer.eachMapping((mapping) => originalLines.push(mapping.originalLine));
+    originalLines.forEach((line) => {
+      if (typeof line !== "number") return;
+      assert.ok(
+        line >= 1 && line <= sourceLineCount,
+        "元ファイルの範囲外を指すマッピングがあります: " + String(line),
+      );
+    });
+
+    // 伝搬されたリテラルは、宣言側ではなく参照側の位置を指す。
+    // ここでの200は`local area = width * height`が畳み込まれた値だが、
+    // 出力に現れているのは`print(area)`の引数の位置である。
+    const generated200 = locateInGenerated(code, "200");
+    const original200 = consumer.originalPositionFor(generated200);
+    assert.equal(original200.line, lineOfSource(source, "print(area)"));
+
+    // 畳み込まれた式は、畳み込まれた式全体の位置を指す。
+    const generatedAb = locateInGenerated(code, '"ab"');
+    const originalAb = consumer.originalPositionFor(generatedAb);
+    assert.equal(
+      originalAb.line,
+      lineOfSource(source, 'local label = "a" .. "b"'),
+    );
+  });
 });
 
 // ============================================================
