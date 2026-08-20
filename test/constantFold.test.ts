@@ -1,0 +1,521 @@
+import { test } from "vitest";
+import assert from "node:assert/strict";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import Parser from "luaparse";
+import { resolveScopes } from "../src/resolver";
+import {
+  foldConstants,
+  constantValueOf,
+  ConstantValue,
+} from "../src/constantFold";
+import { SourceMetadata } from "../src/sourceMetadata";
+import { Minifier } from "../src/minifier";
+
+const PARSE_SETTINGS = {
+  luaVersion: "5.3" as const,
+  comments: true,
+  locations: true,
+  ranges: true,
+};
+
+function fold(code: string): Parser.Chunk {
+  const chunk = Parser.parse(code, PARSE_SETTINGS);
+  const metadata = new SourceMetadata(chunk, code);
+  let resolved = resolveScopes(chunk);
+  while (foldConstants(chunk, resolved, metadata)) {
+    resolved = resolveScopes(chunk);
+  }
+  return chunk;
+}
+
+// `return <expr>` の形で1式だけを畳み込み、結果の式を返す。
+function foldExpr(exprSource: string): Parser.Expression {
+  const chunk = fold("return " + exprSource);
+  const ret = chunk.body[chunk.body.length - 1] as Parser.ReturnStatement;
+  assert.equal(ret.type, "ReturnStatement");
+  return ret.arguments[0];
+}
+
+// 実際にMinifierを通して、opt-in有効時の出力文字列を得る（一時ファイル経由）。
+// 「出力を再パースして壊れていないことを確認する」系のテストに使う。
+function runMinifier(code: string, foldConstants: boolean): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "storm-const-fold-test-"));
+  const filePath = path.join(dir, "main.lua");
+  fs.writeFileSync(filePath, code);
+  try {
+    const minifier = new Minifier(
+      filePath,
+      { locations: true, luaVersion: "5.3", ranges: true, scope: true },
+      { moduleLikeLua: false, foldConstants },
+    );
+    const sourceNode = minifier.parse();
+    return sourceNode.toStringWithSourceMap({ file: "main.min.lua" }).code;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function runFoldedMinifier(code: string): string {
+  return runMinifier(code, true);
+}
+
+// 畳み込みを有効にしたときの出力が、無効なときより長くなっていないことを
+// 確かめる比較対象として使う。
+function runPlainMinifier(code: string): string {
+  return runMinifier(code, false);
+}
+
+// リテラル/単項マイナスのリテラルのみを対象に、AST上のrawからLuaソース断片を
+// 組み立てる（生成したリテラルの再パース検査用）。
+function literalSourceText(expr: Parser.Expression): string {
+  if (expr.type === "UnaryExpression" && expr.operator === "-") {
+    return "-" + literalSourceText(expr.argument);
+  }
+  if (
+    expr.type === "NumericLiteral" ||
+    expr.type === "StringLiteral" ||
+    expr.type === "BooleanLiteral" ||
+    expr.type === "NilLiteral"
+  ) {
+    return expr.raw;
+  }
+  throw new Error("not a literal-shaped expression: " + expr.type);
+}
+
+// 生成されたexprのrawを`return <raw>`として読み直し、自分の分類器(constantValueOf)
+// にかけて元の値と一致することを確認する。3と3.0の取り違えを機械的に捕まえる。
+function assertRoundTrips(expr: Parser.Expression): ConstantValue {
+  const original = constantValueOf(expr);
+  assert.ok(original, "式が定数として分類できませんでした: " + expr.type);
+  const source = literalSourceText(expr);
+  const reparsed = Parser.parse("return " + source, { luaVersion: "5.3" });
+  const reparsedExpr = (reparsed.body[0] as Parser.ReturnStatement)
+    .arguments[0];
+  const roundTripped = constantValueOf(reparsedExpr);
+  assert.ok(
+    roundTripped,
+    "再パース後の式が定数として分類できませんでした: " + source,
+  );
+  assert.equal(
+    roundTripped.kind,
+    original.kind,
+    "種別(int/float等)が一致しません",
+  );
+  if (original.kind === "int" && roundTripped.kind === "int") {
+    assert.equal(roundTripped.value, original.value);
+  } else if (original.kind === "float" && roundTripped.kind === "float") {
+    assert.equal(roundTripped.value, original.value);
+  } else if (original.kind === "string" && roundTripped.kind === "string") {
+    assert.equal(roundTripped.value, original.value);
+  } else if (original.kind === "boolean" && roundTripped.kind === "boolean") {
+    assert.equal(roundTripped.value, original.value);
+  }
+  return original;
+}
+
+function assertInt(expr: Parser.Expression, expected: bigint): void {
+  const value = assertRoundTrips(expr);
+  assert.equal(value.kind, "int");
+  assert.equal(value.value, expected);
+}
+
+function assertFloat(expr: Parser.Expression, expected: number): void {
+  const value = assertRoundTrips(expr);
+  assert.equal(value.kind, "float");
+  assert.equal(value.value, expected);
+}
+
+function assertBoolean(expr: Parser.Expression, expected: boolean): void {
+  assert.equal(expr.type, "BooleanLiteral");
+  assert.equal(expr.value, expected);
+}
+
+function assertStringValue(expr: Parser.Expression, expected: string): void {
+  assert.equal(expr.type, "StringLiteral");
+  assert.equal(expr.value, expected);
+}
+
+// ============================================================
+// 畳み込まれること
+// ============================================================
+
+test("1+2 folds to the int 3", () => {
+  assertInt(foldExpr("1+2"), 3n);
+});
+
+test("7//2 floor-divides to the int 3", () => {
+  assertInt(foldExpr("7//2"), 3n);
+});
+
+test("-7//2 floors toward negative infinity to -4", () => {
+  assertInt(foldExpr("-7//2"), -4n);
+});
+
+test("7%3 folds to the int 1", () => {
+  assertInt(foldExpr("7%3"), 1n);
+});
+
+test("-7%3 uses floored modulo and folds to the int 2", () => {
+  assertInt(foldExpr("-7%3"), 2n);
+});
+
+test("1/2 folds to the float 0.5", () => {
+  assertFloat(foldExpr("1/2"), 0.5);
+});
+
+test("3/1 folds to the float 3.0, not the int 3", () => {
+  const expr = foldExpr("3/1");
+  assertFloat(expr, 3);
+  assert.equal(expr.type, "NumericLiteral");
+  assert.ok(
+    expr.raw.includes("."),
+    "floatのrawは`.`を含む必要がある: " + expr.raw,
+  );
+});
+
+test("2^2 folds to the float 4.0", () => {
+  assertFloat(foldExpr("2^2"), 4);
+});
+
+test("-6/2 folds to the negative float -3.0 (unary-wrap + .0-suffix interaction)", () => {
+  // floatLiteralNodeの負数分岐(単項式で包む)と、整数に見える値への".0"付与が
+  // 両方絡む経路。ここでの取り違えはassertRoundTrips(再パース検査)で
+  // 機械的に捕まる。
+  const expr = foldExpr("-6/2");
+  assertFloat(expr, -3);
+  assert.equal(expr.type, "UnaryExpression");
+});
+
+test('"a".."b" folds to the string "ab"', () => {
+  assertStringValue(foldExpr('"a".."b"'), "ab");
+});
+
+test("not nil folds to true", () => {
+  assertBoolean(foldExpr("not nil"), true);
+});
+
+test("1<2 folds to true", () => {
+  assertBoolean(foldExpr("1<2"), true);
+});
+
+test("1==1.0 folds to true (int/float compare by value)", () => {
+  assertBoolean(foldExpr("1==1.0"), true);
+});
+
+test('"a"=="b" folds to false', () => {
+  assertBoolean(foldExpr('"a"=="b"'), false);
+});
+
+test("1<<3 folds to 8", () => {
+  assertInt(foldExpr("1<<3"), 8n);
+});
+
+test("1<<64 folds to 0 (shift amount >= 64)", () => {
+  assertInt(foldExpr("1<<64"), 0n);
+});
+
+test("~0 folds to -1", () => {
+  assertInt(foldExpr("~0"), -1n);
+});
+
+test("false and f() folds to false without requiring f() to be constant", () => {
+  assertBoolean(foldExpr("false and f()"), false);
+});
+
+test("0x7fffffffffffffff+2 wraps to a representable negative int", () => {
+  // int64の範囲でラップすることを、実際に再パースできる値で確認する
+  // (+1はmath.mininteger自体になり、下のテストで別途扱う)。
+  assertInt(foldExpr("0x7fffffffffffffff+2"), -9223372036854775807n);
+});
+
+test(
+  "0x7fffffffffffffff+1 wraps to math.mininteger at the ConstantValue level, " +
+    "but folding is declined because no decimal literal round-trips as that int " +
+    "(spec gap found during implementation; see completion report)",
+  () => {
+    const chunk = fold("return 0x7fffffffffffffff+1");
+    const ret = chunk.body[0] as Parser.ReturnStatement;
+    // 畳み込まれず、元のBinaryExpressionのまま残ることを確認する。
+    assert.equal(ret.arguments[0].type, "BinaryExpression");
+    // ただし、内部の演算自体はint64として正しくラップしていることを、
+    // 分類器の外側からも検算しておく。
+    const wrapped = BigInt.asIntN(64, BigInt("0x7fffffffffffffff") + 1n);
+    assert.equal(wrapped, -(2n ** 63n));
+  },
+);
+
+// ============================================================
+// 畳み込まれないこと
+// ============================================================
+
+test("1/0 is not folded (non-finite float)", () => {
+  assert.equal(foldExpr("1/0").type, "BinaryExpression");
+});
+
+test("1//0 is not folded (integer division by zero is a runtime error)", () => {
+  assert.equal(foldExpr("1//0").type, "BinaryExpression");
+});
+
+test("1%0 is not folded (integer modulo by zero is a runtime error)", () => {
+  assert.equal(foldExpr("1%0").type, "BinaryExpression");
+});
+
+test('"10"+1 is not folded (strings are never coerced for arithmetic)', () => {
+  assert.equal(foldExpr('"10"+1').type, "BinaryExpression");
+});
+
+test('1<"a" is not folded (mixed-type ordering)', () => {
+  assert.equal(foldExpr('1<"a"').type, "BinaryExpression");
+});
+
+test('#"abc" is not folded (length operator is always skipped)', () => {
+  assert.equal(foldExpr('#"abc"').type, "UnaryExpression");
+});
+
+test("x+1 is not folded when x is not a constant", () => {
+  assert.equal(foldExpr("x+1").type, "BinaryExpression");
+});
+
+test("true and f() is not folded (right side must be constant too)", () => {
+  assert.equal(foldExpr("true and f()").type, "LogicalExpression");
+});
+
+test('"a"..1 is not folded (numeric operands are never concatenated)', () => {
+  assert.equal(foldExpr('"a"..1').type, "BinaryExpression");
+});
+
+test("long-bracket string concatenation is not folded", () => {
+  assert.equal(foldExpr("[[abc]]..[[def]]").type, "BinaryExpression");
+});
+
+test("concatenation of a string containing an escape is not folded", () => {
+  assert.equal(foldExpr('"a\\nb".."c"').type, "BinaryExpression");
+});
+
+test("(1+2).x is not folded because the binary expression sits in a base slot", () => {
+  const chunk = fold("return (1 + 2).x");
+  const ret = chunk.body[0] as Parser.ReturnStatement;
+  const member = ret.arguments[0] as Parser.MemberExpression;
+  assert.equal(member.type, "MemberExpression");
+  assert.equal(member.base.type, "BinaryExpression");
+});
+
+// ============================================================
+// 伝搬
+// ============================================================
+
+test("a local referenced exactly once is propagated and the reference is replaced", () => {
+  const chunk = fold(`
+    local x = 42
+    return x
+  `);
+  const ret = chunk.body[chunk.body.length - 1] as Parser.ReturnStatement;
+  assertInt(ret.arguments[0], 42n);
+});
+
+test("a negative literal is not propagated because its declaration would survive", () => {
+  // `local n = -5` の初期値は単項式なので、参照が消えても未使用ローカル削除の
+  // 対象にならず宣言が残る。伝搬すると宣言が残ったまま参照側が長くなり、
+  // 出力はかえって伸びる。伸びる置き換えはしない。
+  const chunk = fold(`
+    local n = -5
+    return n
+  `);
+  const ret = chunk.body[chunk.body.length - 1] as Parser.ReturnStatement;
+  assert.equal(ret.arguments[0].type, "Identifier");
+});
+
+test("a negative constant local does not grow the minified output", () => {
+  // 上のテストがAST上で見ているものを、実際の出力の長さで裏取りする。
+  const source = `
+    local n = -5
+    print(n)
+  `;
+  const folded = runFoldedMinifier(source);
+  const plain = runPlainMinifier(source);
+  assert.ok(
+    folded.length <= plain.length,
+    "畳み込み有効時の出力が伸びている: " +
+      String(folded.length) +
+      " > " +
+      String(plain.length),
+  );
+});
+
+test("a long literal with multiple references is not propagated", () => {
+  const chunk = fold(`
+    local greeting = "hello"
+    print(greeting)
+    print(greeting)
+  `);
+  const calls = chunk.body.filter(
+    (s): s is Parser.CallStatement => s.type === "CallStatement",
+  );
+  calls.forEach((call) => {
+    const expr = call.expression as Parser.CallExpression;
+    assert.equal(expr.arguments[0].type, "Identifier");
+  });
+});
+
+test("a 1-character literal is propagated even with multiple references", () => {
+  const chunk = fold(`
+    local one = 1
+    print(one)
+    print(one)
+  `);
+  const calls = chunk.body.filter(
+    (s): s is Parser.CallStatement => s.type === "CallStatement",
+  );
+  calls.forEach((call) => {
+    const expr = call.expression as Parser.CallExpression;
+    assertInt(expr.arguments[0], 1n);
+  });
+});
+
+test("a reassigned local is not propagated", () => {
+  const chunk = fold(`
+    local x = 5
+    x = 7
+    return x
+  `);
+  const ret = chunk.body[chunk.body.length - 1] as Parser.ReturnStatement;
+  assert.equal(ret.arguments[0].type, "Identifier");
+  // 代入の左辺が壊れて`5 = 7`のようにならないことも合わせて確認する。
+  const assignment = chunk.body[1] as Parser.AssignmentStatement;
+  assert.equal(assignment.variables[0].type, "Identifier");
+});
+
+test("a reassigned local produces output that re-parses without throwing", () => {
+  const code = runFoldedMinifier(`
+    local x = 5
+    x = 7
+    return x
+  `);
+  assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
+});
+
+test("--@storm keep declarations are not propagated", () => {
+  const chunk = fold(`
+    --@storm keep
+    local kept = 9
+    return kept
+  `);
+  const ret = chunk.body[chunk.body.length - 1] as Parser.ReturnStatement;
+  assert.equal(ret.arguments[0].type, "Identifier");
+});
+
+test("--@storm keep-name declarations are not propagated", () => {
+  const chunk = fold(`
+    --@storm keep-name
+    local kept = 9
+    return kept
+  `);
+  const ret = chunk.body[chunk.body.length - 1] as Parser.ReturnStatement;
+  assert.equal(ret.arguments[0].type, "Identifier");
+});
+
+test("--@storm export declarations are not propagated", () => {
+  const chunk = fold(`
+    --@storm export
+    local kept = 9
+    return kept
+  `);
+  const ret = chunk.body[chunk.body.length - 1] as Parser.ReturnStatement;
+  assert.equal(ret.arguments[0].type, "Identifier");
+});
+
+test("chained constant locals: W=10, H=20, A=W*H propagates and folds A to 200", () => {
+  const chunk = fold(`
+    local W = 10
+    local H = 20
+    local A = W * H
+    return A
+  `);
+  const aDeclaration = chunk.body[2] as Parser.LocalStatement;
+  assertInt(aDeclaration.init[0], 200n);
+});
+
+// ============================================================
+// baseスロット（MemberExpression/IndexExpression/
+// CallExpression/TableCallExpression/StringCallExpressionの`.base`、および
+// メソッド呼び出しa:b()の基底）は畳み込み・伝搬いずれの置換対象からも除外する。
+// ============================================================
+
+test("a local used only as a member-access base is not propagated", () => {
+  const chunk = fold(`
+    local x = 1 + 2
+    return x.field
+  `);
+  const ret = chunk.body[chunk.body.length - 1] as Parser.ReturnStatement;
+  const member = ret.arguments[0] as Parser.MemberExpression;
+  assert.equal(member.base.type, "Identifier");
+});
+
+test("a local used only as a method-call base is not propagated", () => {
+  const chunk = fold(`
+    local s = "a" .. "b"
+    return s:upper()
+  `);
+  const ret = chunk.body[chunk.body.length - 1] as Parser.ReturnStatement;
+  const call = ret.arguments[0] as Parser.CallExpression;
+  const member = call.base as Parser.MemberExpression;
+  assert.equal(member.type, "MemberExpression");
+  assert.equal(member.base.type, "Identifier");
+});
+
+test("member-access base propagation avoidance survives the full Minifier and re-parses", () => {
+  const code = runFoldedMinifier(`
+    local x = 1 + 2
+    return x.field
+  `);
+  assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
+  assert.ok(!code.includes("3.field"));
+});
+
+test("method-call base propagation avoidance survives the full Minifier and re-parses", () => {
+  const code = runFoldedMinifier(`
+    local s = "a" .. "b"
+    return s:upper()
+  `);
+  assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
+});
+
+// ============================================================
+// 既定の不変性
+// ============================================================
+
+test("foldConstants defaults to disabled: output is unchanged without the option", () => {
+  const code = `
+    local x = 1 + 2
+    return x
+  `;
+  const dir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "storm-const-fold-default-"),
+  );
+  const filePath = path.join(dir, "main.lua");
+  fs.writeFileSync(filePath, code);
+  try {
+    const withoutOption = new Minifier(
+      filePath,
+      { locations: true, luaVersion: "5.3", ranges: true, scope: true },
+      { moduleLikeLua: false },
+    )
+      .parse()
+      .toStringWithSourceMap({ file: "main.min.lua" }).code;
+    const withOptionFalse = new Minifier(
+      filePath,
+      { locations: true, luaVersion: "5.3", ranges: true, scope: true },
+      { moduleLikeLua: false, foldConstants: false },
+    )
+      .parse()
+      .toStringWithSourceMap({ file: "main.min.lua" }).code;
+    assert.equal(withoutOption, withOptionFalse);
+    // 折り畳まれていれば`1 + 2`は跡形もなく消えるはずなので、
+    // 既定では加算がそのまま残っていることも確認する。
+    assert.ok(withoutOption.includes("+"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

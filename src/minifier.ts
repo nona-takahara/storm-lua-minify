@@ -10,6 +10,7 @@ import { classifyAndRenameGlobals } from "./globalRename";
 import { mergeLocalDeclarations, insertGlobalAliases } from "./transform";
 import { SourceMetadata } from "./sourceMetadata";
 import { removeUnusedLocals } from "./removeUnused";
+import { foldConstants } from "./constantFold";
 
 export interface MinifierMode {
   moduleLikeLua: boolean;
@@ -30,6 +31,8 @@ export interface MinifierMode {
   removeUnused?: boolean;
   // 将来の未使用グローバル削除用スイッチ。removeUnused=falseなら常に無効。
   removeUnusedGlobals?: boolean;
+  // 定数式の事前計算と、定数ローカル変数の伝搬。省略時はfalse扱い（明示的に有効化する）。
+  foldConstants?: boolean;
 }
 
 const NO_RENAME: RenameResult = {
@@ -82,6 +85,7 @@ export class Minifier {
 
   parse(): SourceNode {
     this.link();
+    this.foldConstantsAll();
     this.removeUnusedAll();
     this.rebuildIdentifiersInUse();
     this.computeGlobalRenames();
@@ -310,6 +314,25 @@ export class Minifier {
       });
     });
     return protectedNames;
+  }
+
+  /**
+   * 定数畳み込みパス（#44）: opt-inオプション。既定では無効。
+   * link()の直後、removeUnusedAll()の前に実行する。伝搬で参照が消えたローカル
+   * 宣言はこのパス自身では消さず、直後に実行される（既定で有効な）未使用ローカル
+   * 削除に任せる。
+   */
+  private foldConstantsAll(): void {
+    if (this.mode.foldConstants !== true) return;
+    this.linkOrder.forEach((moduleName) => {
+      const ast = this.moduleAST.get(moduleName);
+      let resolved = this.moduleResolve.get(moduleName);
+      if (!ast || !resolved) throw new Error(moduleName + " is not found");
+      while (foldConstants(ast, resolved, this.getSourceMetadata(moduleName))) {
+        resolved = resolveScopes(ast);
+      }
+      this.moduleResolve.set(moduleName, resolved);
+    });
   }
 
   private removeUnusedAll(): void {
