@@ -135,6 +135,11 @@ export const WORKING_CASES: FixtureCase[] = [
     fixture: "global-alias",
     mode: { moduleLikeLua: false },
   },
+  {
+    label: "定数の事前計算と定数伝搬 (#44)",
+    fixture: "const-fold",
+    mode: { moduleLikeLua: false, foldConstants: true },
+  },
 ];
 
 // 既知バグの再現ケース。現状は failing のため `test.todo` で登録する。

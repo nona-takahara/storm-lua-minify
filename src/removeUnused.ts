@@ -22,6 +22,16 @@ function nestedBodies(statement: Parser.Statement): Parser.Statement[][] {
   }
 }
 
+/**
+ * 初期値ごと捨ててよい式か。基準は「評価しても何も起きないこと」で、値が
+ * その場で決まっていて、実行時のエラーもメタメソッドの呼び出しも起こさない
+ * 式だけが当たる。
+ *
+ * 負の数値定数は、Luaの構文では数値リテラルではなく単項マイナスの式になる。
+ * `-5` と `5` は同じだけ何も起こさないので、同じ扱いにする。単項マイナスを
+ * 数値リテラル以外へ適用した形（`-"abc"` など）は実行時エラーになりうるので
+ * 含めない。エラーを消してはならない。
+ */
 function isDiscardableInitializer(expression: Parser.Expression): boolean {
   switch (expression.type) {
     case "NilLiteral":
@@ -30,6 +40,11 @@ function isDiscardableInitializer(expression: Parser.Expression): boolean {
     case "StringLiteral":
     case "FunctionDeclaration":
       return true;
+    case "UnaryExpression":
+      return (
+        expression.operator === "-" &&
+        expression.argument.type === "NumericLiteral"
+      );
     default:
       return false;
   }

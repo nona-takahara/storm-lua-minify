@@ -156,6 +156,11 @@ export function isKeyword(id: string) {
   return false;
 }
 
+// 末尾が16進整数リテラル（0x/0Xの後に16進数字が1つ以上続く）かどうか。
+// a〜fは識別子の文字集合とも重なるため、isNeedSeparatorのalpha分岐だけでは
+// 区別できない（#53）。
+const HEX_INT_LITERAL_TAIL = /0[xX][0-9a-fA-F]+$/;
+
 function isNeedSeparator(a: string, b: string) {
   const lastCharA = a.slice(-1);
   const firstCharB = b.charAt(0);
@@ -172,11 +177,16 @@ function isNeedSeparator(a: string, b: string) {
       // e.g. `while` + `1`
       // e.g. `local a` + `local b`
       return true;
-    } else {
-      // e.g. `not` + `(2>3 or 3<2)`
-      // e.g. `x` + `^`
-      return false;
     }
+    if (firstCharB == "." && HEX_INT_LITERAL_TAIL.test(a)) {
+      // e.g. `0xff` + `..` : 16進の浮動小数点(`0xff.8`)も読めてしまうため、
+      // 続く`.`をそのまま出すと`0xff.`まで数値として読まれ、10進では起きない
+      // 区切り落ち（malformed number）になる（#53）。
+      return true;
+    }
+    // e.g. `not` + `(2>3 or 3<2)`
+    // e.g. `x` + `^`
+    return false;
   }
   if (regexDigits.test(lastCharA)) {
     if (
@@ -772,7 +782,12 @@ export class MinifyFile {
       });
       if (operator == "^" || operator == "..") {
         associativity = "right";
-      } else if (
+      }
+      // 上のif（結合則の決定）とは独立に判定する必要がある。else ifだと`^`と`..`が
+      // ここに来ず、優先順位の高い演算子の中に現れても丸括弧が付かなくなる
+      // （#52。例: `0.5 % (2 .. 16)`が`0.5%2 ..16`になり、`%`の方が優先順位が
+      // 高いため意味の違うコードとして読み直されてしまっていた）。
+      if (
         currentPrecedence < options.precedence ||
         (currentPrecedence == options.precedence &&
           associativity != options.direction &&
@@ -965,17 +980,26 @@ export class MinifyFile {
     }
   }
 
+  /**
+   * インデックス・メンバー参照・呼び出しの基底を出力する。
+   *
+   * Luaの文法で基底にそのまま置けるのは、変数・インデックス式・関数呼び出しだけで
+   * ある。それ以外の式は丸括弧で包まないと基底に置けない（`3 .x` も `"a":upper()`
+   * も構文エラーになる）。そのため、包む必要のある型を数え上げるのではなく、
+   * そのまま置ける形かどうかだけを見る。式の種類が増えても、元のソースには現れない
+   * 式を基底へ置く変換（定数畳み込みなど）が入っても、この判定だけで正しい括弧が付く。
+   */
   private formatBase(base: Parser.Expression): SourceNode {
     const type = base.type;
-    const needsParens =
+    const canStandAsBase =
+      type == "Identifier" ||
+      type == "MemberExpression" ||
+      type == "IndexExpression" ||
       type == "CallExpression" ||
-      type == "BinaryExpression" ||
-      type == "FunctionDeclaration" ||
-      type == "TableConstructorExpression" ||
-      type == "LogicalExpression" ||
-      type == "StringLiteral";
+      type == "StringCallExpression" ||
+      type == "TableCallExpression";
     const result = this.sourceNodeHelper(base, this.formatExpression(base));
-    if (needsParens) {
+    if (!canStandAsBase) {
       prependWithSeparator(result, "(");
       addWithSeparator(result, ")");
     }
