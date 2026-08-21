@@ -38,6 +38,10 @@ export const REQUIRED_EXPRESSIONS: string[] = [
   "3.0%2",
   "2^0.5",
   "10/4",
+  // 極端な桁比のfloat剰余(#44検証で発見: 畳み込みの`a - floor(a/b)*b`定式化は
+  // 中間の掛け戻しで桁落ちし、Luaの実際のfmodベースの結果と異なる値に丸まる。
+  // 本物のLuaでは0ではなく9.6318652803971148e-301になる)
+  "10 % 1e-300",
   // 64bit整数の桁あふれ
   "0x7fffffffffffffff+2",
   "0x7fffffffffffffff*2",
