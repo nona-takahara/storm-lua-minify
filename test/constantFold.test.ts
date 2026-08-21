@@ -163,6 +163,22 @@ test("-7%3 uses floored modulo and folds to the int 2", () => {
   assertInt(foldExpr("-7%3"), 2n);
 });
 
+test("10 % 1e-300 keeps the precision of the true remainder", () => {
+  // Luaのマニュアルにある `a - floor(a/b)*b` をそのまま計算すると、両辺の
+  // 大きさが極端に違うときに掛け戻しの桁で情報が落ち、0になってしまう。
+  // 本物のLua 5.3は9.6318652803971148e-301を返す。
+  assertFloat(foldExpr("10 % 1e-300"), 10 % 1e-300);
+  assert.notEqual((foldExpr("10 % 1e-300") as Parser.NumericLiteral).value, 0);
+});
+
+test("5.5 % -2 keeps Lua's floored sign", () => {
+  assertFloat(foldExpr("5.5 % -2"), -0.5);
+});
+
+test("-5.5 % 2 keeps Lua's floored sign", () => {
+  assertFloat(foldExpr("-5.5 % 2"), 0.5);
+});
+
 test("1/2 folds to the float 0.5", () => {
   assertFloat(foldExpr("1/2"), 0.5);
 });

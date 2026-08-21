@@ -69,7 +69,9 @@ test(
     // fold/nofold両方で再現する)に該当するインデックスは、畳み込みの正誤判定
     // からは除外する(既に個別の不具合として記録済みのため)。
     const foldDefectIdx = new Set(
-      run.printerDefects.filter((d) => d.variant === "fold").map((d) => d.index),
+      run.printerDefects
+        .filter((d) => d.variant === "fold")
+        .map((d) => d.index),
     );
     const nofoldDefectIdx = new Set(
       run.printerDefects
@@ -104,14 +106,14 @@ test(
         m.expr,
         luaBin,
         tmpRoot,
-        `orig-${m.index}`,
+        `orig-${String(m.index)}`,
         false,
       );
       const foldRun = runStandalone(
         m.expr,
         luaBin,
         tmpRoot,
-        `fold-${m.index}`,
+        `fold-${String(m.index)}`,
         true,
       );
       return {
@@ -125,11 +127,11 @@ test(
     });
 
     console.warn(
-      `[differential/constantFold] Lua=${lua.version} bin=${luaBin} / ` +
-        `試行 ${tried}件 / 不一致(オリジナル vs --fold-constants) ${mismatches.length}件 / ` +
-        `参考:不一致(オリジナル vs 畳み込み無効) ${nofoldMismatches.length}件 / ` +
-        `既存の印字処理の不具合(畳み込みと無関係、除外済み) ${run.printerDefects.length}件 / ` +
-        `原因不明のハーネス異常 ${run.unexplainedFailures.length}件`,
+      `[differential/constantFold] Lua=${lua.version ?? "unknown"} bin=${luaBin} / ` +
+        `試行 ${String(tried)}件 / 不一致(オリジナル vs --fold-constants) ${String(mismatches.length)}件 / ` +
+        `参考:不一致(オリジナル vs 畳み込み無効) ${String(nofoldMismatches.length)}件 / ` +
+        `既存の印字処理の不具合(畳み込みと無関係、除外済み) ${String(run.printerDefects.length)}件 / ` +
+        `原因不明のハーネス異常 ${String(run.unexplainedFailures.length)}件`,
     );
     if (run.printerDefects.length > 0) {
       console.warn(
@@ -158,7 +160,7 @@ test(
     assert.deepEqual(
       mismatches.map((m) => ({ index: m.index, expr: m.expr, kind: m.kind })),
       [],
-      `オリジナルと--fold-constants適用後でLuaの実行結果が一致しない式が${mismatches.length}件見つかった(詳細はconsole.warn出力を参照)`,
+      `オリジナルと--fold-constants適用後でLuaの実行結果が一致しない式が${String(mismatches.length)}件見つかった(詳細はconsole.warn出力を参照)`,
     );
   },
 );

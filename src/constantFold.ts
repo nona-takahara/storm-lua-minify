@@ -305,7 +305,13 @@ function evalArithmetic(
   }
 
   if (op === "%") {
-    // Luaの剰余は床剰余（a - floor(a/b)*b）。JavaScriptの%とは負数で結果が異なる。
+    // Luaの剰余は床方向で、JavaScriptの`%`とは負数で結果が異なる。
+    //
+    // 浮動小数点では、Luaのマニュアルにある `a - floor(a/b)*b` という等式を
+    // そのまま計算してはいけない。両辺の大きさが極端に違うとき、掛け戻しの桁で
+    // 情報が落ちる（`10 % 1e-300`が0になる）。Lua自身はC言語のfmodを使って
+    // 余りを直接求め、符号が除数と食い違うときだけ除数を足している。
+    // JavaScriptの`%`はfmodと同じ切り捨て方向の余りなので、同じ手順を踏む。
     if (bothInt) {
       if (r.value === 0n) return undefined;
       return {
@@ -318,7 +324,11 @@ function evalArithmetic(
     }
     const lf = numAsFloat(l);
     const rf = numAsFloat(r);
-    return { kind: "float", value: lf - Math.floor(lf / rf) * rf };
+    let remainder = lf % rf;
+    if (remainder !== 0 && remainder < 0 !== rf < 0) {
+      remainder += rf;
+    }
+    return { kind: "float", value: remainder };
   }
 
   // + - *

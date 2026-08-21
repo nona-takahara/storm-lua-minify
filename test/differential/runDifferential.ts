@@ -52,8 +52,8 @@ function buildBatchSource(cases: { index: number; expr: string }[]): string {
       `  if mt == "float" then ex = string.format("%.17g", v) end`,
       `  return t, mt, ts, ex`,
       `end)`,
-      `if __ok then print("R", ${index}, "OK", __t, __mt, __ts, __ex)`,
-      `else print("R", ${index}, "ERR", tostring(__t)) end`,
+      `if __ok then print("R", ${String(index)}, "OK", __t, __mt, __ts, __ex)`,
+      `else print("R", ${String(index)}, "ERR", tostring(__t)) end`,
       `end`,
     );
   }
@@ -79,7 +79,11 @@ function parseOutput(stdout: string): Map<number, CaseResult> {
     } else if (status === "ERR") {
       // エラーメッセージにタブが含まれる可能性は想定していないが、
       // 念のため残り全部を結合して1フィールドとして扱う。
-      map.set(index, { index, status: "ERR", errMsg: parts.slice(3).join("\t") });
+      map.set(index, {
+        index,
+        status: "ERR",
+        errMsg: parts.slice(3).join("\t"),
+      });
     }
   }
   return map;
@@ -135,7 +139,8 @@ export function compareCase(
   o: CaseResult | undefined,
   other: CaseResult | undefined,
 ): Mismatch | undefined {
-  if (!o) return { index, expr, kind: "オリジナル側の結果が欠落", orig: o, other };
+  if (!o)
+    return { index, expr, kind: "オリジナル側の結果が欠落", orig: o, other };
   if (!other)
     return { index, expr, kind: "比較対象側の結果が欠落", orig: o, other };
   if (o.status !== other.status)
@@ -194,7 +199,7 @@ export function runBatch(
   tmpRoot: string,
   batchId: number,
 ): BatchRunOutcome {
-  const base = path.join(tmpRoot, `b${batchId}`);
+  const base = path.join(tmpRoot, `b${String(batchId)}`);
   const origDir = path.join(base, "orig");
   const foldDir = path.join(base, "fold");
   const nofoldDir = path.join(base, "nofold");
@@ -283,12 +288,15 @@ function runCasesRecursive(
     const c = cases[0];
     if (outcome.orig.results.size !== 1) {
       acc.unexplainedFailures.push(
-        `index=${c.index} expr=${JSON.stringify(c.expr)}: オリジナル(未加工)の実行自体が失敗した` +
-          ` (exit=${outcome.orig.exitStatus}, stderr=${outcome.orig.stderr.slice(0, 300)})`,
+        `index=${String(c.index)} expr=${JSON.stringify(c.expr)}: オリジナル(未加工)の実行自体が失敗した` +
+          ` (exit=${String(outcome.orig.exitStatus)}, stderr=${outcome.orig.stderr.slice(0, 300)})`,
       );
       return;
     }
-    acc.origResults.set(c.index, outcome.orig.results.get(c.index) as CaseResult);
+    acc.origResults.set(
+      c.index,
+      outcome.orig.results.get(c.index) as CaseResult,
+    );
     if (outcome.fold.results.size !== 1) {
       acc.printerDefects.push({
         index: c.index,
@@ -297,7 +305,10 @@ function runCasesRecursive(
         stderr: outcome.fold.stderr.slice(0, 300),
       });
     } else {
-      acc.foldResults.set(c.index, outcome.fold.results.get(c.index) as CaseResult);
+      acc.foldResults.set(
+        c.index,
+        outcome.fold.results.get(c.index) as CaseResult,
+      );
     }
     if (outcome.nofold.results.size !== 1) {
       acc.printerDefects.push({

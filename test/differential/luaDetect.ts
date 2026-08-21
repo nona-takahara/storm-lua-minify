@@ -22,7 +22,7 @@ function tryOne(bin: string): { version: string } | undefined {
   } catch {
     return undefined;
   }
-  if (!res || res.error) return undefined;
+  if (res.error) return undefined;
   const out = (res.stdout || "") + (res.stderr || "");
   const m = out.match(/Lua (5)\.(\d+)\.(\d+)/);
   if (!m) return undefined;
