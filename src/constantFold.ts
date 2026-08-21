@@ -665,10 +665,52 @@ function collectReassignedSymbols(
   return out;
 }
 
-function isShortLiteral(expr: Parser.Expression): boolean {
-  // "0" "1" のような1文字の数値リテラルだけが対象。文字列は引用符を含むため
-  // 1文字にはならず、真偽値/nilのrawも1文字にはならない。
-  return expr.type === "NumericLiteral" && expr.raw.length === 1;
+// 伝搬した値が印字時に何バイトになるかを見積もる。畳み込みの出力経路
+// （intLiteralNode/floatLiteralNode/literalNodeFor）と同じ表記規則で数える。
+function printedLengthOf(value: ConstantValue): number {
+  switch (value.kind) {
+    case "nil":
+      return 3; // "nil"
+    case "boolean":
+      return value.value ? 4 : 5; // "true" / "false"
+    case "int": {
+      const abs = value.value < 0n ? -value.value : value.value;
+      return (value.value < 0n ? 1 : 0) + abs.toString(10).length;
+    }
+    case "float": {
+      const abs = Math.abs(value.value);
+      let raw = String(abs);
+      if (!/[.eE]/.test(raw)) raw += ".0";
+      return (value.value < 0 ? 1 : 0) + raw.length;
+    }
+    case "string":
+      return value.raw.length; // 引用符込み
+  }
+}
+
+// 参照が複数ある定数ローカルを配ってよいか。
+//
+// 配ると「宣言（`local <名前>=<値>` のおよそ7+名前の長さ+値の長さバイト）」が
+// 丸ごと消える代わりに、参照のたびに識別子(名前の長さ)ではなく値の長さが
+// 出力される。名前の長さは、この畳み込みパスがrenameパスより前に走るため
+// ここではまだ決まっていない（minifier.tsのfoldConstantsAllはrenameAllより前）。
+// 決め方を誤って出力を伸ばすくらいなら伝搬しない方に倒したいので、renameが
+// 名前をこれ以上削れない最短の1文字にできた場合（配らない側にとって最も有利な
+// 場合）を仮定して、その上でなお配る方が短くなることだけを条件にする。
+// 名前が実際には1文字より長くなった場合、配る側はこの見積りより得をする
+// だけなので、この判定が縮まない伝搬を通すことはない。
+//
+// 1文字（`printedLength<=1`）は、名前が最短の1文字であっても宣言の分だけ
+// 必ず得なので、参照回数に関わらず常に配ってよい（isShortLiteralが対象に
+// していた「1文字の数値リテラル」を含む、より一般化した条件になっている）。
+function worthPropagatingWhenShared(
+  printedLength: number,
+  refCount: number,
+): boolean {
+  if (printedLength <= 1) return true;
+  // 名前1文字・宣言の定数オーバーヘッド(`local `+`=`)7バイトを仮定したときの
+  // 収支: refCount*(printedLength-1) <= printedLength+8
+  return refCount * (printedLength - 1) <= printedLength + 8;
 }
 
 function collectPropagationCandidates(
@@ -698,7 +740,10 @@ function collectPropagationCandidates(
       if (reassigned.has(symbol)) return;
 
       const refCount = symbol.references.length;
-      if (refCount === 1 || isShortLiteral(statement.init[0])) {
+      if (
+        refCount === 1 ||
+        worthPropagatingWhenShared(printedLengthOf(value), refCount)
+      ) {
         out.set(symbol, value);
       }
     });

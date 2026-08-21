@@ -385,9 +385,13 @@ test("a negative constant local does not grow the minified output", () => {
   );
 });
 
-test("a long literal with multiple references is not propagated", () => {
+test("a literal too long relative to its reference count is not propagated", () => {
+  // "hello"は7バイト(引用符込み)。名前が伝搬しない側にとって最も有利な1文字に
+  // なると仮定しても、3回参照では宣言を残す方が短い(worthPropagatingWhenShared
+  // 参照)。2回までなら次のテストの通り配る。
   const chunk = fold(`
     local greeting = "hello"
+    print(greeting)
     print(greeting)
     print(greeting)
   `);
@@ -412,6 +416,24 @@ test("a 1-character literal is propagated even with multiple references", () => 
   calls.forEach((call) => {
     const expr = call.expression as Parser.CallExpression;
     assertInt(expr.arguments[0], 1n);
+  });
+});
+
+test("a longer literal is still propagated when few enough references make it shorter overall", () => {
+  // "hello"(7バイト)を2回参照する場合は、宣言を残すより配る方が短くなる
+  // (worthPropagatingWhenShared: 2*(7-1)=12 <= 7+8=15)。1文字リテラルに限らない
+  // 一般化した収支判定になっていることを確認する。
+  const chunk = fold(`
+    local greeting = "hello"
+    print(greeting)
+    print(greeting)
+  `);
+  const calls = chunk.body.filter(
+    (s): s is Parser.CallStatement => s.type === "CallStatement",
+  );
+  calls.forEach((call) => {
+    const expr = call.expression as Parser.CallExpression;
+    assertStringValue(expr.arguments[0], "hello");
   });
 });
 
