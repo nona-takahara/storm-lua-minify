@@ -59,7 +59,7 @@ const BATCH_SIZE = 200;
 // ―― 例えば#52が単項演算子まわりだけ直り、二項演算子まわりは直っていない
 // ―― を捉えるため。この場合、該当件数は0にはならず「explainedByIssue52.length
 // > 0」のような存在チェックでは検知できないが、件数が24から動けば検知できる。
-// 数を変えるときは、#52(または未起票の区切り文字バグ)の状態を確認してから
+// 数を変えるときは、#52(またはIssue #53の区切り文字バグ)の状態を確認してから
 // 更新すること。
 const EXPECTED_ISSUE52_MISMATCHES = 24;
 const EXPECTED_SEPARATOR_BUG_DEFECTS = 13;
@@ -189,7 +189,7 @@ test(
     assert.deepEqual(
       unexpectedPrinterDefects,
       [],
-      "既知の16進リテラル+`..`の区切り文字バグ(未起票、#52とは別)以外の理由で" +
+      "既知の16進リテラル+`..`の区切り文字バグ(Issue #53、#52とは別)以外の理由で" +
         "ミニファイア出力が構文エラーになった。新しい印字処理の不具合の可能性がある。",
     );
     // 件数そのものが動いたら、区切り文字バグが直った(あるいは条件が変わった)
@@ -197,7 +197,7 @@ test(
     assert.equal(
       run.printerDefects.length,
       EXPECTED_SEPARATOR_BUG_DEFECTS,
-      `既知の区切り文字バグ(未起票、malformed numberシグネチャ)による` +
+      `既知の区切り文字バグ(Issue #53、malformed numberシグネチャ)による` +
         `printerDefectsが${String(EXPECTED_SEPARATOR_BUG_DEFECTS)}件から` +
         `${String(run.printerDefects.length)}件に変化した。直った場合は` +
         `EXPECTED_SEPARATOR_BUG_DEFECTSを更新し、増えた場合は新規の混入を疑うこと。`,
