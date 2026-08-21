@@ -6,7 +6,7 @@ import path from "path";
 import Parser from "luaparse";
 import { SourceMapConsumer } from "source-map";
 import { resolveScopes } from "../src/resolver";
-import { fixtureEntryPath, runMinifier } from "./lib/helpers";
+import { fixtureEntryPath, runMinifier, WORKING_CASES } from "./lib/helpers";
 import {
   foldConstants,
   constantValueOf,
@@ -233,9 +233,8 @@ test("0x7fffffffffffffff+2 wraps to a representable negative int", () => {
 });
 
 test(
-  "0x7fffffffffffffff+1 wraps to math.mininteger at the ConstantValue level, " +
-    "but folding is declined because no decimal literal round-trips as that int " +
-    "(spec gap found during implementation; see completion report)",
+  "0x7fffffffffffffff+1 wraps to math.mininteger, but folding is declined " +
+    "because no decimal literal round-trips as that int",
   () => {
     const chunk = fold("return 0x7fffffffffffffff+1");
     const ret = chunk.body[0] as Parser.ReturnStatement;
@@ -272,8 +271,17 @@ test('1<"a" is not folded (mixed-type ordering)', () => {
   assert.equal(foldExpr('1<"a"').type, "BinaryExpression");
 });
 
-test('#"abc" is not folded (length operator is always skipped)', () => {
-  assert.equal(foldExpr('#"abc"').type, "UnaryExpression");
+test('#"abc" folds to the byte length 3', () => {
+  assertInt(foldExpr('#"abc"'), 3n);
+});
+
+test("the length of a long-bracket string is not folded", () => {
+  // 長括弧形式は定数として認めていないので、バイト長も求めない。
+  assert.equal(foldExpr("#[[abc]]").type, "UnaryExpression");
+});
+
+test("the length of a table constructor is not folded", () => {
+  assert.equal(foldExpr("#{1,2,3}").type, "UnaryExpression");
 });
 
 test("x+1 is not folded when x is not a constant", () => {
@@ -288,6 +296,18 @@ test('"a"..1 is not folded (numeric operands are never concatenated)', () => {
   assert.equal(foldExpr('"a"..1').type, "BinaryExpression");
 });
 
+test('"a" < "b" folds to true (byte order)', () => {
+  assertBoolean(foldExpr('"a" < "b"'), true);
+});
+
+test('"abc" >= "abd" folds to false', () => {
+  assertBoolean(foldExpr('"abc" >= "abd"'), false);
+});
+
+test("long-bracket string comparison is not folded", () => {
+  assert.equal(foldExpr("[[a]] < [[b]]").type, "BinaryExpression");
+});
+
 test("long-bracket string concatenation is not folded", () => {
   assert.equal(foldExpr("[[abc]]..[[def]]").type, "BinaryExpression");
 });
@@ -296,12 +316,17 @@ test("concatenation of a string containing an escape is not folded", () => {
   assert.equal(foldExpr('"a\\nb".."c"').type, "BinaryExpression");
 });
 
-test("(1+2).x is not folded because the binary expression sits in a base slot", () => {
+test("(1+2).x folds to a literal base, and the printer keeps the parentheses", () => {
   const chunk = fold("return (1 + 2).x");
   const ret = chunk.body[0] as Parser.ReturnStatement;
   const member = ret.arguments[0] as Parser.MemberExpression;
-  assert.equal(member.type, "MemberExpression");
-  assert.equal(member.base.type, "BinaryExpression");
+  assertInt(member.base, 3n);
+
+  // Luaの文法では数値をそのまま基底に置けない。`3.x`と出力されると字句解析が
+  // 壊れるので、出力側が丸括弧を補っていることまで確かめる。
+  const code = runFoldedMinifier("return (1 + 2).x");
+  assert.ok(code.includes("(3).x"), code);
+  assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
 });
 
 // ============================================================
@@ -317,20 +342,18 @@ test("a local referenced exactly once is propagated and the reference is replace
   assertInt(ret.arguments[0], 42n);
 });
 
-test("a negative literal is not propagated because its declaration would survive", () => {
-  // `local n = -5` の初期値は単項式なので、参照が消えても未使用ローカル削除の
-  // 対象にならず宣言が残る。伝搬すると宣言が残ったまま参照側が長くなり、
-  // 出力はかえって伸びる。伸びる置き換えはしない。
+test("a negative literal is propagated like any other constant", () => {
   const chunk = fold(`
     local n = -5
     return n
   `);
   const ret = chunk.body[chunk.body.length - 1] as Parser.ReturnStatement;
-  assert.equal(ret.arguments[0].type, "Identifier");
+  assertInt(ret.arguments[0], -5n);
 });
 
 test("a negative constant local does not grow the minified output", () => {
-  // 上のテストがAST上で見ているものを、実際の出力の長さで裏取りする。
+  // 配ったあとに宣言が残ると、出力は縮まずむしろ伸びる。負の定数は初期値が
+  // 単項式になるので、未使用削除がこの形を捨てられることに依存している。
   const source = `
     local n = -5
     print(n)
@@ -440,48 +463,56 @@ test("chained constant locals: W=10, H=20, A=W*H propagates and folds A to 200",
 });
 
 // ============================================================
-// baseスロット（MemberExpression/IndexExpression/
-// CallExpression/TableCallExpression/StringCallExpressionの`.base`、および
-// メソッド呼び出しa:b()の基底）は畳み込み・伝搬いずれの置換対象からも除外する。
+// 定数を基底へ置いたときの出力
+// ============================================================
+//
+// Luaの文法で基底にそのまま置けるのは変数・インデックス式・関数呼び出しだけで、
+// 定数を置くには丸括弧が要る。括弧が落ちると`3.field`のように字句解析が壊れる
+// ので、Minifierを通した出力を再パースして確かめる。
+
+test("a constant propagated into a member-access base is parenthesized", () => {
+  const code = runFoldedMinifier(`
+    local x = 1 + 2
+    return x.field
+  `);
+  assert.ok(code.includes("(3).field"), code);
+  assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
+});
+
+test("a constant propagated into a method-call base is parenthesized", () => {
+  const code = runFoldedMinifier(`
+    local s = "a" .. "b"
+    return s:upper()
+  `);
+  assert.ok(code.includes('("ab"):upper()'), code);
+  assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
+});
+
+// ============================================================
+// 目的の確認
 // ============================================================
 
-test("a local used only as a member-access base is not propagated", () => {
-  const chunk = fold(`
-    local x = 1 + 2
-    return x.field
-  `);
-  const ret = chunk.body[chunk.body.length - 1] as Parser.ReturnStatement;
-  const member = ret.arguments[0] as Parser.MemberExpression;
-  assert.equal(member.base.type, "Identifier");
-});
-
-test("a local used only as a method-call base is not propagated", () => {
-  const chunk = fold(`
-    local s = "a" .. "b"
-    return s:upper()
-  `);
-  const ret = chunk.body[chunk.body.length - 1] as Parser.ReturnStatement;
-  const call = ret.arguments[0] as Parser.CallExpression;
-  const member = call.base as Parser.MemberExpression;
-  assert.equal(member.type, "MemberExpression");
-  assert.equal(member.base.type, "Identifier");
-});
-
-test("member-access base propagation avoidance survives the full Minifier and re-parses", () => {
-  const code = runFoldedMinifier(`
-    local x = 1 + 2
-    return x.field
-  `);
-  assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
-  assert.ok(!code.includes("3.field"));
-});
-
-test("method-call base propagation avoidance survives the full Minifier and re-parses", () => {
-  const code = runFoldedMinifier(`
-    local s = "a" .. "b"
-    return s:upper()
-  `);
-  assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
+// 定数畳み込みは出力を縮めるための機能である。構文が壊れていないことも、
+// 言語仕様どおりに計算していることも、それだけでは目的を満たさない。
+// 配った先で宣言が残って出力が伸びるような状態は、この形でしか捕まらない。
+test("すべてのfixtureで、--fold-constants は出力を長くしない", () => {
+  const grown: string[] = [];
+  WORKING_CASES.forEach((c) => {
+    const plain = runMinifier({
+      ...c,
+      mode: { ...c.mode, foldConstants: false },
+    }).code;
+    const folded = runMinifier({
+      ...c,
+      mode: { ...c.mode, foldConstants: true },
+    }).code;
+    if (folded.length > plain.length) {
+      grown.push(
+        `${c.label}: ${String(plain.length)} -> ${String(folded.length)}`,
+      );
+    }
+  });
+  assert.deepEqual(grown, [], "有効にすると伸びるfixtureがあります");
 });
 
 // ============================================================
@@ -545,13 +576,12 @@ test("const-fold fixture keeps a source map that points into the original file",
     const original200 = consumer.originalPositionFor(generated200);
     assert.equal(original200.line, lineOfSource(source, "print(area)"));
 
-    // 畳み込まれた式は、畳み込まれた式全体の位置を指す。
+    // 畳み込んだうえで配ったリテラルも、参照側の位置を指す。
+    // `"ab"`は`local label = "a" .. "b"`を計算した値だが、出力に現れているのは
+    // `print(label:upper())`の基底の位置である。
     const generatedAb = locateInGenerated(code, '"ab"');
     const originalAb = consumer.originalPositionFor(generatedAb);
-    assert.equal(
-      originalAb.line,
-      lineOfSource(source, 'local label = "a" .. "b"'),
-    );
+    assert.equal(originalAb.line, lineOfSource(source, "print(label:upper())"));
   });
 });
 

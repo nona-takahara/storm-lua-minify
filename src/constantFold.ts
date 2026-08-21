@@ -2,8 +2,14 @@
 // 再代入されない定数ローカルの伝搬（例: `local x=1 print(x)` -> `print(1)`）を
 // opt-inで行う。既定では無効（minifier.tsのfoldConstants=trueのときのみ呼ばれる）。
 //
-// このパスにとって最悪の失敗は「出力が静かに壊れること」である。畳み込める範囲を
-// 広げるより、安全でないケースを確実に見送ることを優先する。判断に迷ったら畳み込まない。
+// 畳み込みの判断は2つの条件で決まる。値がその場で確定すること、そして畳み込んでも
+// プログラムの意味が変わらないこと。後者には、実行時エラーを消さないことも含む
+// （`1//0`はエラーを起こす式であって、値を持つ式ではない）。
+//
+// 定数として認める文字列を、エスケープを含まない印字可能ASCIIに限っているのは、
+// この条件を演算ごとに考え直さずに済ませるためである。この形の文字列は1文字が
+// 1バイトに対応し、連結・比較・長さのいずれもJavaScript上の操作がそのまま
+// Luaの結果と一致する。
 import Parser from "luaparse";
 import { ResolveResult, Symbol } from "./resolver";
 import { SourceMetadata } from "./sourceMetadata";
@@ -383,8 +389,13 @@ function evalOrderComparison(
   l: ConstantValue,
   r: ConstantValue,
 ): ConstantValue | undefined {
-  // 文字列同士の大小比較は照合順の前提を持ち込まないため畳み込まない。
-  // 数値と文字列の比較はLuaでは実行時エラーなので、当然畳み込まない。
+  // 文字列同士の比較は、Luaでは1バイトずつの大小で決まる。定数として認めた
+  // 文字列はエスケープを含まない印字可能ASCIIだけなので、JavaScriptの文字列
+  // 比較と同じ順序になる。
+  if (l.kind === "string" && r.kind === "string") {
+    return { kind: "boolean", value: compareValues(op, l.value, r.value) };
+  }
+  // 数値と文字列の比較はLuaでは実行時エラーなので、畳み込んでエラーを消さない。
   if (!isNumeric(l) || !isNumeric(r)) return undefined;
 
   let result: boolean;
@@ -399,7 +410,7 @@ function evalOrderComparison(
   return { kind: "boolean", value: result };
 }
 
-function compareValues<T extends bigint | number>(
+function compareValues<T extends bigint | number | string>(
   op: "<" | "<=" | ">" | ">=",
   l: T,
   r: T,
@@ -573,204 +584,12 @@ function tryFoldUnary(
       expr,
     );
   }
-  // "#"（長さ演算子）は畳み込まない。文字列のバイト長はエスケープ表現に依存する。
-  return undefined;
-}
-
-// ============================================================
-// baseスロット（置換禁止位置）の判定
-// ============================================================
-//
-// MemberExpression/IndexExpression/CallExpression/TableCallExpression/
-// StringCallExpressionの`.base`（`a:b()`のようなメソッド呼び出しの基底も含む）は、
-// 印字側（ast2lua.tsのformatBase）がCallExpression/BinaryExpression/
-// FunctionDeclaration/TableConstructorExpression/LogicalExpression/StringLiteralの
-// 6種類にしか丸括弧を付けない。NumericLiteral/BooleanLiteral/NilLiteral/
-// UnaryExpressionはこのリストに無いため、`(1+2).x`を`3.x`のように畳み込むと、
-// 丸括弧の無い出力になり字句解析が壊れる（`5.`が数値リテラルの先頭として
-// 食われてしまう等）。ast2lua.tsは変更禁止ファイルなので、こちら側でbaseスロット
-// そのものの置換を避ける。
-//
-// - 畳み込み: baseスロットに直接乗っている式（BinaryExpression/LogicalExpression/
-//   UnaryExpression）自体は畳み込まない。その子（baseではないスロット）へは
-//   通常どおり再帰する。
-// - 伝搬: 対象シンボルの参照のうち1つでもbaseスロットに直接現れるものがあれば、
-//   そのシンボルは（他の参照も含めて）一切伝搬しない。一部の参照だけ消えて
-//   宣言が残る中途半端な状態を避けるため。
-// `a.b.c`のようにbaseが連鎖する場合も、連鎖の先頭までこの扱いを引き継ぐ。
-
-function collectBaseSlotIdentifiers(
-  body: Parser.Statement[],
-): Set<Parser.Identifier> {
-  const out = new Set<Parser.Identifier>();
-
-  function visitBaseChain(expr: Parser.Expression): void {
-    switch (expr.type) {
-      case "Identifier":
-        out.add(expr);
-        return;
-      case "MemberExpression":
-        visitBaseChain(expr.base);
-        return;
-      case "IndexExpression":
-        visitBaseChain(expr.base);
-        visitExpr(expr.index);
-        return;
-      case "CallExpression":
-        visitBaseChain(expr.base);
-        expr.arguments.forEach(visitExpr);
-        return;
-      case "TableCallExpression":
-        visitBaseChain(expr.base);
-        visitExpr(expr.arguments);
-        return;
-      case "StringCallExpression":
-        visitBaseChain(expr.base);
-        visitExpr(expr.argument);
-        return;
-      default:
-        // BinaryExpression/LogicalExpression/UnaryExpression/リテラル/
-        // FunctionDeclaration/TableConstructorExpressionなど。baseチェーンの
-        // 先頭（これ以上baseを辿らない式）なので、内側は通常の走査に戻る。
-        visitExpr(expr);
-        return;
-    }
-  }
-
-  function visitExpr(expr: Parser.Expression): void {
-    switch (expr.type) {
-      case "Identifier":
-      case "StringLiteral":
-      case "NumericLiteral":
-      case "BooleanLiteral":
-      case "NilLiteral":
-      case "VarargLiteral":
-        return;
-      case "BinaryExpression":
-      case "LogicalExpression":
-        visitExpr(expr.left);
-        visitExpr(expr.right);
-        return;
-      case "UnaryExpression":
-        visitExpr(expr.argument);
-        return;
-      case "CallExpression":
-        visitBaseChain(expr.base);
-        expr.arguments.forEach(visitExpr);
-        return;
-      case "TableCallExpression":
-        visitBaseChain(expr.base);
-        visitExpr(expr.arguments);
-        return;
-      case "StringCallExpression":
-        visitBaseChain(expr.base);
-        visitExpr(expr.argument);
-        return;
-      case "IndexExpression":
-        visitBaseChain(expr.base);
-        visitExpr(expr.index);
-        return;
-      case "MemberExpression":
-        visitBaseChain(expr.base);
-        return;
-      case "FunctionDeclaration":
-        visitBlock(expr.body);
-        return;
-      case "TableConstructorExpression":
-        expr.fields.forEach((field) => {
-          if (field.type === "TableKey") {
-            visitExpr(field.key);
-            visitExpr(field.value);
-          } else {
-            // TableValueとTableKeyString（キー名は変数参照ではない）
-            visitExpr(field.value);
-          }
-        });
-        return;
-      default: {
-        const exhaustive: never = expr;
-        throw new TypeError(
-          "Unknown expression type: `" + JSON.stringify(exhaustive) + "`",
-        );
-      }
-    }
-  }
-
-  function visitStatement(statement: Parser.Statement): void {
-    switch (statement.type) {
-      case "LocalStatement":
-        statement.init.forEach(visitExpr);
-        return;
-      case "AssignmentStatement":
-        statement.variables.forEach((v) => {
-          if (v.type === "Identifier") return; // 代入の左辺はbaseスロットではない
-          visitBaseChain(v.base);
-          if (v.type === "IndexExpression") visitExpr(v.index);
-        });
-        statement.init.forEach(visitExpr);
-        return;
-      case "CallStatement":
-        visitBaseChain(statement.expression.base);
-        if (statement.expression.type === "CallExpression") {
-          statement.expression.arguments.forEach(visitExpr);
-        } else if (statement.expression.type === "TableCallExpression") {
-          visitExpr(statement.expression.arguments);
-        } else {
-          visitExpr(statement.expression.argument);
-        }
-        return;
-      case "DoStatement":
-        visitBlock(statement.body);
-        return;
-      case "WhileStatement":
-        visitExpr(statement.condition);
-        visitBlock(statement.body);
-        return;
-      case "RepeatStatement":
-        visitBlock(statement.body);
-        visitExpr(statement.condition);
-        return;
-      case "IfStatement":
-        statement.clauses.forEach((clause) => {
-          if (clause.type !== "ElseClause") visitExpr(clause.condition);
-          visitBlock(clause.body);
-        });
-        return;
-      case "ForNumericStatement":
-        visitExpr(statement.start);
-        visitExpr(statement.end);
-        if (statement.step) visitExpr(statement.step);
-        visitBlock(statement.body);
-        return;
-      case "ForGenericStatement":
-        statement.iterators.forEach(visitExpr);
-        visitBlock(statement.body);
-        return;
-      case "FunctionDeclaration":
-        visitBlock(statement.body);
-        return;
-      case "ReturnStatement":
-        statement.arguments.forEach(visitExpr);
-        return;
-      case "BreakStatement":
-      case "LabelStatement":
-      case "GotoStatement":
-        return;
-      default: {
-        const exhaustive: never = statement;
-        throw new TypeError(
-          "Unknown statement type: `" + JSON.stringify(exhaustive) + "`",
-        );
-      }
-    }
-  }
-
-  function visitBlock(block: Parser.Statement[]): void {
-    block.forEach(visitStatement);
-  }
-
-  visitBlock(body);
-  return out;
+  // 残るのは`#`。Luaの`#`は文字列のバイト長を返す。定数として認めた文字列は
+  // エスケープを含まない印字可能ASCIIだけなので、1文字が1バイトに対応し、
+  // そのまま長さになる。テーブルへの`#`は要素数の解釈が実行時に決まるので
+  // 対象外（そもそもテーブルは定数として認めていない）。
+  if (v.kind !== "string") return undefined;
+  return literalNodeFor({ kind: "int", value: BigInt(v.value.length) }, expr);
 }
 
 // ============================================================
@@ -842,28 +661,11 @@ function isShortLiteral(expr: Parser.Expression): boolean {
   return expr.type === "NumericLiteral" && expr.raw.length === 1;
 }
 
-// 伝搬したあと、参照が消えた宣言が実際に取り除かれるかどうかを判定する。
-// 未使用ローカル削除が初期値ごと捨てられるのはリテラルそのものだけで、
-// `-5`のような単項式は対象外である（removeUnused.tsのisDiscardableInitializer）。
-// 宣言が残るなら、参照をリテラルに置き換えても出力は縮まず、むしろ伸びる。
-function leavesNoDeclaration(expr: Parser.Expression): boolean {
-  switch (expr.type) {
-    case "NilLiteral":
-    case "BooleanLiteral":
-    case "NumericLiteral":
-    case "StringLiteral":
-      return true;
-    default:
-      return false;
-  }
-}
-
 function collectPropagationCandidates(
   body: Parser.Statement[],
   resolved: ResolveResult,
   metadata: SourceMetadata,
   reassigned: ReadonlySet<Symbol>,
-  baseSlotIdentifiers: ReadonlySet<Parser.Identifier>,
 ): Map<Symbol, ConstantValue> {
   const out = new Map<Symbol, ConstantValue>();
 
@@ -884,12 +686,6 @@ function collectPropagationCandidates(
       const symbol = resolved.symbolOf(statement.variables[0]);
       if (!symbol) return;
       if (reassigned.has(symbol)) return;
-
-      // baseスロットに直接現れる参照が1つでもあれば、このシンボルは一切伝搬しない
-      // （一部の参照だけ置き換えて宣言が残る中途半端な状態を作らないため）。
-      if (symbol.references.some((ref) => baseSlotIdentifiers.has(ref))) return;
-
-      if (!leavesNoDeclaration(statement.init[0])) return;
 
       const refCount = symbol.references.length;
       if (refCount === 1 || isShortLiteral(statement.init[0])) {
@@ -912,39 +708,6 @@ interface RewriteContext {
   changed: boolean;
 }
 
-// MemberExpression/IndexExpression/CallExpression/TableCallExpression/
-// StringCallExpressionの`.base`専用の書き換え。baseスロットに直接乗っている式
-// （Identifier/BinaryExpression/LogicalExpression/UnaryExpression）自体の置換
-// （定数への伝搬・畳み込み）は行わない。子（baseではないスロット）へは通常の
-// rewriteExpressionで再帰する。詳細はcollectBaseSlotIdentifiers直前のコメント参照。
-function rewriteBase(
-  expr: Parser.Expression,
-  ctx: RewriteContext,
-): Parser.Expression {
-  switch (expr.type) {
-    case "Identifier":
-      return expr;
-    case "BinaryExpression":
-      expr.left = rewriteExpression(expr.left, ctx);
-      expr.right = rewriteExpression(expr.right, ctx);
-      return expr;
-    case "LogicalExpression":
-      expr.left = rewriteExpression(expr.left, ctx);
-      expr.right = rewriteExpression(expr.right, ctx);
-      return expr;
-    case "UnaryExpression":
-      expr.argument = rewriteExpression(expr.argument, ctx);
-      return expr;
-    default:
-      // これ以外の式（MemberExpression/IndexExpression/Call系/リテラル/
-      // FunctionDeclaration/TableConstructorExpression）は通常のrewriteExpression
-      // でも「置換されず、子だけが書き換わる」ため安全にそのまま委譲できる。
-      // MemberExpression等のさらに内側の.baseは、rewriteExpression側が
-      // 再びrewriteBaseを呼ぶことでbase制限が連鎖の先頭まで引き継がれる。
-      return rewriteExpression(expr, ctx);
-  }
-}
-
 function rewriteCallLike(
   expr:
     | Parser.CallExpression
@@ -952,7 +715,7 @@ function rewriteCallLike(
     | Parser.StringCallExpression,
   ctx: RewriteContext,
 ): void {
-  expr.base = rewriteBase(expr.base, ctx);
+  expr.base = rewriteExpression(expr.base, ctx);
   if (expr.type === "CallExpression") {
     expr.arguments = expr.arguments.map((a) => rewriteExpression(a, ctx));
   } else if (expr.type === "TableCallExpression") {
@@ -1021,11 +784,11 @@ function rewriteExpression(
       rewriteCallLike(expr, ctx);
       return expr;
     case "IndexExpression":
-      expr.base = rewriteBase(expr.base, ctx);
+      expr.base = rewriteExpression(expr.base, ctx);
       expr.index = rewriteExpression(expr.index, ctx);
       return expr;
     case "MemberExpression":
-      expr.base = rewriteBase(expr.base, ctx);
+      expr.base = rewriteExpression(expr.base, ctx);
       return expr;
     case "FunctionDeclaration":
       rewriteBlock(expr.body, ctx);
@@ -1057,11 +820,11 @@ function rewriteAssignmentTarget(
 ): Parser.Identifier | Parser.IndexExpression | Parser.MemberExpression {
   if (v.type === "Identifier") return v; // 代入の左辺は決して書き換えない
   if (v.type === "IndexExpression") {
-    v.base = rewriteBase(v.base, ctx);
+    v.base = rewriteExpression(v.base, ctx);
     v.index = rewriteExpression(v.index, ctx);
     return v;
   }
-  v.base = rewriteBase(v.base, ctx);
+  v.base = rewriteExpression(v.base, ctx);
   return v;
 }
 
@@ -1160,13 +923,11 @@ export function foldConstants(
   metadata: SourceMetadata,
 ): boolean {
   const reassigned = collectReassignedSymbols(chunk.body, resolved);
-  const baseSlotIdentifiers = collectBaseSlotIdentifiers(chunk.body);
   const propagate = collectPropagationCandidates(
     chunk.body,
     resolved,
     metadata,
     reassigned,
-    baseSlotIdentifiers,
   );
   const ctx: RewriteContext = { resolved, propagate, changed: false };
   rewriteBlock(chunk.body, ctx);
