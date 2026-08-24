@@ -20,6 +20,10 @@ import { analyzeTableEffects } from "./tableEffects";
 import { applyTableReadMergePlan, planTableReadMerges } from "./tableReadMerge";
 import { PassOrchestrator } from "./optimizerPass";
 import { RuntimeProfile, runtimeEnvironmentOf } from "./runtimeEnvironment";
+import {
+  OptimizationDiagnostic,
+  OptimizationDiagnosticCollector,
+} from "./optimizerDiagnostics";
 
 export type { RuntimeProfile } from "./runtimeEnvironment";
 
@@ -63,6 +67,8 @@ export interface MinifierMode {
   removeUnusedGlobals?: boolean;
   // 定数式の事前計算と、定数ローカル変数の伝搬。省略時はfalse扱い（明示的に有効化する）。
   foldConstants?: boolean;
+  // 最適化候補の採否理由を収集する。既定offで、生成結果には影響しない。
+  collectOptimizationDiagnostics?: boolean;
 }
 
 const NO_RENAME: RenameResult = {
@@ -89,6 +95,7 @@ export class Minifier {
   // #8a: プログラム全体を横断して決定された「内部グローバル名 -> 短縮名」の対応
   private globalRenames = new Map<string, string>();
   private readonly moduleMetadata = new Map<string, SourceMetadata>();
+  private readonly diagnosticCollector?: OptimizationDiagnosticCollector;
 
   constructor(
     entryFilePath: string,
@@ -108,9 +115,16 @@ export class Minifier {
       ranges: true,
     };
     this.mode = mode;
+    if (mode.collectOptimizationDiagnostics) {
+      this.diagnosticCollector = new OptimizationDiagnosticCollector();
+    }
     const pn = path.parse(entryFilePath);
     this.dir = pn.dir;
     this.entryModule = pn.name;
+  }
+
+  get optimizationDiagnostics(): readonly OptimizationDiagnostic[] {
+    return this.diagnosticCollector?.diagnostics ?? [];
   }
 
   parse(): SourceNode {
@@ -305,6 +319,8 @@ export class Minifier {
               maxMergeArity: runtimeEnvironmentOf(
                 this.mode.runtimeProfile ?? "lua53",
               ).resources.conservativeParallelValueLimit,
+              diagnostics: this.diagnosticCollector,
+              moduleName,
             },
           );
           return applyTableReadMergePlan(
@@ -342,6 +358,8 @@ export class Minifier {
               (provisionalRenames.nameOf(symbol.declaration) ?? symbol.name)
                 .length,
             preserveRequireSplice: !this.mode.moduleLikeLua,
+            diagnostics: this.diagnosticCollector,
+            moduleName,
           });
           return applyNonAdjacentLocalPlan(
             plan,

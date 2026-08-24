@@ -5,6 +5,10 @@ import { copyNodeOrigin, identifierWithOrigin } from "./generatedNode";
 import { SourceMetadata } from "./sourceMetadata";
 import { TransformResult } from "./optimizerPass";
 import { childStatementBodies } from "./controlFlow";
+import {
+  OptimizationDiagnosticReason,
+  OptimizationDiagnosticSink,
+} from "./optimizerDiagnostics";
 
 export interface NonAdjacentLocalGroup {
   readonly body: Parser.Statement[];
@@ -22,6 +26,8 @@ export interface NonAdjacentLocalPlannerOptions {
   // Rename後の印字名長。未確定のsymbolをundefinedにすると、その候補は拒否する。
   readonly outputNameLengthOf: (symbol: Symbol) => number | undefined;
   readonly preserveRequireSplice: boolean;
+  readonly diagnostics?: OptimizationDiagnosticSink;
+  readonly moduleName?: string;
 }
 
 interface Candidate {
@@ -47,7 +53,23 @@ export function planNonAdjacentLocals(
     childBlocksOf(body).forEach(processBlock);
 
     let run: Candidate[] = [];
-    const flush = () => {
+    const record = (
+      decision: "accepted" | "rejected",
+      reason: OptimizationDiagnosticReason,
+      candidateSize: number,
+      estimatedByteSavings?: number,
+    ) =>
+      options.diagnostics?.record({
+        pass: "effect-aware-local-hoist",
+        moduleName: options.moduleName,
+        decision,
+        reason,
+        candidateSize,
+        estimatedByteSavings,
+      });
+    const flush = (
+      rejectionReason: OptimizationDiagnosticReason = "insufficient-group",
+    ) => {
       if (run.length >= 2) {
         const lengths = run.map((candidate) =>
           options.outputNameLengthOf(candidate.symbol),
@@ -67,8 +89,16 @@ export function planNonAdjacentLocals(
               symbols: run.map((candidate) => candidate.symbol),
               estimatedByteSavings: savings,
             });
+            record("accepted", "profitable-group", run.length, savings);
+            run = [];
+            return;
           }
+          record("rejected", "nonpositive-cost", run.length);
+        } else {
+          record("rejected", "output-name-unknown", run.length);
         }
+      } else if (run.length > 0) {
+        record("rejected", rejectionReason, run.length);
       }
       run = [];
     };
@@ -84,18 +114,18 @@ export function planNonAdjacentLocals(
         (body[index - 1]?.type === "LocalStatement" ||
           body[index + 1]?.type === "LocalStatement")
       ) {
-        flush();
+        flush("adjacent-local-owned-by-merge");
         return;
       }
 
       const candidate = candidateOf(statement, index, resolved, options);
       if (!candidate) {
-        flush();
+        flush("noncandidate-boundary");
         return;
       }
 
       if (wouldChangeBinding(body, index, candidate)) {
-        flush();
+        flush("binding-shadow-hazard");
         return;
       }
 
@@ -103,7 +133,7 @@ export function planNonAdjacentLocals(
         run.some((prior) => prior.symbol.name === candidate.symbol.name) ||
         wouldChangeBinding(body, run[0]?.index ?? candidate.index, candidate)
       ) {
-        flush();
+        flush("binding-shadow-hazard");
       }
       run.push(candidate);
     });

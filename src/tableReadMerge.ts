@@ -5,6 +5,10 @@ import { SourceMetadata } from "./sourceMetadata";
 import { TransformResult } from "./optimizerPass";
 import { childStatementBodies } from "./controlFlow";
 import { TableEffect, TableEffectAnalysis } from "./tableEffects";
+import {
+  OptimizationDiagnosticReason,
+  OptimizationDiagnosticSink,
+} from "./optimizerDiagnostics";
 
 export interface TableReadMergeGroup {
   readonly body: Parser.Statement[];
@@ -22,6 +26,8 @@ export interface TableReadMergeOptions {
   readonly dirtyGranularity: "table" | "static-key";
   readonly canMoveStatement?: (statement: Parser.LocalStatement) => boolean;
   readonly maxMergeArity?: number;
+  readonly diagnostics?: OptimizationDiagnosticSink;
+  readonly moduleName?: string;
 }
 
 interface Candidate {
@@ -47,7 +53,24 @@ export function planTableReadMerges(
     body.forEach((statement, index) => indexOf.set(statement, index));
     let run: Candidate[] = [];
 
-    const flush = () => {
+    const record = (
+      decision: "accepted" | "rejected",
+      reason: OptimizationDiagnosticReason,
+      candidateSize: number,
+      estimatedByteSavings?: number,
+    ) =>
+      options.diagnostics?.record({
+        pass: "effect-aware-table-reads",
+        moduleName: options.moduleName,
+        decision,
+        reason,
+        candidateSize,
+        estimatedByteSavings,
+      });
+    const flush = (
+      rejectionReason: OptimizationDiagnosticReason = "insufficient-group",
+    ) => {
+      let accepted = 0;
       const maxMergeArity = options.maxMergeArity ?? DEFAULT_MAX_MERGE_ARITY;
       for (let start = 0; start < run.length; start += maxMergeArity) {
         const part = run.slice(start, start + maxMergeArity);
@@ -60,6 +83,7 @@ export function planTableReadMerges(
         ) {
           continue;
         }
+        const estimatedByteSavings = 5 * (part.length - 1);
         groups.push({
           body,
           statements: part.map((candidate) => candidate.statement),
@@ -67,8 +91,18 @@ export function planTableReadMerges(
           reads: part.map((candidate) => candidate.read),
           // N文を1文へまとめると、2文目以降ごとに`local `と`=`の重複から
           // 変数/init間のcommaを差し引いて5 bytesずつ減る。
-          estimatedByteSavings: 5 * (part.length - 1),
+          estimatedByteSavings,
         });
+        accepted += part.length;
+        record(
+          "accepted",
+          "profitable-group",
+          part.length,
+          estimatedByteSavings,
+        );
+      }
+      if (run.length > accepted) {
+        record("rejected", rejectionReason, run.length - accepted);
       }
       run = [];
     };
@@ -77,7 +111,7 @@ export function planTableReadMerges(
       if (isIntervening(statement)) return;
       const candidate = candidateOf(statement, index, tableEffects, options);
       if (!candidate) {
-        flush();
+        flush("noncandidate-boundary");
         return;
       }
 
@@ -98,7 +132,7 @@ export function planTableReadMerges(
           options.dirtyGranularity,
         )
       ) {
-        flush();
+        flush("effect-or-binding-barrier");
       }
       run.push(candidate);
     });
