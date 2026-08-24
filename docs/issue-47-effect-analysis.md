@@ -142,6 +142,66 @@ Lua 5.3 safe ケースは可能な範囲で実行結果を差分検証する。S
 
 安全な候補の大半がこれらだけで拒否され、推定削減量が実装・保守コストを上回ると実コーパスで確認できた場合に再検討する。
 
+## 後続 Issue 候補
+
+この節は、#47 の完了を妨げない将来課題を、後から独立 Issue に切り出すための設計メモである。ここへ記載しただけでは実装を約束しない。起票トリガーを満たす証拠が得られたとき、対象コーパス、期待削減量、意味論上の境界を添えて Issue 化する。
+
+### 再代入を扱う flow-sensitive points-to
+
+- **問題と保留理由:** 現在は fresh table を保持する Symbol に一度でも write があれば、その Symbol の table read merge をすべて拒否する。元の allocation と現在値を文ごとに対応付ける points-to／CFG がない状態で、「再代入より前だけ安全」などの部分判定を加えると誤認しやすいためである。
+- **起票トリガー:** 実コーパスで、この保守的拒否が安全候補の主要な取りこぼしになり、見込める byte 削減量を具体例と計測値で示せたとき。
+- **必要な基盤:** 文位置を持つ binding write、allocation identity、直線 region 内の reaching-definition。branch を越えるなら後述の CFG も必要になる。
+- **完了条件案:** 再代入前後で allocation を区別し、元 table、別 fresh table、外部値、`setmetatable` を含む反例を安全に分類する。解析不能な join は拒否し、既存の全 Symbol 拒否より出力を悪化させない。
+
+### register pressure に基づく merge 上限
+
+- **問題と保留理由:** 現在は一つの local 文へまとめる arity を 50 に制限する。Lua 5.3 の local 上限 200 と register 上限 255 に対して余裕を残す固定値であり、関数内の既存 local、RHS 一時 register、コンパイラ実装差までは数えていない。
+- **起票トリガー:** 50 分割が目立つ出力増を生む、または対象 Lua／Stormworks コンパイラで 50 未満でも register overflow を再現したとき。
+- **必要な基盤:** 対象コンパイラごとの制限を明記した runtime capability、関数単位の local／式一時値の保守的上界、コンパイル可能性を検証する fixture。
+- **完了条件案:** 対象 runtime ごとに安全な arity を導出し、限界直前と限界超過を自動検証する。導出不能時は現在の固定上限以下へフォールバックする。
+
+### branch／loop／goto を扱う CFG
+
+- **問題と保留理由:** #47 は同じ `Statement[]` の直線 region に限定し、分岐、loop、label、goto を barrier とする。一般的な code motion には支配関係、到達定義、loop 効果の固定点が必要で、局所的な条件追加では安全性を維持しにくい。
+- **起票トリガー:** barrier 越しの候補が実コーパスの削減機会を支配し、直線 region の改善では回収できないと測定されたとき。
+- **必要な基盤:** Lua の goto／local scope 制約を表す CFG、dominance、block 単位の effect summary、解析不能 edge の保守的表現。
+- **完了条件案:** if、各 loop、break、return、label／goto の代表反例で評価順と scope legality を保存する。未到達、irreducible、解析不能な flow は変換しない。
+
+### 限定 alias 解析
+
+- **問題と保留理由:** fresh table を別 local、call、return、外部 table へ渡すと escape とし、以後を拒否する。汎用 points-to は複雑だが、単純な一対一 local alias には安全に追跡できる余地がある。
+- **起票トリガー:** `local alias = table` のような限定形が主要な取りこぼしとなり、alias を追跡しても候補当たりの解析費用が妥当だと確認できたとき。
+- **必要な基盤:** allocation identity、alias の生成・kill、capture／call／store での escape propagation、再代入を扱う reaching-definition。
+- **完了条件案:** 対応する local alias 集合に dirty／escape を伝播し、分岐 join、alias 再代入、nested closure、外部 call の反例は保守的に拒否する。
+
+### Rename／Print 後の transactional cost 判定
+
+- **問題と保留理由:** 現在の planner は構文上の削減量と provisional rename を用いる。変換で参照重みや名前割当順が変わる場合、Rename／Print 後の厳密な全体 byte 差を planner 単体で証明するのは難しい。
+- **起票トリガー:** 多数 Symbol、複数 module、予約名衝突を含む差分テストで、有効時の出力が無効時より長くなる反例が得られたとき。または複数の変換パスが同じ概算ロジックを持ち始めたとき。
+- **必要な基盤:** AST／resolver／metadata を安全に複製またはロールバックする仕組み、同一 print 条件での UTF-8 byte 計測、変換ごとの採否を再現できる deterministic pipeline。
+- **完了条件案:** 候補適用前後を最終 Rename／Print と同条件で比較し、厳密に短い場合だけ commit する。Source Map と annotation の所有権も rollback で失わない。
+
+### debug／introspection 保存モード
+
+- **問題と保留理由:** local 宣言 hoist は通常の実行結果を保存しても、`debug.getlocal`、hook、エラースタックから観測される local の生存期間を変える。完全保存は rename や既存 minify とも衝突し、#47 の safe 定義には含めない。
+- **起票トリガー:** debug API を使用する利用者から再現例が提示され、rename を含むどの観測を保証すべきか合意できたとき。
+- **必要な基盤:** runtime profile ごとの debug API 能力、観測対象の明文化、debug-sensitive construct の検出。
+- **完了条件案:** 保証範囲を API／CLI に明記し、保存モードでは該当変換を拒否する。保証できない観測は診断または文書で明示する。
+
+### static string key の完全な decoder
+
+- **問題と保留理由:** `.x` と単純な `['x']`／`["x"]` は同じ static key に正規化するが、escape を含む Lua string literal は動的 key として扱う。parser 表現から値を復元する decoder を局所実装すると、escape、10 進 byte、改行、長括弧文字列で不一致を起こし得る。
+- **起票トリガー:** escaped string key が実コーパスで頻出し、field-sensitive dirty の主要な取りこぼしだと測定されたとき。
+- **必要な基盤:** Lua 5.3 lexical rule に従う共有 string decoder、parser／printer roundtrip fixture、byte string と JavaScript string の境界定義。
+- **完了条件案:** 同値な全 literal 表記を同じ byte key に正規化し、不正 escape と runtime 依存表現を拒否する。decoder は constant fold 等からも再利用できる位置に置く。
+
+### pass orchestration と #42 planner の統合
+
+- **問題と保留理由:** #47 は必要箇所で Resolve をやり直しているが、各パスが invalidation と cost 判定を個別に組み立てると、#42 や後続 optimizer で順序依存が増える。#42 自体が未実装のため、先に抽象化すると要求を誤る可能性がある。
+- **起票トリガー:** #42 実装時に同じ region、effect、cost、再 Resolve 制御を再利用できることが確認される、または三つ以上の構造変更パスが同型の orchestration を持ったとき。
+- **必要な基盤:** `changed`／`invalidatesResolve` を返す pass 契約、共有 effect facts、候補単位の cost interface、パス間テスト行列。
+- **完了条件案:** #42 と #47 が同じ planner 契約を使い、Resolve の更新点が中央で決まる。個別 opt-out、Source Map、出力長不増の性質を統合後も維持する。
+
 ## 完了条件
 
 - #44 と連続 local merge だけでは生成できない、非連続文または table key を含む圧縮がある。
