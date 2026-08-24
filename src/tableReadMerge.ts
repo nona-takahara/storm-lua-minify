@@ -27,6 +27,10 @@ interface Candidate {
   readonly read: TableEffect;
 }
 
+// Lua 5.3のlocal上限200とregister上限255の差より小さく保つ。
+// static table readは単純でも、全RHSを同時評価する巨大local文を生成しない。
+const MAX_MERGE_ARITY = 50;
+
 export function planTableReadMerges(
   chunk: Parser.Chunk,
   bindingEffects: EffectAnalysis,
@@ -42,15 +46,17 @@ export function planTableReadMerges(
     let run: Candidate[] = [];
 
     const flush = () => {
-      if (run.length >= 2) {
+      for (let start = 0; start < run.length; start += MAX_MERGE_ARITY) {
+        const part = run.slice(start, start + MAX_MERGE_ARITY);
+        if (part.length < 2) continue;
         groups.push({
           body,
-          statements: run.map((candidate) => candidate.statement),
-          indexes: run.map((candidate) => candidate.index),
-          reads: run.map((candidate) => candidate.read),
+          statements: part.map((candidate) => candidate.statement),
+          indexes: part.map((candidate) => candidate.index),
+          reads: part.map((candidate) => candidate.read),
           // N文を1文へまとめると、2文目以降ごとに`local `と`=`の重複から
           // 変数/init間のcommaを差し引いて5 bytesずつ減る。
-          estimatedByteSavings: 5 * (run.length - 1),
+          estimatedByteSavings: 5 * (part.length - 1),
         });
       }
       run = [];
@@ -58,7 +64,12 @@ export function planTableReadMerges(
 
     body.forEach((statement, index) => {
       if (isIntervening(statement)) return;
-      const candidate = candidateOf(statement, index, tableEffects);
+      const candidate = candidateOf(
+        statement,
+        index,
+        bindingEffects,
+        tableEffects,
+      );
       if (!candidate) {
         flush();
         return;
@@ -118,6 +129,7 @@ export function applyTableReadMergePlan(
 function candidateOf(
   statement: Parser.Statement,
   index: number,
+  bindingEffects: EffectAnalysis,
   analysis: TableEffectAnalysis,
 ): Candidate | undefined {
   if (
@@ -134,7 +146,12 @@ function candidateOf(
       effect.access === "read" &&
       effect.expression === statement.init[0] &&
       effect.staticKey !== undefined &&
-      analysis.isNonescaping(effect.table),
+      analysis.isNonescaping(effect.table) &&
+      // Symbolの現在値をallocationへ結び付けるpoints-to/CFGはまだ無い。
+      // 一度でも再代入されれば、以後のaccessを元fresh tableとはみなさない。
+      !bindingEffects
+        .accessesOf(effect.table.symbol)
+        .some((binding) => binding.access === "write"),
   );
   return read ? { statement, index, read } : undefined;
 }

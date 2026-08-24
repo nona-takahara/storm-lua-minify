@@ -77,6 +77,22 @@ describe("fresh table read merge planner", () => {
     expect(result.plan.groups).toEqual([]);
   });
 
+  test("rejects reads after the symbol was replaced before the group", () => {
+    const result = plan(
+      "local t={x=1} t=external local first=t.x tick() local second=t.x",
+      "static-key",
+    );
+    expect(result.plan.groups).toEqual([]);
+  });
+
+  test("rejects a replacement with a metatable-bearing table in pure Lua", () => {
+    const result = plan(
+      "local t={x=1} t=setmetatable({x=2},{}) local first=t.x tick() local second=t.x",
+      "static-key",
+    );
+    expect(result.plan.groups).toEqual([]);
+  });
+
   test("merges planned declarations and keeps expressions", () => {
     const result = plan(
       "local t={x=1,y=2} local first=t.x tick() local second=t.y",
@@ -100,5 +116,17 @@ describe("fresh table read merge planner", () => {
       "MemberExpression",
     ]);
     expect(() => resolveScopes(result.chunk)).not.toThrow();
+  });
+
+  test("splits large groups to preserve Lua register headroom", () => {
+    const reads = Array.from(
+      { length: 120 },
+      (_, index) => `local value${String(index)}=t.x`,
+    ).join(" tick() ");
+    const result = plan(`local t={x=1} ${reads}`);
+
+    expect(result.plan.groups.map((group) => group.statements.length)).toEqual([
+      50, 50, 20,
+    ]);
   });
 });
