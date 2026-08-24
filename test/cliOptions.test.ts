@@ -44,6 +44,13 @@ describe("effect-aware CLI options", () => {
     });
   });
 
+  test("keeps aggressive table read movement as an opt-in", () => {
+    expect(optionsOf()).not.toHaveProperty("aggressiveTableReadMerges");
+    expect(optionsOf("--aggressive-table-read-merges")).toMatchObject({
+      aggressiveTableReadMerges: true,
+    });
+  });
+
   test("rejects an unknown runtime profile", () => {
     const program = createCliProgram();
     program.exitOverride();

@@ -10,7 +10,7 @@
 2. 評価順、字句束縛、複数戻り値、制御フローの制約を満たす。
 3. 最終出力が厳密に短くなる。
 
-Issue #44 の定数伝搬・畳み込みは実装済みである。Issue #42 の local-run planner は未実装だが、#47 をその完了待ちにはしない。両 Issue が使える効果・コスト基盤を先に作り、連続・非連続候補の局所実装を重複させない。全面的な SSA、CFG、汎用 alias 解析は実測で必要になるまで導入しない。
+Issue #44 の定数伝搬・畳み込みは実装済みである。Issue #47 では、後続の Issue #42 が連続・非連続候補を同じ局所plannerで扱える効果・コスト基盤を先に作った。Issue #42 はこの基盤へ依存付きの連続local runを統合済みである。全面的な SSA、CFG、汎用 alias 解析は実測で必要になるまで導入しない。
 
 ## 意味論とオプション
 
@@ -90,7 +90,7 @@ table は fresh・nonescape を table 全体で dirty 管理し、次に static 
 
 適用する各変換は、出力構文の byte 差を保守的に計算し、厳密に短いと判断できる場合だけ適用する。判定不能なら拒否する。統合テストでは変換有効時の UTF-8 byte length が無効時より長くならないことを確認する。
 
-非連続 local は Rename と同じ予約名・module 順で provisional name を割り当て、その名前長を追加代入の上界に使う。変換で候補 Symbol の参照重みだけが増える限り、最終 Rename は旧割当を維持する案より悪くならない。一方、既存の連続 local merge と競合すると比較基準自体が変わるため、#42 で統合 planner を作るまでは、前後に local が隣接しない宣言だけを #47 の候補にする。
+非連続 local は Rename と同じ予約名・module 順で provisional name を割り当て、その名前長を追加代入の上界に使う。変換で候補 Symbol の参照重みだけが増える限り、最終 Rename は旧割当を維持する案より悪くならない。Issue #42 では、先頭initializerを結合後のlocal文に残し、依存する後続initializerだけを元位置の代入へ分離することで、連続local mergeとの境界を同じplannerへ統合した。依存のない隣接runは従来のmergeへ委譲する。
 
 table read merge は `local` と `=` の重複が消える固定構文差を使う。runtime semantics と compiler resource policy は別の capability とし、planner は中央の判定結果だけを参照する。字句block／functionごとのactive local数を文位置で数え、local上限、register上限、保守policyの最小headroomからarityを導出する。Windowsの`luac53`では、既存150 localsに対する49／50受理と51拒否を`pnpm run verify:lua-budget`で再現する。Stormworks compilerの詳細を導出できない場合は、このLua 5.3上限以下へfail-closedにfallbackする。
 
@@ -137,7 +137,7 @@ table read merge は `local` と `=` の重複が消える固定構文差を使�
 - `changed`／`invalidatesResolve`とResolve世代を集中管理し、#44、remove-unused、global alias、#47、#9を通すpass orchestrator
 - runtime／module／pass別の候補採否理由・件数・推定削減量と、再現可能なfixture report
 - 最終Rename／Print済みartifactを隔離比較するtransactional variant selector
-- RHS を元位置に残す、孤立した非連続 local 宣言の hoist
+- 先頭RHSを宣言に残し、後続RHSを元位置に残す、連続・非連続 local 宣言の hoist
 - fresh・nonescape tableの安定したstatic-key readを一つのlocal文へまとめる変換
 - table全体／static-key単位dirtyの個別切替、master／変換別opt-out
 - CLIのStormworks既定、APIのLua 5.3互換既定、純Lua lifetime変更の個別opt-in

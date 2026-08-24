@@ -33,6 +33,10 @@ export function createCliProgram(): Command {
       "fresh tableの安定したreadのまとめ上げだけを無効にします",
     )
     .option(
+      "--aggressive-table-read-merges",
+      "tableの変更を越えるreadも積極的なまとめ上げの対象にします",
+    )
+    .option(
       "--no-field-sensitive-table-effects",
       "tableのdirty判定をstatic key単位からtable全体へ戻します",
     )
