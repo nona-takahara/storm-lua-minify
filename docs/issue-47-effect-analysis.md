@@ -91,7 +91,11 @@ table は fresh・nonescape を table 全体で dirty 管理し、次に static 
 
 ## コスト
 
-printer と共有できる syntax byte cost API を用意し、保守的な上下界で変換後が厳密に短いと判断できる場合だけ適用する。判定不能なら拒否する。概算定数を各変換へ散在させない。統合テストでは変換有効時の UTF-8 byte length が無効時より長くならないことを確認する。
+適用する各変換は、出力構文の byte 差を保守的に計算し、厳密に短いと判断できる場合だけ適用する。判定不能なら拒否する。統合テストでは変換有効時の UTF-8 byte length が無効時より長くならないことを確認する。
+
+非連続 local は Rename と同じ予約名・module 順で provisional name を割り当て、その名前長を追加代入の上界に使う。変換で候補 Symbol の参照重みだけが増える限り、最終 Rename は旧割当を維持する案より悪くならない。一方、既存の連続 local merge と競合すると比較基準自体が変わるため、#42 で統合 planner を作るまでは、前後に local が隣接しない宣言だけを #47 の候補にする。
+
+table read merge は `local` と `=` の重複が消える固定構文差を使う。ただし一文の arity は 50 以下へ分割し、Lua compiler の local／register 上限に保守的な余裕を残す。正確な register pressure と Rename／Print 後の transactional cost は、実測トリガーを満たした場合の後続 Issue 候補とする。
 
 ## Source Map
 
@@ -121,6 +125,21 @@ printer と共有できる syntax byte cost API を用意し、保守的な上�
 11. fixture、差分実行、Source Map、roundtrip、出力長、CLI/API 文書、全 CI 検証。
 
 段階 10 は unsafe 機能を必ず作るという意味ではない。意味変更で初めて得られる有効な候補を計測し、導入するなら safe と別オプション・別コミットにする境界である。
+
+## 実装到達点
+
+#47 では次を実装した。
+
+- 共通 AST walker と、Symbol 単位の declaration／read／write facts
+- fresh table allocation、static key、dirty、alias／call／return／store／capture escape の解析
+- RHS を元位置に残す、孤立した非連続 local 宣言の hoist
+- fresh・nonescape tableの安定したstatic-key readを一つのlocal文へまとめる変換
+- table全体／static-key単位dirtyの個別切替、master／変換別opt-out
+- CLIのStormworks既定、APIのLua 5.3互換既定、純Lua lifetime変更の個別opt-in
+- 構造変更後の再Resolve、合成Identifierのprovenance、table統合を含むSource Mapテスト
+- moduleLikeLuaの両方式、複数module、#44、remove-unused、global alias、既存local mergeとの組合せテスト
+
+未知のcallやaliasが変更しないと仮定するsemantic-changing transformは、実測上の必要性を確認できなかったため追加していない。意味変更を許可する包括的な`aggressive`オプションも設けていない。純Luaの`allowLocalLifetimeChanges`はdebug APIからのlocal lifetime観測差だけを許可し、heap効果やmetatableの仮定を緩めない。
 
 ## テスト行列
 
