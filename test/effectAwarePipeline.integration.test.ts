@@ -93,7 +93,7 @@ describe.each([false, true])(
     });
 
     test.each([
-      ["constant folding", { foldConstants: false }],
+      ["constant folding", { foldConstants: true }],
       ["global alias", { globalAlias: false }],
       ["local merge", { mergeLocals: false }],
       ["unused removal", { removeUnused: false }],
