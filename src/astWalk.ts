@@ -9,6 +9,9 @@ import Parser from "luaparse";
 export interface AstWalkVisitor {
   readonly onIdentifierReference?: (id: Parser.Identifier) => void;
   readonly onBlock?: (body: Parser.Statement[]) => void;
+  // Function bodyは遅延実行されるためwalker自身は入らない。必要な解析だけが
+  // 関数を独立したexecution unitとして受け取り、bodyを走査する。
+  readonly onFunction?: (fn: Parser.FunctionDeclaration) => void;
 }
 
 export function walkStatement(
@@ -77,6 +80,7 @@ export function walkStatement(
           walkExpression(statement.identifier, visitor);
         }
       }
+      visitor.onFunction?.(statement);
       visitor.onBlock?.(statement.body);
       return;
     case "ReturnStatement":
@@ -141,6 +145,7 @@ export function walkExpression(
       walkExpression(expression.base, visitor);
       return;
     case "FunctionDeclaration":
+      visitor.onFunction?.(expression);
       visitor.onBlock?.(expression.body);
       return;
     case "TableConstructorExpression":
