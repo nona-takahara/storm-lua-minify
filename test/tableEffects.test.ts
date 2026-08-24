@@ -18,15 +18,21 @@ describe("fresh table effect analysis", () => {
         effect.staticKey ?? "dynamic",
       ]),
     ).toEqual([
-      ["read", "x"],
-      ["write", "x"],
+      ["read", "78"],
+      ["write", "78"],
       ["read", "dynamic"],
     ]);
   });
 
-  test("does not decode escaped string keys as static", () => {
-    const analysis = analyze('local t={} return t["x\\n"]');
-    expect(analysis.effects[0].staticKey).toBeUndefined();
+  test("normalizes escaped and long-bracket keys by Lua bytes", () => {
+    const analysis = analyze(
+      'local t={} local a=t.x local b=t["\\120"] local c=t[ [[x]] ]',
+    );
+    expect(analysis.effects.map((effect) => effect.staticKey)).toEqual([
+      "78",
+      "78",
+      "78",
+    ]);
   });
 
   test("keeps a fresh table nonescaping across unrelated calls", () => {
@@ -52,8 +58,8 @@ describe("fresh table effect analysis", () => {
     expect(
       analysis.effects.map((effect) => [effect.access, effect.staticKey]),
     ).toEqual([
-      ["write", "x"],
-      ["write", "y"],
+      ["write", "78"],
+      ["write", "79"],
     ]);
   });
 });

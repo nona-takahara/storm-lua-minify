@@ -1,5 +1,10 @@
 import Parser from "luaparse";
 import { ResolveResult, Symbol } from "./resolver";
+import {
+  decodeLuaStringLiteral,
+  luaByteStringKey,
+  luaByteStringOfText,
+} from "./luaString";
 
 export interface FreshTable {
   readonly symbol: Symbol;
@@ -352,13 +357,10 @@ export function analyzeTableEffects(
 export function staticKeyOf(
   expression: Parser.MemberExpression | Parser.IndexExpression,
 ): string | undefined {
-  if (expression.type === "MemberExpression") return expression.identifier.name;
-  if (expression.index.type !== "StringLiteral") return undefined;
-  const raw = expression.index.raw;
-  if (raw.length < 2 || raw.includes("\\")) return undefined;
-  const quote = raw[0];
-  if ((quote !== '"' && quote !== "'") || raw[raw.length - 1] !== quote) {
-    return undefined;
+  if (expression.type === "MemberExpression") {
+    return luaByteStringKey(luaByteStringOfText(expression.identifier.name));
   }
-  return raw.slice(1, -1);
+  if (expression.index.type !== "StringLiteral") return undefined;
+  const decoded = decodeLuaStringLiteral(expression.index);
+  return decoded.ok ? luaByteStringKey(decoded.value) : undefined;
 }
