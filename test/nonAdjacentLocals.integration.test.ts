@@ -82,4 +82,19 @@ describe("effect-aware non-adjacent locals pipeline", () => {
 
     expect(output).toBe(minify(SOURCE, { runtimeProfile: "lua53" }));
   });
+
+  test("does not replace a shorter adjacent-local merge", () => {
+    const source =
+      "local first=f() local second=g() local third=h() use(first,second,third)";
+    const disabled = minify(source, {
+      runtimeProfile: "stormworks",
+      effectAwareTransforms: false,
+    });
+    const enabled = minify(source, { runtimeProfile: "stormworks" });
+
+    expect(Buffer.byteLength(enabled)).toBeLessThanOrEqual(
+      Buffer.byteLength(disabled),
+    );
+    expect(enabled).toBe(disabled);
+  });
 });

@@ -79,6 +79,18 @@ export function planNonAdjacentLocals(
     body.forEach((statement, index) => {
       if (isLinearInterveningStatement(statement)) return;
 
+      // 後続の既存local merge (#9) と候補選択を競合させない。隣接localを
+      // hoistすると、#47単体では短くても#9適用後を基準に出力が長くなり得る。
+      // #42で両案を同じplannerへ統合するまでは、孤立したlocalだけを扱う。
+      if (
+        statement.type === "LocalStatement" &&
+        (body[index - 1]?.type === "LocalStatement" ||
+          body[index + 1]?.type === "LocalStatement")
+      ) {
+        flush();
+        return;
+      }
+
       const candidate = candidateOf(statement, index, resolved, options);
       if (!candidate) {
         flush();

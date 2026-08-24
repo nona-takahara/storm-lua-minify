@@ -45,11 +45,17 @@ describe("non-adjacent local planner", () => {
 
   test("excludes a self-shadowing initializer without losing the next group", () => {
     const result = plan(
-      "local first=first local second=g() local third=h() local fourth=i()",
+      "local first=first tick() local second=g() tick() local third=h() tick() local fourth=i()",
     );
 
     expect(result.groups).toHaveLength(1);
-    expect(result.groups[0].indexes).toEqual([1, 2, 3]);
+    expect(result.groups[0].indexes).toEqual([2, 4, 6]);
+  });
+
+  test("leaves adjacent declarations to the existing local merge", () => {
+    expect(
+      plan("local first=f() local second=g() local third=h()").groups,
+    ).toEqual([]);
   });
 
   test("uses control flow and unsupported local shapes as boundaries", () => {
@@ -132,6 +138,7 @@ local first=f()
 tick()
 --# second
 local second=g()
+tick()
 --# third
 local third=h() --# trailing`;
     const chunk = Parser.parse(source, {
@@ -157,7 +164,7 @@ local third=h() --# trailing`;
       metadata.beforeOf(chunk.body[3]).map((comment) => comment.raw),
     ).toEqual(["--# second"]);
     expect(
-      metadata.trailingOf(chunk.body[4]).map((comment) => comment.raw),
+      metadata.trailingOf(chunk.body[5]).map((comment) => comment.raw),
     ).toEqual(["--# trailing"]);
   });
 });
