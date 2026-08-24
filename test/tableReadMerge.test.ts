@@ -1,0 +1,76 @@
+import Parser from "luaparse";
+import { describe, expect, test } from "vitest";
+import { analyzeBindingEffects } from "../src/effectAnalysis";
+import { resolveScopes } from "../src/resolver";
+import { analyzeTableEffects } from "../src/tableEffects";
+import {
+  applyTableReadMergePlan,
+  planTableReadMerges,
+} from "../src/tableReadMerge";
+
+function plan(source: string, fieldSensitive = false) {
+  const chunk = Parser.parse(source, { luaVersion: "5.3" });
+  const resolved = resolveScopes(chunk);
+  return {
+    chunk,
+    plan: planTableReadMerges(
+      chunk,
+      analyzeBindingEffects(chunk, resolved),
+      analyzeTableEffects(chunk, resolved),
+      { fieldSensitive },
+    ),
+  };
+}
+
+describe("fresh table read merge planner", () => {
+  test("moves stable reads across an unrelated call", () => {
+    const result = plan(
+      "local t={x=1,y=2} local first=t.x tick() local second=t.y",
+    );
+    expect(result.plan.groups).toHaveLength(1);
+    expect(result.plan.groups[0].indexes).toEqual([1, 3]);
+    expect(result.plan.groups[0].estimatedByteSavings).toBe(5);
+  });
+
+  test("rejects all movement for an escaping table", () => {
+    const result = plan(
+      "local t={x=1,y=2} local first=t.x consume(t) local second=t.y",
+    );
+    expect(result.plan.groups).toEqual([]);
+  });
+
+  test("treats every write as dirty in whole-table mode", () => {
+    const result = plan("local t={x=1} local first=t.x t.y=2 local second=t.x");
+    expect(result.plan.groups).toEqual([]);
+  });
+
+  test("rejects movement across a table binding reassignment", () => {
+    const result = plan("local t={x=1} local first=t.x t={} local second=t.x");
+    expect(result.plan.groups).toEqual([]);
+  });
+
+  test("merges planned declarations and keeps expressions", () => {
+    const result = plan(
+      "local t={x=1,y=2} local first=t.x tick() local second=t.y",
+    );
+    expect(applyTableReadMergePlan(result.plan)).toEqual({
+      changed: true,
+      invalidatesResolve: true,
+    });
+    expect(result.chunk.body.map((statement) => statement.type)).toEqual([
+      "LocalStatement",
+      "LocalStatement",
+      "CallStatement",
+    ]);
+    const merged = result.chunk.body[1] as Parser.LocalStatement;
+    expect(merged.variables.map((variable) => variable.name)).toEqual([
+      "first",
+      "second",
+    ]);
+    expect(merged.init.map((expression) => expression.type)).toEqual([
+      "MemberExpression",
+      "MemberExpression",
+    ]);
+    expect(() => resolveScopes(result.chunk)).not.toThrow();
+  });
+});
