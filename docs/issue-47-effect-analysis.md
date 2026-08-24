@@ -22,7 +22,7 @@ Issue #44 の定数伝搬・畳み込みは実装済みである。Issue #42 の
 | safe effect transforms        | 選択環境で通常の観測可能な意味を保存する変換 | Stormworks では有効・opt-out。Lua では lifetime 許可を個別 opt-in |
 | semantic-changing assumptions | 未知の call や alias が変更しない等の仮定    | 無効・opt-in                                                      |
 
-Issue 本文の一律 opt-in より、今回指定された条件を優先する。Stormworks で意味が変わらない変換は opt-out、変わり得る変換は opt-in とする。純 Lua と Stormworks で安全範囲が異なる機能も単一の `aggressive` フラグへ混ぜない。
+Issue 本文の一律 opt-in より、今回指定された条件を優先する。Stormworks で意味が変わらない変換は opt-out、変わり得る変換は opt-in とする。純 Lua と Stormworks で安全範囲が異なる機能も単一の `aggressive` フラグへ混ぜない。意味を変える仮定は、圧縮率が高くても safe 層へ混入させない。
 
 safe は、結果だけでなくエラーの有無と順序、call 順、metamethod、字句束縛、複数戻り値、goto の可否を保存する。ただし純 Lua の `debug.getlocal` 等による local の生存期間・名前の観測は宣言 hoist と両立しない。safe が通常のプログラム意味論を対象とし、debug/introspection を保証しないことを API 文書に明記し、必要なら変換全体を opt-out できるようにする。
 
@@ -48,7 +48,7 @@ Link / Resolve
 
 ## 解析モデル
 
-最初の region は同じ `Statement[]` 内の直線区間とする。if／loop／function の境界、label、goto、break、return、require splice、未対応 AST は region 境界とし、初期段階では越えない。各 nested block は独立に解析する。
+`ControlFlowAnalysis` は chunk と各 function を execution unit に分け、同じ `Statement[]` 内で移動可能性を証明した直線区間を `certified LinearRegion` として公開する。if／loop／function の境界、label、goto、break、return、未対応 AST は region 境界とし、越えられない場合は `undefined` を返す。未構築の完全 CFG を装わず `complete: false` と明示する。
 
 Resolver の `symbolOf(identifier)` を使い、名前ではなく Symbol 単位で次を記録する。
 
@@ -59,9 +59,9 @@ Resolver の `symbolOf(identifier)` を使い、名前ではなく Symbol 単位
 - table value の alias / capture / escape
 - control-flow barrier
 
-heap location は table 全体から始め、次に `(table symbol, static key)` へ精密化する。`t.x` と `t["x"]` は同じ key `"x"` とする。動的 key は table 全体を dirty にする。未知の call、alias、escape は該当 table、判定不能なら追跡中 heap 全体を保守的に invalid とする。
+heap location は Symbol ではなく table constructor ごとの allocation identity と static key で表す。直線 region の reaching-definition は `local t={}`、`local alias=t`、再代入、nil、unknown を区別する。`t.x`、`t["x"]`、escaped literal、long bracket literal は Lua byte 列として同じ key へ正規化する。動的 key は table 全体を dirty にする。
 
-table constructor から直接作られ、追跡 local 以外へ渡っていない値を fresh とする。call 引数、return、global／外部 table への格納、別 local への alias、nested function の capture、未対応操作で nonescape 性を失う。純 Lua では `setmetatable`、未知の call、escape 後の access の副作用を否定しない。Stormworks でも alias や call による値の変更までは無視しない。
+table constructor から直接作られた値を fresh とする。同一 execution unit で追跡できる `local alias=t` は同じ allocation としてdirtyを共有し、escapeにはしない。call 引数、return、global／外部 table への格納、代入による公開、nested function の capture、未対応操作では nonescape 性を失う。解析不能な join と execution unit 入口は unknown とし、「影響なし」と解釈しない。純 Luaでは `setmetatable`、未知のcall、escape後のaccessの副作用を否定せず、Stormworksでもaliasやcallによる値の変更までは無視しない。
 
 ## 変換
 
@@ -92,7 +92,9 @@ table は fresh・nonescape を table 全体で dirty 管理し、次に static 
 
 非連続 local は Rename と同じ予約名・module 順で provisional name を割り当て、その名前長を追加代入の上界に使う。変換で候補 Symbol の参照重みだけが増える限り、最終 Rename は旧割当を維持する案より悪くならない。一方、既存の連続 local merge と競合すると比較基準自体が変わるため、#42 で統合 planner を作るまでは、前後に local が隣接しない宣言だけを #47 の候補にする。
 
-table read merge は `local` と `=` の重複が消える固定構文差を使う。ただし一文の arity は 50 以下へ分割し、Lua compiler の local／register 上限に保守的な余裕を残す。正確な register pressure と Rename／Print 後の transactional cost は、実測トリガーを満たした場合の後続 Issue 候補とする。
+table read merge は `local` と `=` の重複が消える固定構文差を使う。runtime semantics と compiler resource policy は別の capability とし、planner は中央の判定結果だけを参照する。一文の arity は既定で50以下へ分割し、Lua compilerのlocal／register上限に保守的な余裕を残す。この値は正確なregister推定とは称さず、`conservative-policy`としてfail-closedに扱う。
+
+#47 の二変換は、Symbol数・scope・利用可能な短縮名集合を変えない範囲で局所的なサイズ上界を証明している。最終 Rename／Print を試行するtransactionは、この証明が成立しない将来の競合planner向けであり、現行#47の正しさやサイズ非増加を補う残作業ではない。組合せテストで有効時の増加反例が出た場合だけ、この切り分けを撤回する。
 
 ## Source Map
 
@@ -129,12 +131,18 @@ table read merge は `local` と `=` の重複が消える固定構文差を使�
 
 - 共通 AST walker と、Symbol 単位の declaration／read／write facts
 - fresh table allocation、static key、dirty、alias／call／return／store／capture escape の解析
+- certified linear region、allocation identity、直線regionのreaching-definition／alias facts
+- Lua 5.3 lexical ruleに従う共有byte string decoder
+- runtime semanticsとcompiler resource policyを分離したcapability判定
+- `changed`／`invalidatesResolve`とResolve世代を集中管理するpass orchestrator
+- 候補の採否理由・件数・推定削減量を、出力非影響で収集するoptimizer diagnostics
 - RHS を元位置に残す、孤立した非連続 local 宣言の hoist
 - fresh・nonescape tableの安定したstatic-key readを一つのlocal文へまとめる変換
 - table全体／static-key単位dirtyの個別切替、master／変換別opt-out
 - CLIのStormworks既定、APIのLua 5.3互換既定、純Lua lifetime変更の個別opt-in
 - 構造変更後の再Resolve、合成Identifierのprovenance、table統合を含むSource Mapテスト
 - moduleLikeLuaの両方式、複数module、#44、remove-unused、global alias、既存local mergeとの組合せテスト
+- local alias経由のread/write、fresh table再代入前後の部分最適化、closureによるalias公開の拒否
 
 未知のcallやaliasが変更しないと仮定するsemantic-changing transformは、実測上の必要性を確認できなかったため追加していない。意味変更を許可する包括的な`aggressive`オプションも設けていない。純Luaの`allowLocalLifetimeChanges`はdebug APIからのlocal lifetime観測差だけを許可し、heap効果やmetatableの仮定を緩めない。
 
@@ -150,75 +158,40 @@ table read merge は `local` と `=` の重複が消える固定構文差を使�
 
 Lua 5.3 safe ケースは可能な範囲で実行結果を差分検証する。Stormworks 固有 capability は、metatable を使う反例が Lua では拒否され、Stormworks profile だけで許可される解析テストで示す。
 
-## 非対象
+## #47 の変換対象外
 
 - 全関数の SSA／CFG
 - branch／loop をまたぐ一般的 code motion
-- 汎用 points-to／alias 解析
+- 分岐joinを含む汎用SSA／points-to解析
 - debug API による local 観測の保存
 - 未知の C API やホスト環境の効果推論
 
-安全な候補の大半がこれらだけで拒否され、推定削減量が実装・保守コストを上回ると実コーパスで確認できた場合に再検討する。
+これらは#47の未完ではない。#47で必要な解析境界、allocation追跡、測定手段は実装済みであり、以下は別の観測保証または対象領域を増やす独立機能である。
 
-## 後続 Issue 候補
+## 独立した後続 Issue
 
-この節は、#47 の完了を妨げない将来課題を、後から独立 Issue に切り出すための設計メモである。ここへ記載しただけでは実装を約束しない。起票トリガーを満たす証拠が得られたとき、対象コーパス、期待削減量、意味論上の境界を添えて Issue 化する。
+この節は、#47の実装結果を前提にした独立拡張だけを残す。#47候補の採否理由はdiagnosticsで測定できるため、仮説だけで対象を増やさない。再代入、同一unitのlocal alias、byte string decoder、resource policy、pass invalidation、候補計測は#47へ吸収済みであり、後続Issueには残さない。
 
-### 再代入を扱う flow-sensitive points-to
-
-- **問題と保留理由:** 現在は fresh table を保持する Symbol に一度でも write があれば、その Symbol の table read merge をすべて拒否する。元の allocation と現在値を文ごとに対応付ける points-to／CFG がない状態で、「再代入より前だけ安全」などの部分判定を加えると誤認しやすいためである。
-- **起票トリガー:** 実コーパスで、この保守的拒否が安全候補の主要な取りこぼしになり、見込める byte 削減量を具体例と計測値で示せたとき。
-- **必要な基盤:** 文位置を持つ binding write、allocation identity、直線 region 内の reaching-definition。branch を越えるなら後述の CFG も必要になる。
-- **完了条件案:** 再代入前後で allocation を区別し、元 table、別 fresh table、外部値、`setmetatable` を含む反例を安全に分類する。解析不能な join は拒否し、既存の全 Symbol 拒否より出力を悪化させない。
-
-### register pressure に基づく merge 上限
-
-- **問題と保留理由:** 現在は一つの local 文へまとめる arity を 50 に制限する。Lua 5.3 の local 上限 200 と register 上限 255 に対して余裕を残す固定値であり、関数内の既存 local、RHS 一時 register、コンパイラ実装差までは数えていない。
-- **起票トリガー:** 50 分割が目立つ出力増を生む、または対象 Lua／Stormworks コンパイラで 50 未満でも register overflow を再現したとき。
-- **必要な基盤:** 対象コンパイラごとの制限を明記した runtime capability、関数単位の local／式一時値の保守的上界、コンパイル可能性を検証する fixture。
-- **完了条件案:** 対象 runtime ごとに安全な arity を導出し、限界直前と限界超過を自動検証する。導出不能時は現在の固定上限以下へフォールバックする。
-
-### branch／loop／goto を扱う CFG
+### #63 branch／loop／goto を扱う CFG
 
 - **問題と保留理由:** #47 は同じ `Statement[]` の直線 region に限定し、分岐、loop、label、goto を barrier とする。一般的な code motion には支配関係、到達定義、loop 効果の固定点が必要で、局所的な条件追加では安全性を維持しにくい。
 - **起票トリガー:** barrier 越しの候補が実コーパスの削減機会を支配し、直線 region の改善では回収できないと測定されたとき。
 - **必要な基盤:** Lua の goto／local scope 制約を表す CFG、dominance、block 単位の effect summary、解析不能 edge の保守的表現。
 - **完了条件案:** if、各 loop、break、return、label／goto の代表反例で評価順と scope legality を保存する。未到達、irreducible、解析不能な flow は変換しない。
 
-### 限定 alias 解析
+### #65 Rename／Print 後の transactional cost 判定
 
-- **問題と保留理由:** fresh table を別 local、call、return、外部 table へ渡すと escape とし、以後を拒否する。汎用 points-to は複雑だが、単純な一対一 local alias には安全に追跡できる余地がある。
-- **起票トリガー:** `local alias = table` のような限定形が主要な取りこぼしとなり、alias を追跡しても候補当たりの解析費用が妥当だと確認できたとき。
-- **必要な基盤:** allocation identity、alias の生成・kill、capture／call／store での escape propagation、再代入を扱う reaching-definition。
-- **完了条件案:** 対応する local alias 集合に dirty／escape を伝播し、分岐 join、alias 再代入、nested closure、外部 call の反例は保守的に拒否する。
-
-### Rename／Print 後の transactional cost 判定
-
-- **問題と保留理由:** 現在の planner は構文上の削減量と provisional rename を用いる。変換で参照重みや名前割当順が変わる場合、Rename／Print 後の厳密な全体 byte 差を planner 単体で証明するのは難しい。
+- **問題と保留理由:** #47の現行変換には局所的な非増加証明がある。今後、scope／slot集合を変える候補や複数plannerの競合を選ぶ場合は、その証明を一般化できず、Rename／Print後の全体byte差が必要になる。
 - **起票トリガー:** 多数 Symbol、複数 module、予約名衝突を含む差分テストで、有効時の出力が無効時より長くなる反例が得られたとき。または複数の変換パスが同じ概算ロジックを持ち始めたとき。
 - **必要な基盤:** AST／resolver／metadata を安全に複製またはロールバックする仕組み、同一 print 条件での UTF-8 byte 計測、変換ごとの採否を再現できる deterministic pipeline。
 - **完了条件案:** 候補適用前後を最終 Rename／Print と同条件で比較し、厳密に短い場合だけ commit する。Source Map と annotation の所有権も rollback で失わない。
 
-### debug／introspection 保存モード
+### #67 debug／introspection 保存モード
 
 - **問題と保留理由:** local 宣言 hoist は通常の実行結果を保存しても、`debug.getlocal`、hook、エラースタックから観測される local の生存期間を変える。完全保存は rename や既存 minify とも衝突し、#47 の safe 定義には含めない。
 - **起票トリガー:** debug API を使用する利用者から再現例が提示され、rename を含むどの観測を保証すべきか合意できたとき。
 - **必要な基盤:** runtime profile ごとの debug API 能力、観測対象の明文化、debug-sensitive construct の検出。
 - **完了条件案:** 保証範囲を API／CLI に明記し、保存モードでは該当変換を拒否する。保証できない観測は診断または文書で明示する。
-
-### static string key の完全な decoder
-
-- **問題と保留理由:** `.x` と単純な `['x']`／`["x"]` は同じ static key に正規化するが、escape を含む Lua string literal は動的 key として扱う。parser 表現から値を復元する decoder を局所実装すると、escape、10 進 byte、改行、長括弧文字列で不一致を起こし得る。
-- **起票トリガー:** escaped string key が実コーパスで頻出し、field-sensitive dirty の主要な取りこぼしだと測定されたとき。
-- **必要な基盤:** Lua 5.3 lexical rule に従う共有 string decoder、parser／printer roundtrip fixture、byte string と JavaScript string の境界定義。
-- **完了条件案:** 同値な全 literal 表記を同じ byte key に正規化し、不正 escape と runtime 依存表現を拒否する。decoder は constant fold 等からも再利用できる位置に置く。
-
-### pass orchestration と #42 planner の統合
-
-- **問題と保留理由:** #47 は必要箇所で Resolve をやり直しているが、各パスが invalidation と cost 判定を個別に組み立てると、#42 や後続 optimizer で順序依存が増える。#42 自体が未実装のため、先に抽象化すると要求を誤る可能性がある。
-- **起票トリガー:** #42 実装時に同じ region、effect、cost、再 Resolve 制御を再利用できることが確認される、または三つ以上の構造変更パスが同型の orchestration を持ったとき。
-- **必要な基盤:** `changed`／`invalidatesResolve` を返す pass 契約、共有 effect facts、候補単位の cost interface、パス間テスト行列。
-- **完了条件案:** #42 と #47 が同じ planner 契約を使い、Resolve の更新点が中央で決まる。個別 opt-out、Source Map、出力長不増の性質を統合後も維持する。
 
 ## 完了条件
 
