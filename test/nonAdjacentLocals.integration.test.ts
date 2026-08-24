@@ -113,4 +113,25 @@ describe("effect-aware non-adjacent locals pipeline", () => {
       Buffer.byteLength(localDisabled),
     );
   });
+
+  test("does not grow after Rename crosses the one-character name range", () => {
+    const names = Array.from(
+      { length: 60 },
+      (_, index) => `value${String(index)}`,
+    );
+    const declarations = names
+      .map((name, index) => `local ${name}=make(${String(index)})\ntick()`)
+      .join("\n");
+    const source = `${declarations}\nuse(${names.join(",")})`;
+    const disabled = minify(source, {
+      runtimeProfile: "stormworks",
+      effectAwareTransforms: false,
+    });
+    const enabled = minify(source, { runtimeProfile: "stormworks" });
+
+    expect(Buffer.byteLength(enabled)).toBeLessThanOrEqual(
+      Buffer.byteLength(disabled),
+    );
+    expect(() => Parser.parse(enabled, { luaVersion: "5.3" })).not.toThrow();
+  });
 });
