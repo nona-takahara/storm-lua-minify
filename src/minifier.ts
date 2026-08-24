@@ -16,7 +16,8 @@ export interface MinifierMode {
   moduleLikeLua: boolean;
   // 識別子の短縮(リネーム)を行うかどうか。デバッグ用途でfalseにできる。省略時はtrue扱い。
   rename?: boolean;
-  // 内部でのみ使用するグローバル識別子の短縮（#8a）を行うかどうか。省略時はtrue扱い。
+  // 内部でのみ使用するグローバル識別子の短縮（#8a）を行うかどうか。省略時はfalse扱い。
+  // 外部から名前で参照されるグローバルを静的に識別できないため、明示的なopt-inとする。
   // renameがfalseの場合はこちらの値に関わらず無効になる。
   globalRename?: boolean;
   // 代入されていてもリネームしないグローバル名（エンジン側のコールバック規約名など）。
@@ -272,7 +273,7 @@ export class Minifier {
    * ローカルの短縮名がグローバルの新しい短縮名と衝突しうる。
    */
   private computeGlobalRenames() {
-    if (this.mode.rename === false || this.mode.globalRename === false) {
+    if (this.mode.rename === false || this.mode.globalRename !== true) {
       return;
     }
     const neverRename = new Set([
