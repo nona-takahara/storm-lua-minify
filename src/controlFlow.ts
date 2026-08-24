@@ -24,17 +24,35 @@ export interface LinearRegion {
   readonly certified: true;
 }
 
+export interface ControlFlowEdge {
+  readonly from: ControlFlowNode;
+  readonly to: ControlFlowNode;
+  readonly kind: "entry" | "fallthrough" | "unknown" | "exit";
+}
+
+export interface ControlFlowNode {
+  readonly id: number;
+  readonly unit: ExecutionUnit;
+  readonly kind: "entry" | "statement" | "opaque" | "exit";
+  readonly statement?: Parser.Statement;
+  readonly successors: readonly ControlFlowEdge[];
+  readonly predecessors: readonly ControlFlowEdge[];
+}
+
 export interface ControlFlowAnalysis {
   readonly version: number;
   readonly complete: false;
   readonly units: readonly ExecutionUnit[];
   readonly regions: readonly LinearRegion[];
+  readonly nodes: readonly ControlFlowNode[];
   pointOf(statement: Parser.Statement): ProgramPoint | undefined;
+  nodeOf(statement: Parser.Statement): ControlFlowNode | undefined;
   regionOf(statement: Parser.Statement): LinearRegion | undefined;
   pointsBetween(
     first: Parser.Statement,
     last: Parser.Statement,
   ): readonly ProgramPoint[] | undefined;
+  dominates(first: Parser.Statement, last: Parser.Statement): boolean;
 }
 
 export function analyzeControlFlow(
@@ -43,10 +61,44 @@ export function analyzeControlFlow(
 ): ControlFlowAnalysis {
   const units: ExecutionUnit[] = [];
   const regions: LinearRegion[] = [];
+  const nodes: ControlFlowNode[] = [];
   const pointByStatement = new WeakMap<Parser.Statement, ProgramPoint>();
   const regionByStatement = new WeakMap<Parser.Statement, LinearRegion>();
+  const nodeByStatement = new WeakMap<Parser.Statement, ControlFlowNode>();
   let nextUnitId = 0;
   let nextRegionId = 0;
+  let nextNodeId = 0;
+
+  type MutableNode = Omit<ControlFlowNode, "successors" | "predecessors"> & {
+    successors: ControlFlowEdge[];
+    predecessors: ControlFlowEdge[];
+  };
+  const node = (
+    unit: ExecutionUnit,
+    kind: ControlFlowNode["kind"],
+    statement?: Parser.Statement,
+  ): MutableNode => {
+    const created: MutableNode = {
+      id: nextNodeId++,
+      unit,
+      kind,
+      ...(statement ? { statement } : {}),
+      successors: [],
+      predecessors: [],
+    };
+    nodes.push(created);
+    if (statement) nodeByStatement.set(statement, created);
+    return created;
+  };
+  const connect = (
+    from: MutableNode,
+    to: MutableNode,
+    kind: ControlFlowEdge["kind"],
+  ) => {
+    const edge: ControlFlowEdge = { from, to, kind };
+    from.successors.push(edge);
+    to.predecessors.push(edge);
+  };
 
   const analyzeBody = (body: Parser.Statement[], unit: ExecutionUnit) => {
     let pending: ProgramPoint[] = [];
@@ -108,6 +160,27 @@ export function analyzeControlFlow(
     };
     units.push(unit);
     analyzeBody(body, unit);
+    const entry = node(unit, "entry");
+    const exit = node(unit, "exit");
+    let previous = entry;
+    body.forEach((statement) => {
+      const current = node(
+        unit,
+        isCertifiedLinearStatement(statement) ? "statement" : "opaque",
+        statement,
+      );
+      connect(
+        previous,
+        current,
+        previous === entry
+          ? "entry"
+          : previous.kind === "statement" && current.kind === "statement"
+            ? "fallthrough"
+            : "unknown",
+      );
+      previous = current;
+    });
+    connect(previous, exit, previous.kind === "statement" ? "exit" : "unknown");
   };
 
   analyzeUnit(chunk.body, "chunk");
@@ -116,7 +189,9 @@ export function analyzeControlFlow(
     complete: false,
     units,
     regions,
+    nodes,
     pointOf: (statement) => pointByStatement.get(statement),
+    nodeOf: (statement) => nodeByStatement.get(statement),
     regionOf: (statement) => regionByStatement.get(statement),
     pointsBetween: (first, last) => {
       const firstRegion = regionByStatement.get(first);
@@ -132,6 +207,19 @@ export function analyzeControlFlow(
       return from >= 0 && to >= from
         ? firstRegion.points.slice(from, to + 1)
         : undefined;
+    },
+    dominates: (first, last) => {
+      const firstRegion = regionByStatement.get(first);
+      if (!firstRegion || firstRegion !== regionByStatement.get(last)) {
+        return false;
+      }
+      const firstIndex = firstRegion.points.findIndex(
+        (point) => point.statement === first,
+      );
+      const lastIndex = firstRegion.points.findIndex(
+        (point) => point.statement === last,
+      );
+      return firstIndex >= 0 && lastIndex >= firstIndex;
     },
   };
 }

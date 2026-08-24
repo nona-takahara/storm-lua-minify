@@ -45,4 +45,24 @@ describe("certified linear control-flow regions", () => {
       undefined,
     ]);
   });
+
+  test("exposes an explicit conservative graph without claiming unknown edges", () => {
+    const chunk = Parser.parse(
+      "local a=1 tick() if flag then use(a) end local b=2 return b",
+      { luaVersion: "5.3" },
+    );
+    const flow = analyzeControlFlow(chunk);
+    const ifNode = flow.nodeOf(chunk.body[2]);
+    expect(ifNode?.kind).toBe("opaque");
+    expect(ifNode?.successors[0].kind).toBe("unknown");
+    expect(flow.nodes.filter((node) => node.kind === "entry")).toHaveLength(1);
+    expect(flow.nodes.filter((node) => node.kind === "exit")).toHaveLength(1);
+    flow.nodes.forEach((node) => {
+      node.successors.forEach((edge) => {
+        expect(edge.to.predecessors).toContain(edge);
+      });
+    });
+    expect(flow.dominates(chunk.body[0], chunk.body[1])).toBe(true);
+    expect(flow.dominates(chunk.body[0], chunk.body[3])).toBe(false);
+  });
 });
