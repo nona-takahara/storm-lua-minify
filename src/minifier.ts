@@ -12,9 +12,24 @@ import { SourceMetadata } from "./sourceMetadata";
 import { removeUnusedLocals } from "./removeUnused";
 import { foldConstants } from "./constantFold";
 import { buildRequireWrapperAst, GeneratedStatement } from "./generatedAst";
+import {
+  applyNonAdjacentLocalPlan,
+  planNonAdjacentLocals,
+} from "./nonAdjacentLocals";
+
+export type RuntimeProfile = "lua53" | "stormworks";
 
 export interface MinifierMode {
   moduleLikeLua: boolean;
+  // 実行環境の意味論。moduleLikeLua（require出力方式）とは独立。
+  // 省略時は後方互換のためlua53として扱う。
+  runtimeProfile?: RuntimeProfile;
+  // 選択環境で意味を保存する効果解析Transformのmaster opt-out。
+  // Stormworks profileでは省略時に有効。
+  effectAwareTransforms?: boolean;
+  // 純Luaでdebug APIから観測できるlocal lifetimeの変更を許可するopt-in。
+  // Stormworksではdebug introspectionを前提にしないため指定不要。
+  allowLocalLifetimeChanges?: boolean;
   // 字句の結合を防ぐために必要な1バイトの空白。省略時は、出力サイズを
   // 増やさずStormworksの行単位診断を改善できるLFを使う。
   requiredWhitespace?: " " | "\n";
@@ -230,6 +245,9 @@ export class Minifier {
       ...(this.mode.neverRenameGlobals ?? []),
       ...this.annotationProtectedGlobals(),
     ]);
+    // renameAllと同じmodule順・予約名更新で仮Renameを行い、plannerのbyte costを
+    // 実際の出力名長に対する保守的な見積りにする。
+    const plannedIdentifiersInUse = new Set(this.identifiersInUse);
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
       let resolved = this.moduleResolve.get(moduleName);
@@ -244,6 +262,43 @@ export class Minifier {
         resolved = resolveScopes(ast);
       }
 
+      const keepNames = new Set(
+        resolved.symbols.filter(
+          (symbol) =>
+            this.getSourceMetadata(moduleName).annotationsOfIdentifier(
+              symbol.declaration,
+            ).keepName,
+        ),
+      );
+      const effectAwareLocalsEnabled =
+        this.mode.effectAwareTransforms !== false &&
+        (this.mode.runtimeProfile === "stormworks" ||
+          this.mode.allowLocalLifetimeChanges === true);
+      if (effectAwareLocalsEnabled) {
+        const provisionalRenames =
+          this.mode.rename === false
+            ? NO_RENAME
+            : assignRenames(
+                resolved,
+                plannedIdentifiersInUse,
+                this.globalRenames,
+                keepNames,
+              );
+        const plan = planNonAdjacentLocals(ast, resolved, {
+          outputNameLengthOf: (symbol) =>
+            (provisionalRenames.nameOf(symbol.declaration) ?? symbol.name)
+              .length,
+          preserveRequireSplice: !this.mode.moduleLikeLua,
+        });
+        const transformed = applyNonAdjacentLocalPlan(
+          plan,
+          this.getSourceMetadata(moduleName),
+        );
+        if (transformed.invalidatesResolve) {
+          resolved = resolveScopes(ast);
+        }
+      }
+
       if (this.mode.mergeLocals !== false) {
         mergeLocalDeclarations(
           ast,
@@ -256,6 +311,22 @@ export class Minifier {
       }
 
       this.moduleResolve.set(moduleName, resolved);
+      if (this.mode.rename !== false) {
+        const finalKeepNames = new Set(
+          resolved.symbols.filter(
+            (symbol) =>
+              this.getSourceMetadata(moduleName).annotationsOfIdentifier(
+                symbol.declaration,
+              ).keepName,
+          ),
+        );
+        assignRenames(
+          resolved,
+          plannedIdentifiersInUse,
+          this.globalRenames,
+          finalKeepNames,
+        ).usedNames.forEach((name) => plannedIdentifiersInUse.add(name));
+      }
     });
   }
 
