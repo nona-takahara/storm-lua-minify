@@ -92,9 +92,9 @@ table は fresh・nonescape を table 全体で dirty 管理し、次に static 
 
 非連続 local は Rename と同じ予約名・module 順で provisional name を割り当て、その名前長を追加代入の上界に使う。変換で候補 Symbol の参照重みだけが増える限り、最終 Rename は旧割当を維持する案より悪くならない。一方、既存の連続 local merge と競合すると比較基準自体が変わるため、#42 で統合 planner を作るまでは、前後に local が隣接しない宣言だけを #47 の候補にする。
 
-table read merge は `local` と `=` の重複が消える固定構文差を使う。runtime semantics と compiler resource policy は別の capability とし、planner は中央の判定結果だけを参照する。一文の arity は既定で50以下へ分割し、Lua compilerのlocal／register上限に保守的な余裕を残す。この値は正確なregister推定とは称さず、`conservative-policy`としてfail-closedに扱う。
+table read merge は `local` と `=` の重複が消える固定構文差を使う。runtime semantics と compiler resource policy は別の capability とし、planner は中央の判定結果だけを参照する。字句block／functionごとのactive local数を文位置で数え、local上限、register上限、保守policyの最小headroomからarityを導出する。Windowsの`luac53`では、既存150 localsに対する49／50受理と51拒否を`pnpm run verify:lua-budget`で再現する。Stormworks compilerの詳細を導出できない場合は、このLua 5.3上限以下へfail-closedにfallbackする。
 
-#47 の二変換は、Symbol数・scope・利用可能な短縮名集合を変えない範囲で局所的なサイズ上界を証明している。最終 Rename／Print を試行するtransactionは、この証明が成立しない将来の競合planner向けであり、現行#47の正しさやサイズ非増加を補う残作業ではない。組合せテストで有効時の増加反例が出た場合だけ、この切り分けを撤回する。
+#47 の二変換は、Symbol数・scope・利用可能な短縮名集合を変えない範囲で局所的なサイズ上界を証明している。加えて、baselineとtrialを別Minifierへ隔離し、全moduleを同じRename／Print条件で比較するtransaction基盤を実装した。厳密に短いtrialだけを選び、同長、増加、trial失敗ではbaselineのAST、Resolve、SourceMetadata、annotation、rename cacheへ触れない。現行#47の局所証明を必須transactionへ置き換えず、将来の競合plannerが利用する。
 
 ## Source Map
 
@@ -132,10 +132,11 @@ table read merge は `local` と `=` の重複が消える固定構文差を使�
 - 共通 AST walker と、Symbol 単位の declaration／read／write facts
 - fresh table allocation、static key、dirty、alias／call／return／store／capture escape の解析
 - certified linear region、allocation identity、直線regionのreaching-definition／alias facts
-- Lua 5.3 lexical ruleに従う共有byte string decoder
-- runtime semanticsとcompiler resource policyを分離したcapability判定
-- `changed`／`invalidatesResolve`とResolve世代を集中管理するpass orchestrator
-- 候補の採否理由・件数・推定削減量を、出力非影響で収集するoptimizer diagnostics
+- Lua 5.3 lexical ruleに従い、table effectとconstant foldが共用するbyte string decoder／encoder
+- active localとregister headroomを含むruntime resource判定、実`luac53`境界harness
+- `changed`／`invalidatesResolve`とResolve世代を集中管理し、#44、remove-unused、global alias、#47、#9を通すpass orchestrator
+- runtime／module／pass別の候補採否理由・件数・推定削減量と、再現可能なfixture report
+- 最終Rename／Print済みartifactを隔離比較するtransactional variant selector
 - RHS を元位置に残す、孤立した非連続 local 宣言の hoist
 - fresh・nonescape tableの安定したstatic-key readを一つのlocal文へまとめる変換
 - table全体／static-key単位dirtyの個別切替、master／変換別opt-out
@@ -170,7 +171,7 @@ Lua 5.3 safe ケースは可能な範囲で実行結果を差分検証する。S
 
 ## 独立した後続 Issue
 
-この節は、#47の実装結果を前提にした独立拡張だけを残す。#47候補の採否理由はdiagnosticsで測定できるため、仮説だけで対象を増やさない。再代入、同一unitのlocal alias、byte string decoder、resource policy、pass invalidation、候補計測は#47へ吸収済みであり、後続Issueには残さない。
+この節は、#47の実装結果を前提にした独立拡張だけを残す。#47候補の採否理由はdiagnosticsで測定でき、基準値は[optimizer計測レポート](./issue-47-optimizer-report.md)に残す。再代入、同一unitのlocal alias、byte string decoder、resource導出、pass invalidation、候補計測、最終出力transaction基盤は#47へ吸収済みであり、後続Issueには残さない。
 
 ### #63 branch／loop／goto を扱う CFG
 
@@ -179,12 +180,12 @@ Lua 5.3 safe ケースは可能な範囲で実行結果を差分検証する。S
 - **必要な基盤:** Lua の goto／local scope 制約を表す CFG、dominance、block 単位の effect summary、解析不能 edge の保守的表現。
 - **完了条件案:** if、各 loop、break、return、label／goto の代表反例で評価順と scope legality を保存する。未到達、irreducible、解析不能な flow は変換しない。
 
-### #65 Rename／Print 後の transactional cost 判定
+### #65 競合plannerへのtransactional cost接続
 
-- **問題と保留理由:** #47の現行変換には局所的な非増加証明がある。今後、scope／slot集合を変える候補や複数plannerの競合を選ぶ場合は、その証明を一般化できず、Rename／Print後の全体byte差が必要になる。
+- **問題と保留理由:** 隔離variantの最終出力比較は#47で実装済み。今後、scope／slot集合を変える候補や複数plannerの競合を候補単位で列挙する場合、そのplannerからvariant selectorへ接続する必要がある。
 - **起票トリガー:** 多数 Symbol、複数 module、予約名衝突を含む差分テストで、有効時の出力が無効時より長くなる反例が得られたとき。または複数の変換パスが同じ概算ロジックを持ち始めたとき。
-- **必要な基盤:** AST／resolver／metadata を安全に複製またはロールバックする仕組み、同一 print 条件での UTF-8 byte 計測、変換ごとの採否を再現できる deterministic pipeline。
-- **完了条件案:** 候補適用前後を最終 Rename／Print と同条件で比較し、厳密に短い場合だけ commit する。Source Map と annotation の所有権も rollback で失わない。
+- **既存基盤:** `selectTransactionalMinifierVariant`が全状態を共有しないbaseline／trialを最終Rename／Printまで評価し、UTF-8 byteで選択する。
+- **完了条件案:** #42等が競合候補variantを決定論的に列挙し、selectorへ渡す。候補の組合せ爆発を制御し、現行の局所証明済み#47候補を退行させない。
 
 ### #67 debug／introspection 保存モード
 

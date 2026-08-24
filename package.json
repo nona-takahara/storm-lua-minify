@@ -35,6 +35,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "verify:lua-budget": "node scripts/verify-lua-resource-budget.cjs",
+    "report:optimizer": "pnpm run build && node scripts/report-optimizer-diagnostics.cjs",
+    "verify:effect-semantics": "pnpm run build && node scripts/verify-effect-semantics.cjs",
     "prepack": "pnpm run build"
   },
   "author": "Nona Takahara <nona_t_2612@yahoo.co.jp>",
