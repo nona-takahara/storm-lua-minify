@@ -1,25 +1,12 @@
-import fs from "fs";
-import os from "os";
-import path from "path";
-import { afterEach, describe, expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import { selectTransactionalMinifierVariant } from "../src/optimizerTransaction";
-
-const temporaryDirectories: string[] = [];
-
-afterEach(() => {
-  temporaryDirectories.splice(0).forEach((directory) => {
-    fs.rmSync(directory, { recursive: true, force: true });
-  });
-});
+import { createTemporaryLuaProject } from "./lib/minifierHarness";
 
 function fixture(source: string): string {
-  const directory = fs.mkdtempSync(
-    path.join(os.tmpdir(), "storm-optimizer-transaction-"),
-  );
-  temporaryDirectories.push(directory);
-  const entry = path.join(directory, "main.lua");
-  fs.writeFileSync(entry, source);
-  return entry;
+  return createTemporaryLuaProject(
+    { "main.lua": source },
+    { prefix: "storm-optimizer-transaction-" },
+  ).entryFilePath;
 }
 
 describe("transactional final-output selection", () => {
@@ -69,10 +56,12 @@ use(first,second)
   });
 
   test("remains deterministic across modules", () => {
-    const entryFilePath = fixture('local child=require("child") return child');
-    fs.writeFileSync(
-      path.join(path.dirname(entryFilePath), "child.lua"),
-      "local value=1 return value",
+    const { entryFilePath } = createTemporaryLuaProject(
+      {
+        "main.lua": 'local child=require("child") return child',
+        "child.lua": "local value=1 return value",
+      },
+      { prefix: "storm-optimizer-transaction-" },
     );
     const request = {
       entryFilePath,

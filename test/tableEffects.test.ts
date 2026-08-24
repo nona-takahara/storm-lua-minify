@@ -1,11 +1,11 @@
 import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
 import { resolveScopes } from "../src/resolver";
-import { analyzeTableEffects } from "../src/tableEffects";
+import { analyzeOptimizer } from "../src/optimizerAnalysis";
 
 function analyze(source: string) {
   const chunk = Parser.parse(source, { luaVersion: "5.3" });
-  return analyzeTableEffects(chunk, resolveScopes(chunk));
+  return analyzeOptimizer(chunk, resolveScopes(chunk)).tableEffects;
 }
 
 describe("fresh table effect analysis", () => {

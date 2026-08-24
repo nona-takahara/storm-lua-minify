@@ -1,25 +1,19 @@
-import fs from "fs";
-import os from "os";
-import path from "path";
 import Parser from "luaparse";
-import { afterEach, describe, expect, test } from "vitest";
-import { Minifier } from "../src/minifier";
+import { describe, expect, test } from "vitest";
 import {
   OptimizationDiagnosticCollector,
   summarizeOptimizationDiagnostics,
 } from "../src/optimizerDiagnostics";
 import { planNonAdjacentLocals } from "../src/nonAdjacentLocals";
 import { resolveScopes } from "../src/resolver";
-import { analyzeTableEffects } from "../src/tableEffects";
+import { analyzeOptimizer } from "../src/optimizerAnalysis";
+import { analyzeOptimizerFacts } from "../src/optimizerFacts";
 import { planTableReadMerges } from "../src/tableReadMerge";
-
-const temporaryDirectories: string[] = [];
-
-afterEach(() => {
-  temporaryDirectories.splice(0).forEach((directory) => {
-    fs.rmSync(directory, { recursive: true, force: true });
-  });
-});
+import {
+  createTemporaryLuaProject,
+  minifyLuaProject,
+  minifyTemporaryLuaSource,
+} from "./lib/minifierHarness";
 
 describe("optimization diagnostics", () => {
   test("summarizes accepted and rejected planner decisions", () => {
@@ -28,12 +22,13 @@ describe("optimization diagnostics", () => {
     const resolved = resolveScopes(chunk);
     const collector = new OptimizationDiagnosticCollector();
 
-    planTableReadMerges(chunk, analyzeTableEffects(chunk, resolved), {
+    planTableReadMerges(chunk, analyzeOptimizer(chunk, resolved).tableEffects, {
       dirtyGranularity: "static-key",
       diagnostics: collector,
       moduleName: "main",
     });
     planNonAdjacentLocals(chunk, resolved, {
+      facts: analyzeOptimizerFacts(chunk, resolved),
       outputNameLengthOf: () => 1,
       preserveRequireSplice: true,
       diagnostics: collector,
@@ -45,7 +40,7 @@ describe("optimization diagnostics", () => {
     const rejectedResolved = resolveScopes(rejectedChunk);
     planTableReadMerges(
       rejectedChunk,
-      analyzeTableEffects(rejectedChunk, rejectedResolved),
+      analyzeOptimizer(rejectedChunk, rejectedResolved).tableEffects,
       {
         dirtyGranularity: "static-key",
         diagnostics: collector,
@@ -74,41 +69,33 @@ describe("optimization diagnostics", () => {
       "local first=1 tick() local second=2 use(first,second)",
     ];
     const diagnostics = fixtures.flatMap((source, index) => {
-      const directory = fs.mkdtempSync(
-        path.join(os.tmpdir(), `storm-diagnostics-corpus-${String(index)}-`),
-      );
-      temporaryDirectories.push(directory);
-      const entry = path.join(directory, "main.lua");
-      fs.writeFileSync(entry, source);
-      const minifier = new Minifier(
-        entry,
-        { luaVersion: "5.3" },
+      const { minifier } = minifyTemporaryLuaSource(
+        source,
         {
           moduleLikeLua: false,
           runtimeProfile: "stormworks",
           collectOptimizationDiagnostics: true,
         },
+        {
+          luaParseSettings: { luaVersion: "5.3" },
+          prefix: `storm-diagnostics-corpus-${String(index)}-`,
+        },
       );
-      minifier.parse();
       return [...minifier.optimizationDiagnostics];
     });
-    const luaDirectory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "storm-diagnostics-corpus-lua53-"),
-    );
-    temporaryDirectories.push(luaDirectory);
-    const luaEntry = path.join(luaDirectory, "main.lua");
-    fs.writeFileSync(luaEntry, fixtures[0]);
-    const luaMinifier = new Minifier(
-      luaEntry,
-      { luaVersion: "5.3" },
+    const { minifier: luaMinifier } = minifyTemporaryLuaSource(
+      fixtures[0],
       {
         moduleLikeLua: false,
         runtimeProfile: "lua53",
         allowLocalLifetimeChanges: true,
         collectOptimizationDiagnostics: true,
       },
+      {
+        luaParseSettings: { luaVersion: "5.3" },
+        prefix: "storm-diagnostics-corpus-lua53-",
+      },
     );
-    luaMinifier.parse();
     diagnostics.push(...luaMinifier.optimizationDiagnostics);
     const reasons = new Set(diagnostics.map((item) => item.reason));
     (
@@ -137,37 +124,28 @@ describe("optimization diagnostics", () => {
   });
 
   test("collection does not change generated code or source map", () => {
-    const directory = fs.mkdtempSync(
-      path.join(os.tmpdir(), "storm-optimizer-diagnostics-test-"),
-    );
-    temporaryDirectories.push(directory);
-    const entry = path.join(directory, "main.lua");
-    fs.writeFileSync(
-      entry,
-      "local t={x=1,y=2} local first=t.x tick() local second=t.y use(first,second)",
+    const source =
+      "local t={x=1,y=2} local first=t.x tick() local second=t.y use(first,second)";
+    const project = createTemporaryLuaProject(
+      { "main.lua": source },
+      { prefix: "storm-optimizer-diagnostics-test-" },
     );
     const create = (collectOptimizationDiagnostics: boolean) =>
-      new Minifier(
-        entry,
-        { luaVersion: "5.3" },
+      minifyLuaProject(
+        project,
         {
           moduleLikeLua: false,
           runtimeProfile: "stormworks",
           collectOptimizationDiagnostics,
         },
+        { luaParseSettings: { luaVersion: "5.3" } },
       );
     const disabled = create(false);
     const enabled = create(true);
-    const disabledOutput = disabled
-      .parse()
-      .toStringWithSourceMap({ file: "main.min.lua" });
-    const enabledOutput = enabled
-      .parse()
-      .toStringWithSourceMap({ file: "main.min.lua" });
 
-    expect(enabledOutput.code).toBe(disabledOutput.code);
-    expect(enabledOutput.map.toString()).toBe(disabledOutput.map.toString());
-    expect(enabled.optimizationDiagnostics.length).toBeGreaterThan(0);
-    expect(disabled.optimizationDiagnostics).toEqual([]);
+    expect(enabled.code).toBe(disabled.code);
+    expect(enabled.map).toEqual(disabled.map);
+    expect(enabled.minifier.optimizationDiagnostics.length).toBeGreaterThan(0);
+    expect(disabled.minifier.optimizationDiagnostics).toEqual([]);
   });
 });

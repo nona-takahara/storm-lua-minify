@@ -16,7 +16,6 @@ import {
   applyNonAdjacentLocalPlan,
   planNonAdjacentLocals,
 } from "./nonAdjacentLocals";
-import { analyzeTableEffects } from "./tableEffects";
 import { applyTableReadMergePlan, planTableReadMerges } from "./tableReadMerge";
 import { PassOrchestrator } from "./optimizerPass";
 import {
@@ -29,6 +28,11 @@ import {
   OptimizationDiagnostic,
   OptimizationDiagnosticCollector,
 } from "./optimizerDiagnostics";
+import {
+  analyzeOptimizerFactsAtGeneration,
+  OPTIMIZER_FACTS_CACHE_KEY,
+} from "./optimizerFacts";
+import { analyzeOptimizer } from "./optimizerAnalysis";
 
 export type { RuntimeProfile } from "./runtimeEnvironment";
 
@@ -297,6 +301,25 @@ export class Minifier {
       }
       resolved = passes.resolved;
       const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53");
+      const optimizerAnalysisKey = {};
+      const optimizerAnalysis = () =>
+        passes.analysis(
+          optimizerAnalysisKey,
+          (chunk, currentResolve, generation) =>
+            analyzeOptimizer(chunk, currentResolve, {
+              generation,
+              runtime,
+              assumptions:
+                this.mode.aggressiveTableReadMerges === true
+                  ? new Map([
+                      [
+                        "allow-observable-table-read-changes",
+                        "explicit aggressiveTableReadMerges opt-in",
+                      ],
+                    ])
+                  : undefined,
+            }),
+        );
       const localResources = analyzeLocalResourceUsage(ast);
 
       const effectAwareLocalsEnabled =
@@ -307,42 +330,39 @@ export class Minifier {
         effectAwareLocalsEnabled &&
         this.mode.effectAwareTableReads !== false
       ) {
-        passes.run("effect-aware-table-reads", (currentResolve) => {
-          const tablePlan = planTableReadMerges(
-            ast,
-            analyzeTableEffects(ast, currentResolve),
-            {
-              dirtyGranularity:
-                this.mode.fieldSensitiveTableEffects === false
-                  ? "table"
-                  : "static-key",
-              canMoveStatement: (statement) => {
-                const metadata = this.getSourceMetadata(moduleName);
-                const annotations = metadata.annotationsOf(statement);
-                return (
-                  metadata.beforeOf(statement).length === 0 &&
-                  metadata.trailingOf(statement).length === 0 &&
-                  !annotations.keep &&
-                  !annotations.keepName &&
-                  !annotations.exported
-                );
-              },
-              maxMergeArity: runtime.resources.conservativeParallelValueLimit,
-              maxMergeArityAt: (statement) =>
-                checkParallelEvaluation(runtime, {
-                  activeLocalsBefore:
-                    localResources.activeLocalsBefore(statement) ??
-                    runtime.resources.maxActiveLocalsPerFunction,
-                  parallelValueCount:
-                    runtime.resources.conservativeParallelValueLimit,
-                }).limit,
-              diagnostics: this.diagnosticCollector,
-              moduleName,
-              runtimeProfile: runtime.profile,
-              allowObservableValueChanges:
-                this.mode.aggressiveTableReadMerges === true,
+        passes.run("effect-aware-table-reads", () => {
+          const analysis = optimizerAnalysis();
+          const tablePlan = planTableReadMerges(ast, analysis.tableEffects, {
+            dirtyGranularity:
+              this.mode.fieldSensitiveTableEffects === false
+                ? "table"
+                : "static-key",
+            canMoveStatement: (statement) => {
+              const metadata = this.getSourceMetadata(moduleName);
+              const annotations = metadata.annotationsOf(statement);
+              return (
+                metadata.beforeOf(statement).length === 0 &&
+                metadata.trailingOf(statement).length === 0 &&
+                !annotations.keep &&
+                !annotations.keepName &&
+                !annotations.exported
+              );
             },
-          );
+            maxMergeArity: runtime.resources.conservativeParallelValueLimit,
+            maxMergeArityAt: (statement) =>
+              checkParallelEvaluation(runtime, {
+                activeLocalsBefore:
+                  localResources.activeLocalsBefore(statement) ??
+                  runtime.resources.maxActiveLocalsPerFunction,
+                parallelValueCount:
+                  runtime.resources.conservativeParallelValueLimit,
+              }).limit,
+            diagnostics: this.diagnosticCollector,
+            moduleName,
+            runtimeProfile: runtime.profile,
+            allowObservableValueChanges:
+              this.mode.aggressiveTableReadMerges === true,
+          });
           return applyTableReadMergePlan(
             tablePlan,
             this.getSourceMetadata(moduleName),
@@ -373,7 +393,9 @@ export class Minifier {
                 keepNames,
               );
         passes.run("effect-aware-local-hoist", (currentResolve) => {
+          const facts = optimizerAnalysis().facts;
           const plan = planNonAdjacentLocals(ast, currentResolve, {
+            facts,
             outputNameLengthOf: (symbol) =>
               (provisionalRenames.nameOf(symbol.declaration) ?? symbol.name)
                 .length,
@@ -495,10 +517,15 @@ export class Minifier {
       if (!ast || !resolved) throw new Error(moduleName + " is not found");
       const passes = new PassOrchestrator(ast, resolved);
       passes.runUntilStable("fold-constants", (currentResolve) => {
+        const facts = passes.analysis(
+          OPTIMIZER_FACTS_CACHE_KEY,
+          analyzeOptimizerFactsAtGeneration,
+        );
         const changed = foldConstants(
           ast,
           currentResolve,
           this.getSourceMetadata(moduleName),
+          facts,
         );
         return { changed, invalidatesResolve: changed };
       });
@@ -515,7 +542,16 @@ export class Minifier {
       if (!ast || !resolved) throw new Error(moduleName + " is not found");
       const passes = new PassOrchestrator(ast, resolved);
       passes.runUntilStable("remove-unused", (currentResolve) => {
-        const changed = removeUnusedLocals(ast, currentResolve, metadata);
+        const facts = passes.analysis(
+          OPTIMIZER_FACTS_CACHE_KEY,
+          analyzeOptimizerFactsAtGeneration,
+        );
+        const changed = removeUnusedLocals(
+          ast,
+          currentResolve,
+          metadata,
+          facts,
+        );
         return { changed, invalidatesResolve: changed };
       });
       this.moduleResolve.set(moduleName, passes.resolved);

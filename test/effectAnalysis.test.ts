@@ -1,13 +1,14 @@
 import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
-import { analyzeBindingEffects } from "../src/effectAnalysis";
+import { analyzeOptimizerFacts } from "../src/optimizerFacts";
 import { resolveScopes } from "../src/resolver";
 import { Symbol } from "../src/resolver";
+import { runtimeEnvironmentOf } from "../src/runtimeEnvironment";
 
 function analyze(source: string) {
   const chunk = Parser.parse(source, { luaVersion: "5.3" });
   const resolved = resolveScopes(chunk);
-  return { chunk, resolved, analysis: analyzeBindingEffects(chunk, resolved) };
+  return { chunk, resolved, analysis: analyzeOptimizerFacts(chunk, resolved) };
 }
 
 function requiredSymbol(
@@ -19,17 +20,14 @@ function requiredSymbol(
   return symbol;
 }
 
-describe("binding effect analysis", () => {
+describe("shared optimizer operation facts", () => {
   test("separates declaration, read, and write for one symbol", () => {
     const { resolved, analysis } = analyze("local x=1 x=x+1 return x");
     const x = resolved.symbols[0];
 
-    expect(analysis.accessesOf(x).map((effect) => effect.access)).toEqual([
-      "declare",
-      "read",
-      "write",
-      "read",
-    ]);
+    expect(analysis.operationsOfSymbol(x).map((effect) => effect.kind)).toEqual(
+      ["declare", "read", "write", "read"],
+    );
   });
 
   test("keeps outer and shadowing locals distinct in local x=x", () => {
@@ -38,21 +36,27 @@ describe("binding effect analysis", () => {
     );
     const [outer, inner] = resolved.symbols;
 
-    expect(analysis.accessesOf(outer).map((effect) => effect.access)).toEqual([
-      "declare",
-      "read",
-    ]);
-    expect(analysis.accessesOf(inner).map((effect) => effect.access)).toEqual([
-      "declare",
-      "read",
-    ]);
+    expect(
+      analysis.operationsOfSymbol(outer).map((effect) => effect.kind),
+    ).toEqual(["declare", "read"]);
+    expect(
+      analysis.operationsOfSymbol(inner).map((effect) => effect.kind),
+    ).toEqual(["declare", "read"]);
   });
 
   test("classifies global reads and writes without treating field names as globals", () => {
     const { resolved, analysis } = analyze("target=source.field return target");
-    const globals = analysis.effects
-      .filter((effect) => effect.binding.kind === "global")
-      .map((effect) => [effect.identifier.name, effect.access]);
+    const globals = analysis.operations
+      .filter(
+        (operation) =>
+          "location" in operation && operation.location.kind === "global",
+      )
+      .map((operation) => [
+        "location" in operation && operation.location.kind === "global"
+          ? operation.location.binding.name
+          : "",
+        operation.kind,
+      ]);
 
     expect(globals).toEqual([
       ["source", "read"],
@@ -77,33 +81,148 @@ describe("binding effect analysis", () => {
       (symbol) => symbol.kind === "param",
     );
 
-    expect(analysis.effectsOf(localF).map((effect) => effect.access)).toEqual([
+    expect(analysis.operationsOf(localF).map((effect) => effect.kind)).toEqual([
+      "allocate",
       "declare",
     ]);
-    expect(analysis.accessesOf(outer).map((effect) => effect.access)).toEqual([
-      "declare",
-      "read",
-    ]);
-    expect(analysis.accessesOf(f).map((effect) => effect.access)).toEqual([
-      "declare",
-    ]);
-    expect(analysis.accessesOf(arg).map((effect) => effect.access)).toEqual([
-      "declare",
-      "read",
-    ]);
+    expect(
+      analysis.operationsOfSymbol(outer).map((effect) => effect.kind),
+    ).toEqual(["declare", "read"]);
+    expect(analysis.operationsOfSymbol(f).map((effect) => effect.kind)).toEqual(
+      ["declare"],
+    );
+    expect(
+      analysis.operationsOfSymbol(arg).map((effect) => effect.kind),
+    ).toEqual(["declare", "read"]);
   });
 
   test("records table assignment address identifiers as reads", () => {
     const { resolved, analysis } = analyze("local t,k={},1 t[k]=value");
     const [t, k] = resolved.symbols;
 
-    expect(analysis.accessesOf(t).map((effect) => effect.access)).toEqual([
-      "declare",
-      "read",
+    expect(analysis.operationsOfSymbol(t).map((effect) => effect.kind)).toEqual(
+      ["declare", "read"],
+    );
+    expect(analysis.operationsOfSymbol(k).map((effect) => effect.kind)).toEqual(
+      ["declare", "read"],
+    );
+  });
+
+  test("classifies captured bindings as upvalues", () => {
+    const { resolved, analysis } = analyze(
+      "local outer=1 local f=function() return outer end",
+    );
+    const outer = requiredSymbol(
+      resolved.symbols,
+      (symbol) => symbol.name === "outer",
+    );
+    const read = analysis
+      .operationsOfSymbol(outer)
+      .find((operation) => operation.kind === "read");
+
+    expect(read).toMatchObject({
+      kind: "read",
+      location: { kind: "upvalue" },
+    });
+  });
+
+  test("normalizes table locations and preserves may-error evidence", () => {
+    const { analysis } = analyze('local t={} return t.x+t["x"]');
+    const tableReads = analysis.operations.filter(
+      (operation) => operation.kind === "table-read",
+    );
+    expect(
+      tableReads.map((operation) =>
+        operation.kind === "table-read" ? operation.location.key : undefined,
+      ),
+    ).toEqual([
+      { kind: "static", value: "78" },
+      { kind: "static", value: "78" },
     ]);
-    expect(analysis.accessesOf(k).map((effect) => effect.access)).toEqual([
-      "declare",
-      "read",
+    const returnStatement = tableReads[0].owner as Parser.ReturnStatement;
+    expect(
+      analysis.expressionFact(returnStatement.arguments[0])?.effects.mayError,
+    ).toMatchObject({
+      value: "may",
+      evidence: { kind: "language" },
+    });
+  });
+
+  test("records a field function declaration as a table write", () => {
+    const { analysis } = analyze("local api={} function api.run() end");
+    const access = analysis.operations.find(
+      (operation) =>
+        (operation.kind === "table-read" || operation.kind === "table-write") &&
+        operation.location.key.kind === "static",
+    );
+
+    expect(access).toMatchObject({
+      kind: "table-write",
+      location: { key: { kind: "static", value: "72756e" } },
+    });
+  });
+
+  test.each([
+    ["local a,b,c=one(),2", ["expression", "expression", "nil-padding"]],
+    [
+      "local a,b,c=1,many()",
+      ["expression", "tail-expansion", "tail-expansion"],
+    ],
+    ["local a,b,c=...", ["tail-expansion", "tail-expansion", "tail-expansion"]],
+  ])("models Lua value adjustment for %s", (source, expected) => {
+    const { chunk, analysis } = analyze(source);
+    expect(
+      analysis.valueSlotsOf(chunk.body[0]).map((slot) => slot.source.kind),
+    ).toEqual(expected);
+  });
+
+  test("keeps runtime capabilities and aggressive assumptions separate", () => {
+    const chunk = Parser.parse("return object.value", { luaVersion: "5.3" });
+    const resolved = resolveScopes(chunk);
+    const assumptions = new Map([
+      ["ignore-metamethods", "explicit aggressive opt-in"],
     ]);
+    const analysis = analyzeOptimizerFacts(chunk, resolved, {
+      runtime: runtimeEnvironmentOf("stormworks"),
+      assumptions,
+    });
+    const expression = (chunk.body[0] as Parser.ReturnStatement).arguments[0];
+
+    expect(analysis.policy.runtime?.profile).toBe("stormworks");
+    expect(analysis.policy.assumptions).toEqual(assumptions);
+    expect(
+      analysis.expressionFact(expression)?.effects.mayInvokeMetamethod,
+    ).toMatchObject({
+      value: "no",
+      evidence: { kind: "runtime", profile: "stormworks" },
+    });
+  });
+
+  test("includes computed table keys in constructor effects", () => {
+    const { chunk, analysis } = analyze("return {[erroring()]=1}");
+    const constructor = (chunk.body[0] as Parser.ReturnStatement)
+      .arguments[0] as Parser.TableConstructorExpression;
+
+    expect(analysis.expressionFact(constructor)?.effects.mayError.value).toBe(
+      "may",
+    );
+  });
+
+  test("keeps deterministic unknown reasons and source correspondence", () => {
+    const source = "local value=external() return value";
+    const chunk = Parser.parse(source, {
+      luaVersion: "5.3",
+      ranges: true,
+    });
+    const resolved = resolveScopes(chunk);
+    const first = analyzeOptimizerFacts(chunk, resolved);
+    const second = analyzeOptimizerFacts(chunk, resolved);
+
+    expect(
+      first.unknowns.map(({ domain, reason }) => [domain, reason]),
+    ).toEqual(second.unknowns.map(({ domain, reason }) => [domain, reason]));
+    expect(first.operations.every((operation) => operation.sourceRange)).toBe(
+      true,
+    );
   });
 });

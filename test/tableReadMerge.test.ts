@@ -1,7 +1,7 @@
 import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
 import { resolveScopes } from "../src/resolver";
-import { analyzeTableEffects } from "../src/tableEffects";
+import { analyzeOptimizer } from "../src/optimizerAnalysis";
 import {
   applyTableReadMergePlan,
   planTableReadMerges,
@@ -16,10 +16,14 @@ function plan(
   const resolved = resolveScopes(chunk);
   return {
     chunk,
-    plan: planTableReadMerges(chunk, analyzeTableEffects(chunk, resolved), {
-      dirtyGranularity,
-      maxMergeArityAt,
-    }),
+    plan: planTableReadMerges(
+      chunk,
+      analyzeOptimizer(chunk, resolved).tableEffects,
+      {
+        dirtyGranularity,
+        maxMergeArityAt,
+      },
+    ),
   };
 }
 
@@ -107,6 +111,19 @@ make()
   test("rejects movement across a table binding reassignment", () => {
     const result = plan("local t={x=1} local first=t.x t={} local second=t.x");
     expect(result.plan.groups).toEqual([]);
+  });
+
+  test.each([
+    [
+      "an intervening write",
+      "local t={a=1,x=2} local first=t.a x=2 local x=t.x",
+    ],
+    [
+      "a nested closure reference",
+      "local t={a=1,x=2} local first=t.a consume(function() return x end) local x=t.x",
+    ],
+  ])("rejects grouping that would shadow %s", (_label, source) => {
+    expect(plan(source).plan.groups).toEqual([]);
   });
 
   test("merges reads through stable local aliases", () => {

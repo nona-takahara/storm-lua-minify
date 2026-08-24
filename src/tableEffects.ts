@@ -1,11 +1,7 @@
 import Parser from "luaparse";
 import { ResolveResult, Symbol } from "./resolver";
-import {
-  decodeLuaStringLiteral,
-  luaByteStringKey,
-  luaByteStringOfText,
-} from "./luaString";
-import { Allocation, analyzeValueFlow } from "./valueFlow";
+import { Allocation, ValueFlowAnalysis } from "./valueFlow";
+import { OptimizerFacts } from "./optimizerFacts";
 
 export interface FreshTable {
   readonly allocation: Allocation;
@@ -36,6 +32,7 @@ export interface TableEscape {
 }
 
 export interface TableEffectAnalysis {
+  readonly facts: OptimizerFacts;
   readonly freshTables: readonly FreshTable[];
   readonly effects: readonly TableEffect[];
   readonly escapes: readonly TableEscape[];
@@ -62,13 +59,17 @@ type ValueUse = "value-use" | "alias" | "call" | "return" | "store";
 export function analyzeTableEffects(
   chunk: Parser.Chunk,
   resolved: ResolveResult,
+  valueFlow: ValueFlowAnalysis,
+  facts: OptimizerFacts,
 ): TableEffectAnalysis {
   const freshTables: FreshTable[] = [];
   const freshByAllocation = new Map<Allocation, FreshTable>();
   const allocationByStableSymbol = new Map<Symbol, Allocation | null>();
   const effects: TableEffect[] = [];
   const escapes: TableEscape[] = [];
-  const valueFlow = analyzeValueFlow(chunk, resolved);
+  if (valueFlow.version !== facts.generation) {
+    throw new Error("Table effects require facts from the same AST generation");
+  }
 
   valueFlow.allocations.forEach((allocation) => {
     const binding = bindingOfAllocation(allocation);
@@ -238,7 +239,7 @@ export function analyzeTableEffects(
       effects.push({
         access,
         table,
-        staticKey: staticKeyOf(expression),
+        staticKey: staticKeyFromFacts(expression),
         expression,
         owner,
         baseSymbol,
@@ -255,6 +256,21 @@ export function analyzeTableEffects(
     if (expression.type === "IndexExpression") {
       analyzeExpression(expression.index, owner, "value-use", functionDepth);
     }
+  }
+
+  function staticKeyFromFacts(
+    expression: Parser.MemberExpression | Parser.IndexExpression,
+  ): string | undefined {
+    const operation = facts.operationOf(expression);
+    if (
+      !operation ||
+      (operation.kind !== "table-read" && operation.kind !== "table-write")
+    ) {
+      return undefined;
+    }
+    return operation.location.key.kind === "static"
+      ? operation.location.key.value
+      : undefined;
   }
 
   function tableOfBase(
@@ -412,6 +428,7 @@ export function analyzeTableEffects(
   }
 
   return {
+    facts,
     freshTables,
     effects,
     escapes,
@@ -478,15 +495,4 @@ export function analyzeTableEffects(
     for (let current = unit.parent; current; current = current.parent) depth++;
     return depth;
   }
-}
-
-export function staticKeyOf(
-  expression: Parser.MemberExpression | Parser.IndexExpression,
-): string | undefined {
-  if (expression.type === "MemberExpression") {
-    return luaByteStringKey(luaByteStringOfText(expression.identifier.name));
-  }
-  if (expression.index.type !== "StringLiteral") return undefined;
-  const decoded = decodeLuaStringLiteral(expression.index);
-  return decoded.ok ? luaByteStringKey(decoded.value) : undefined;
 }

@@ -1,18 +1,8 @@
 import assert from "node:assert/strict";
-import fs from "fs";
-import os from "os";
-import path from "path";
 import Parser from "luaparse";
-import { afterEach, describe, test } from "vitest";
-import { Minifier, MinifierMode } from "../src/minifier";
-
-const temporaryDirectories: string[] = [];
-
-afterEach(() => {
-  temporaryDirectories.splice(0).forEach((directory) => {
-    fs.rmSync(directory, { recursive: true, force: true });
-  });
-});
+import { describe, test } from "vitest";
+import { MinifierMode } from "../src/minifier";
+import { minifyTemporaryLuaProject } from "./lib/minifierHarness";
 
 const MAIN = `
 local dependency=require("dep")
@@ -45,24 +35,18 @@ function minify(
   moduleLikeLua: boolean,
   overrides: Partial<MinifierMode> = {},
 ): string {
-  const directory = fs.mkdtempSync(
-    path.join(os.tmpdir(), "storm-effect-pipeline-test-"),
-  );
-  temporaryDirectories.push(directory);
-  fs.writeFileSync(path.join(directory, "main.lua"), MAIN);
-  fs.writeFileSync(path.join(directory, "dep.lua"), DEPENDENCY);
-
-  return new Minifier(
-    path.join(directory, "main.lua"),
-    { locations: true, luaVersion: "5.3", ranges: true, scope: true },
+  return minifyTemporaryLuaProject(
+    { "main.lua": MAIN, "dep.lua": DEPENDENCY },
     {
       moduleLikeLua,
       runtimeProfile: "stormworks",
       ...overrides,
     },
-  )
-    .parse()
-    .toStringWithSourceMap({ file: "pipeline.min.lua" }).code;
+    {
+      outputFile: "pipeline.min.lua",
+      prefix: "storm-effect-pipeline-test-",
+    },
+  ).code;
 }
 
 function assertValidAndNonGrowing(

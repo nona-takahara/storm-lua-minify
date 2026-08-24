@@ -1,5 +1,4 @@
 import Parser from "luaparse";
-import { AstWalkVisitor, walkExpression, walkStatement } from "./astWalk";
 import { ResolveResult, Symbol } from "./resolver";
 import { copyNodeOrigin, identifierWithOrigin } from "./generatedNode";
 import { SourceMetadata } from "./sourceMetadata";
@@ -10,6 +9,7 @@ import {
   OptimizationDiagnosticSink,
 } from "./optimizerDiagnostics";
 import { RuntimeProfile } from "./runtimeEnvironment";
+import { OptimizerFacts, OptimizerOperation } from "./optimizerFacts";
 
 export interface NonAdjacentLocalGroup {
   readonly body: Parser.Statement[];
@@ -24,6 +24,7 @@ export interface NonAdjacentLocalPlan {
 }
 
 export interface NonAdjacentLocalPlannerOptions {
+  readonly facts: OptimizerFacts;
   // Rename後の印字名長。未確定のsymbolをundefinedにすると、その候補は拒否する。
   readonly outputNameLengthOf: (symbol: Symbol) => number | undefined;
   readonly preserveRequireSplice: boolean;
@@ -88,22 +89,13 @@ export function planNonAdjacentLocals(
         );
         const priorSymbols = new Set<Symbol>();
         const hasInitializerDependency = run.some((candidate) => {
-          const depends = candidate.statement.init.some((expression) => {
-            let depends = false;
-            const visitor: AstWalkVisitor = {
-              onIdentifierReference: (identifier) => {
-                const symbol = resolved.symbolOf(identifier);
-                if (symbol && priorSymbols.has(symbol)) depends = true;
-              },
-              onBlock: (nested) => {
-                nested.forEach((statement) => {
-                  walkStatement(statement, visitor);
-                });
-              },
-            };
-            walkExpression(expression, visitor);
-            return depends;
-          });
+          const depends = options.facts
+            .operationsWithin(candidate.statement)
+            .some((operation) => {
+              if (operation.kind !== "read") return false;
+              const symbol = symbolOfOperation(operation);
+              return symbol !== undefined && priorSymbols.has(symbol);
+            });
           priorSymbols.add(candidate.symbol);
           return depends;
         });
@@ -203,7 +195,7 @@ export function planNonAdjacentLocals(
       }
       const candidate = decision.candidate;
 
-      if (wouldChangeBinding(body, index, candidate)) {
+      if (wouldChangeBinding(body, index, candidate, options.facts)) {
         flush("binding-shadow-hazard");
         record(
           "rejected",
@@ -218,7 +210,12 @@ export function planNonAdjacentLocals(
 
       if (
         run.some((prior) => prior.symbol.name === candidate.symbol.name) ||
-        wouldChangeBinding(body, run[0]?.index ?? candidate.index, candidate)
+        wouldChangeBinding(
+          body,
+          run[0]?.index ?? candidate.index,
+          candidate,
+          options.facts,
+        )
       ) {
         flush("binding-shadow-hazard");
       }
@@ -301,23 +298,37 @@ function wouldChangeBinding(
   body: Parser.Statement[],
   groupStart: number,
   candidate: Candidate,
+  facts: OptimizerFacts,
 ): boolean {
   for (let index = groupStart; index <= candidate.index; index++) {
-    const referencedNames: string[] = [];
-    const visitor: AstWalkVisitor = {
-      onIdentifierReference: (identifier) => {
-        referencedNames.push(identifier.name);
-      },
-      onBlock: (nested) => {
-        nested.forEach((statement) => {
-          walkStatement(statement, visitor);
-        });
-      },
-    };
-    walkStatement(body[index], visitor);
+    const referencedNames = facts
+      .operationsWithin(body[index])
+      .filter(
+        (operation) => operation.kind === "read" || operation.kind === "write",
+      )
+      .map(bindingNameOfOperation)
+      .filter((name): name is string => name !== undefined);
     if (referencedNames.includes(candidate.symbol.name)) return true;
   }
   return false;
+}
+
+function symbolOfOperation(operation: OptimizerOperation): Symbol | undefined {
+  if (!("location" in operation)) return undefined;
+  return operation.location.kind === "local" ||
+    operation.location.kind === "parameter" ||
+    operation.location.kind === "upvalue"
+    ? operation.location.symbol
+    : undefined;
+}
+
+function bindingNameOfOperation(
+  operation: OptimizerOperation,
+): string | undefined {
+  if (!("location" in operation)) return undefined;
+  if (operation.location.kind === "global")
+    return operation.location.binding.name;
+  return symbolOfOperation(operation)?.name;
 }
 
 function childBlocksOf(body: Parser.Statement[]): Parser.Statement[][] {

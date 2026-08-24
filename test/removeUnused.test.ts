@@ -4,6 +4,7 @@ import Parser from "luaparse";
 import { resolveScopes } from "../src/resolver";
 import { removeUnusedLocals } from "../src/removeUnused";
 import { SourceMetadata } from "../src/sourceMetadata";
+import { analyzeOptimizerFacts } from "../src/optimizerFacts";
 
 function remove(code: string): Parser.Chunk {
   const chunk = Parser.parse(code, {
@@ -14,7 +15,14 @@ function remove(code: string): Parser.Chunk {
   });
   const metadata = new SourceMetadata(chunk, code);
   let resolved = resolveScopes(chunk);
-  while (removeUnusedLocals(chunk, resolved, metadata)) {
+  while (
+    removeUnusedLocals(
+      chunk,
+      resolved,
+      metadata,
+      analyzeOptimizerFacts(chunk, resolved),
+    )
+  ) {
     resolved = resolveScopes(chunk);
   }
   return chunk;
@@ -181,7 +189,13 @@ local unused = 1`;
     ranges: true,
   });
   const metadata = new SourceMetadata(chunk, code);
-  removeUnusedLocals(chunk, resolveScopes(chunk), metadata);
+  const resolved = resolveScopes(chunk);
+  removeUnusedLocals(
+    chunk,
+    resolved,
+    metadata,
+    analyzeOptimizerFacts(chunk, resolved),
+  );
   assert.equal(chunk.body.length, 0);
   assert.deepEqual(
     metadata.afterModuleComments().map((v) => v.raw),
