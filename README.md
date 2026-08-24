@@ -14,6 +14,27 @@ npx storm-lua-minify script.lua
 
 - `-m`オプションを付加すると、モジュールの挙動をLuaの実際の挙動に近づけます
 
+## 実行環境と効果解析最適化
+
+CLIはStormworks向けツールとして、`--runtime-profile stormworks`を既定にします。このprofileでは、非連続な`local`宣言やfresh tableの安定したreadを効果解析でまとめる、意味保存の最適化が既定で有効です。ライブラリAPIで`runtimeProfile`を省略した場合だけは、既存利用との互換性のため`lua53`として扱います。
+
+| 実行環境          | 効果解析最適化の既定 | 変更方法                                                                 |
+| ----------------- | -------------------- | ------------------------------------------------------------------------ |
+| CLI / Stormworks  | 有効                 | 個別の`--no-*`、または`--no-effect-aware-transforms`で無効化             |
+| CLI / Lua 5.3     | 無効                 | `--runtime-profile lua53 --allow-local-lifetime-changes`で明示的に有効化 |
+| API / profile省略 | 無効                 | `runtimeProfile: "stormworks"`、またはLua用opt-inを指定                  |
+
+純Luaでは`debug.getlocal`やdebug hookから`local`の生存期間を観測できるため、通常の計算結果が同じでも宣言位置の変更が観測され得ます。この差を許可する`--allow-local-lifetime-changes`はopt-inです。未知のcall、alias、escape、動的table key、変更可能なmetatableを安全だと仮定する最適化は、このオプションでは有効になりません。
+
+- `--runtime-profile <stormworks|lua53>`: 効果解析が前提とする実行環境を選びます。CLI既定は`stormworks`です
+- `--no-effect-aware-transforms`: 効果解析による最適化をすべて無効にします
+- `--no-effect-aware-local-hoist`: 非連続`local`宣言のまとめ上げだけを無効にします
+- `--no-effect-aware-table-reads`: fresh・nonescape tableの安定したreadのまとめ上げだけを無効にします
+- `--no-field-sensitive-table-effects`: tableの変更追跡をstatic key単位からtable全体へ戻します
+- `--allow-local-lifetime-changes`: Lua 5.3 profileで、debug APIから観測可能な`local`生存期間の変更を許可します
+
+`-m` / `--module-like-lua`は`require`・`dofile`の出力方式を選ぶオプションであり、runtime profileとは独立です。また、現時点では未知の副作用を無視するような意味変更オプションは実装していません。将来追加する場合も、上記の意味保存オプションとは分けてopt-inにします。
+
 # Source Map
 
 このツールは、ミニファイ後のコードと合わせて [Source Map](https://tc39.es/source-map/) (`.lua.map`) を出力します。
@@ -58,7 +79,7 @@ Luaコード内で完結し、意味論を変更しない最適化は既定で�
 
 対象は、算術・比較・連結・論理演算（`and`／`or`／`not`）・ビット演算・長さ演算子（`#`）です。畳み込んでもプログラムの意味は変わりません。整数と浮動小数点数の区別も保たれ、`3/1`は`3`ではなく`3.0`になります（Luaの`/`は常に浮動小数点数を返すため）。
 
-定数として扱う文字列は、エスケープを含まない印字可能ASCIIのリテラルに限っています。この形なら1文字が1バイトに対応するので、連結・比較・長さのいずれもLuaでの結果と一致します。エスケープや長括弧（`[[...]]`）を含む文字列は、この保証が崩れるため対象外です。
+文字列はLua 5.3のquoted escape、decimal／hex byte、`\z`、改行escape、Unicode escape、長括弧を共有byte decoderで復元します。連結、比較、`#`はJavaScriptの文字数ではなくLua byte列に対して評価し、生成literalは再decode可能な表記へ戻します。不正または判定不能なliteralは畳み込みません。
 
 次の式は畳み込みません。いずれも、畳み込むとプログラムの意味が変わるためです。
 
@@ -92,7 +113,12 @@ Luaコード内で完結し、意味論を変更しない最適化は既定で�
 pnpm ci
 pnpm run build
 pnpm test
+pnpm run verify:lua-budget       # Windowsのluac53で49/50/51境界を確認
+pnpm run verify:effect-semantics # Windowsのlua53で変換前後を差分実行
+pnpm run report:optimizer        # 候補・拒否理由・最終byte比較をJSON出力
 ```
+
+ライブラリAPIで`collectOptimizationDiagnostics: true`を指定すると、`Minifier.optimizationDiagnostics`からruntime／module／pass別の候補採否を取得できます。既定はoffで、on/offによって生成コードとSource Mapは変化しません。`selectTransactionalMinifierVariant`はbaselineとtrialを別Minifierへ隔離し、最終Rename／Print後に厳密に短いartifactだけを選択する高度な調査・planner統合用APIです。
 
 # Lint / Format
 

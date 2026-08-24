@@ -12,9 +12,43 @@ import { SourceMetadata } from "./sourceMetadata";
 import { removeUnusedLocals } from "./removeUnused";
 import { foldConstants } from "./constantFold";
 import { buildRequireWrapperAst, GeneratedStatement } from "./generatedAst";
+import {
+  applyNonAdjacentLocalPlan,
+  planNonAdjacentLocals,
+} from "./nonAdjacentLocals";
+import { analyzeTableEffects } from "./tableEffects";
+import { applyTableReadMergePlan, planTableReadMerges } from "./tableReadMerge";
+import { PassOrchestrator } from "./optimizerPass";
+import {
+  analyzeLocalResourceUsage,
+  checkParallelEvaluation,
+  RuntimeProfile,
+  runtimeEnvironmentOf,
+} from "./runtimeEnvironment";
+import {
+  OptimizationDiagnostic,
+  OptimizationDiagnosticCollector,
+} from "./optimizerDiagnostics";
+
+export type { RuntimeProfile } from "./runtimeEnvironment";
 
 export interface MinifierMode {
   moduleLikeLua: boolean;
+  // 実行環境の意味論。moduleLikeLua（require出力方式）とは独立。
+  // 省略時は後方互換のためlua53として扱う。
+  runtimeProfile?: RuntimeProfile;
+  // 選択環境で意味を保存する効果解析Transformのmaster opt-out。
+  // Stormworks profileでは省略時に有効。
+  effectAwareTransforms?: boolean;
+  // RHSを元位置に残す非連続local宣言hoistの個別opt-out。
+  effectAwareLocalHoist?: boolean;
+  // fresh・nonescape tableの安定したreadを含むlocal mergeの個別opt-out。
+  effectAwareTableReads?: boolean;
+  // table全体ではなくstatic key単位でdirtyを追跡する精密化の個別opt-out。
+  fieldSensitiveTableEffects?: boolean;
+  // 純Luaでdebug APIから観測できるlocal lifetimeの変更を許可するopt-in。
+  // Stormworksではdebug introspectionを前提にしないため指定不要。
+  allowLocalLifetimeChanges?: boolean;
   // 字句の結合を防ぐために必要な1バイトの空白。省略時は、出力サイズを
   // 増やさずStormworksの行単位診断を改善できるLFを使う。
   requiredWhitespace?: " " | "\n";
@@ -38,6 +72,8 @@ export interface MinifierMode {
   removeUnusedGlobals?: boolean;
   // 定数式の事前計算と、定数ローカル変数の伝搬。省略時はfalse扱い（明示的に有効化する）。
   foldConstants?: boolean;
+  // 最適化候補の採否理由を収集する。既定offで、生成結果には影響しない。
+  collectOptimizationDiagnostics?: boolean;
 }
 
 const NO_RENAME: RenameResult = {
@@ -64,6 +100,7 @@ export class Minifier {
   // #8a: プログラム全体を横断して決定された「内部グローバル名 -> 短縮名」の対応
   private globalRenames = new Map<string, string>();
   private readonly moduleMetadata = new Map<string, SourceMetadata>();
+  private readonly diagnosticCollector?: OptimizationDiagnosticCollector;
 
   constructor(
     entryFilePath: string,
@@ -83,9 +120,16 @@ export class Minifier {
       ranges: true,
     };
     this.mode = mode;
+    if (mode.collectOptimizationDiagnostics) {
+      this.diagnosticCollector = new OptimizationDiagnosticCollector();
+    }
     const pn = path.parse(entryFilePath);
     this.dir = pn.dir;
     this.entryModule = pn.name;
+  }
+
+  get optimizationDiagnostics(): readonly OptimizationDiagnostic[] {
+    return this.diagnosticCollector?.diagnostics ?? [];
   }
 
   parse(): SourceNode {
@@ -230,6 +274,9 @@ export class Minifier {
       ...(this.mode.neverRenameGlobals ?? []),
       ...this.annotationProtectedGlobals(),
     ]);
+    // renameAllと同じmodule順・予約名更新で仮Renameを行い、plannerのbyte costを
+    // 実際の出力名長に対する保守的な見積りにする。
+    const plannedIdentifiersInUse = new Set(this.identifiersInUse);
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
       let resolved = this.moduleResolve.get(moduleName);
@@ -237,25 +284,140 @@ export class Minifier {
         throw new Error(moduleName + " is not found");
       }
 
+      const passes = new PassOrchestrator(ast, resolved);
       if (this.mode.rename !== false && this.mode.globalAlias !== false) {
-        insertGlobalAliases(ast, resolved, {
-          excludeNames: excludeGlobalNames,
+        passes.run("global-alias", (currentResolve) => {
+          const changed = insertGlobalAliases(ast, currentResolve, {
+            excludeNames: excludeGlobalNames,
+          });
+          return { changed, invalidatesResolve: changed };
         });
-        resolved = resolveScopes(ast);
+      }
+      resolved = passes.resolved;
+      const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53");
+      const localResources = analyzeLocalResourceUsage(ast);
+
+      const effectAwareLocalsEnabled =
+        this.mode.effectAwareTransforms !== false &&
+        (!runtime.semantics.debugLocalIntrospection ||
+          this.mode.allowLocalLifetimeChanges === true);
+      if (
+        effectAwareLocalsEnabled &&
+        this.mode.effectAwareTableReads !== false
+      ) {
+        passes.run("effect-aware-table-reads", (currentResolve) => {
+          const tablePlan = planTableReadMerges(
+            ast,
+            analyzeTableEffects(ast, currentResolve),
+            {
+              dirtyGranularity:
+                this.mode.fieldSensitiveTableEffects === false
+                  ? "table"
+                  : "static-key",
+              canMoveStatement: (statement) => {
+                const metadata = this.getSourceMetadata(moduleName);
+                const annotations = metadata.annotationsOf(statement);
+                return (
+                  metadata.beforeOf(statement).length === 0 &&
+                  metadata.trailingOf(statement).length === 0 &&
+                  !annotations.keep &&
+                  !annotations.keepName &&
+                  !annotations.exported
+                );
+              },
+              maxMergeArity: runtime.resources.conservativeParallelValueLimit,
+              maxMergeArityAt: (statement) =>
+                checkParallelEvaluation(runtime, {
+                  activeLocalsBefore:
+                    localResources.activeLocalsBefore(statement) ??
+                    runtime.resources.maxActiveLocalsPerFunction,
+                  parallelValueCount:
+                    runtime.resources.conservativeParallelValueLimit,
+                }).limit,
+              diagnostics: this.diagnosticCollector,
+              moduleName,
+              runtimeProfile: runtime.profile,
+            },
+          );
+          return applyTableReadMergePlan(
+            tablePlan,
+            this.getSourceMetadata(moduleName),
+          );
+        });
       }
 
-      if (this.mode.mergeLocals !== false) {
-        mergeLocalDeclarations(
-          ast,
-          resolved,
-          {
+      resolved = passes.resolved;
+      const keepNames = new Set(
+        resolved.symbols.filter(
+          (symbol) =>
+            this.getSourceMetadata(moduleName).annotationsOfIdentifier(
+              symbol.declaration,
+            ).keepName,
+        ),
+      );
+      if (
+        effectAwareLocalsEnabled &&
+        this.mode.effectAwareLocalHoist !== false
+      ) {
+        const provisionalRenames =
+          this.mode.rename === false
+            ? NO_RENAME
+            : assignRenames(
+                resolved,
+                plannedIdentifiersInUse,
+                this.globalRenames,
+                keepNames,
+              );
+        passes.run("effect-aware-local-hoist", (currentResolve) => {
+          const plan = planNonAdjacentLocals(ast, currentResolve, {
+            outputNameLengthOf: (symbol) =>
+              (provisionalRenames.nameOf(symbol.declaration) ?? symbol.name)
+                .length,
             preserveRequireSplice: !this.mode.moduleLikeLua,
-          },
-          this.getSourceMetadata(moduleName),
-        );
+            diagnostics: this.diagnosticCollector,
+            moduleName,
+            runtimeProfile: runtime.profile,
+          });
+          return applyNonAdjacentLocalPlan(
+            plan,
+            this.getSourceMetadata(moduleName),
+          );
+        });
       }
 
+      resolved = passes.resolved;
+      if (this.mode.mergeLocals !== false) {
+        passes.run("merge-local-declarations", (currentResolve) => ({
+          changed: mergeLocalDeclarations(
+            ast,
+            currentResolve,
+            {
+              preserveRequireSplice: !this.mode.moduleLikeLua,
+            },
+            this.getSourceMetadata(moduleName),
+          ),
+          invalidatesResolve: false,
+        }));
+      }
+
+      resolved = passes.resolved;
       this.moduleResolve.set(moduleName, resolved);
+      if (this.mode.rename !== false) {
+        const finalKeepNames = new Set(
+          resolved.symbols.filter(
+            (symbol) =>
+              this.getSourceMetadata(moduleName).annotationsOfIdentifier(
+                symbol.declaration,
+              ).keepName,
+          ),
+        );
+        assignRenames(
+          resolved,
+          plannedIdentifiersInUse,
+          this.globalRenames,
+          finalKeepNames,
+        ).usedNames.forEach((name) => plannedIdentifiersInUse.add(name));
+      }
     });
   }
 
@@ -325,12 +487,18 @@ export class Minifier {
     if (this.mode.foldConstants !== true) return;
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
-      let resolved = this.moduleResolve.get(moduleName);
+      const resolved = this.moduleResolve.get(moduleName);
       if (!ast || !resolved) throw new Error(moduleName + " is not found");
-      while (foldConstants(ast, resolved, this.getSourceMetadata(moduleName))) {
-        resolved = resolveScopes(ast);
-      }
-      this.moduleResolve.set(moduleName, resolved);
+      const passes = new PassOrchestrator(ast, resolved);
+      passes.runUntilStable("fold-constants", (currentResolve) => {
+        const changed = foldConstants(
+          ast,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+        );
+        return { changed, invalidatesResolve: changed };
+      });
+      this.moduleResolve.set(moduleName, passes.resolved);
     });
   }
 
@@ -339,12 +507,14 @@ export class Minifier {
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
       const metadata = this.getSourceMetadata(moduleName);
-      let resolved = this.moduleResolve.get(moduleName);
+      const resolved = this.moduleResolve.get(moduleName);
       if (!ast || !resolved) throw new Error(moduleName + " is not found");
-      while (removeUnusedLocals(ast, resolved, metadata)) {
-        resolved = resolveScopes(ast);
-      }
-      this.moduleResolve.set(moduleName, resolved);
+      const passes = new PassOrchestrator(ast, resolved);
+      passes.runUntilStable("remove-unused", (currentResolve) => {
+        const changed = removeUnusedLocals(ast, currentResolve, metadata);
+        return { changed, invalidatesResolve: changed };
+      });
+      this.moduleResolve.set(moduleName, passes.resolved);
     });
   }
 
