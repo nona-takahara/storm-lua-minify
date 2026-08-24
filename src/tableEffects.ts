@@ -436,7 +436,7 @@ export function analyzeTableEffects(
     const index = owner.init.indexOf(allocation.origin);
     if (index < 0) return undefined;
     const target = owner.variables[index];
-    if (target?.type !== "Identifier") return undefined;
+    if (target.type !== "Identifier") return undefined;
     const symbol = resolved.symbolOf(target);
     return symbol ? { symbol, declaration: owner } : undefined;
   }
