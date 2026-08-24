@@ -235,12 +235,12 @@ function candidateOf(
   options: TableReadMergeOptions,
 ): CandidateDecision {
   if (statement.type !== "LocalStatement") return undefined;
+  if (statement.variables.length !== 1 || statement.init.length !== 1) {
+    return { reason: "unsupported-shape" };
+  }
   const init = statement.init[0];
   if (init.type !== "MemberExpression" && init.type !== "IndexExpression") {
     return undefined;
-  }
-  if (statement.variables.length !== 1 || statement.init.length !== 1) {
-    return { reason: "unsupported-shape" };
   }
   if (options.canMoveStatement?.(statement) === false) {
     return { reason: "metadata-preserved" };

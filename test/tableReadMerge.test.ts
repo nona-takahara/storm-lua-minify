@@ -24,6 +24,10 @@ function plan(
 }
 
 describe("fresh table read merge planner", () => {
+  test("ignores an uninitialized local declaration", () => {
+    expect(plan("local t local value=1").plan.groups).toEqual([]);
+  });
+
   test("moves stable reads across an unrelated call", () => {
     const result = plan(
       "local t={x=1,y=2} local first=t.x tick() local second=t.y",
