@@ -1,7 +1,11 @@
 import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
-import { planNonAdjacentLocals } from "../src/nonAdjacentLocals";
+import {
+  applyNonAdjacentLocalPlan,
+  planNonAdjacentLocals,
+} from "../src/nonAdjacentLocals";
 import { resolveScopes, Symbol } from "../src/resolver";
+import { SourceMetadata } from "../src/sourceMetadata";
 
 function plan(
   source: string,
@@ -73,5 +77,87 @@ describe("non-adjacent local planner", () => {
     );
 
     expect(result.groups).toEqual([]);
+  });
+
+  test("hoists declarations while leaving initializers at their original points", () => {
+    const source =
+      "local first=f() tick() local second=g() value=1 local third=h()";
+    const chunk = Parser.parse(source, {
+      luaVersion: "5.3",
+      locations: true,
+      ranges: true,
+    });
+    const resolved = resolveScopes(chunk);
+    const result = applyNonAdjacentLocalPlan(
+      planNonAdjacentLocals(chunk, resolved, {
+        outputNameLengthOf: () => 1,
+        preserveRequireSplice: false,
+      }),
+    );
+
+    expect(result).toEqual({ changed: true, invalidatesResolve: true });
+    expect(chunk.body.map((statement) => statement.type)).toEqual([
+      "LocalStatement",
+      "AssignmentStatement",
+      "CallStatement",
+      "AssignmentStatement",
+      "AssignmentStatement",
+      "AssignmentStatement",
+    ]);
+    const declaration = chunk.body[0] as Parser.LocalStatement;
+    expect(declaration.variables.map((variable) => variable.name)).toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
+    expect(declaration.init).toEqual([]);
+
+    const after = resolveScopes(chunk);
+    const writes = chunk.body
+      .filter(
+        (statement): statement is Parser.AssignmentStatement =>
+          statement.type === "AssignmentStatement" &&
+          statement.variables[0]?.type === "Identifier",
+      )
+      .map(
+        (statement) =>
+          after.symbolOf(statement.variables[0] as Parser.Identifier)?.name,
+      );
+    expect(writes).toEqual(["first", "second", undefined, "third"]);
+  });
+
+  test("preserves statement comments at the replacement boundaries", () => {
+    const source = `--# first
+local first=f()
+tick()
+--# second
+local second=g()
+--# third
+local third=h() --# trailing`;
+    const chunk = Parser.parse(source, {
+      luaVersion: "5.3",
+      comments: true,
+      locations: true,
+      ranges: true,
+    });
+    const metadata = new SourceMetadata(chunk, source);
+    const resolved = resolveScopes(chunk);
+    applyNonAdjacentLocalPlan(
+      planNonAdjacentLocals(chunk, resolved, {
+        outputNameLengthOf: () => 1,
+        preserveRequireSplice: false,
+      }),
+      metadata,
+    );
+
+    expect(
+      metadata.beforeOf(chunk.body[0]).map((comment) => comment.raw),
+    ).toEqual(["--# first"]);
+    expect(
+      metadata.beforeOf(chunk.body[3]).map((comment) => comment.raw),
+    ).toEqual(["--# second"]);
+    expect(
+      metadata.trailingOf(chunk.body[4]).map((comment) => comment.raw),
+    ).toEqual(["--# trailing"]);
   });
 });

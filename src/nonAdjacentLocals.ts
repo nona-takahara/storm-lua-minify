@@ -1,6 +1,8 @@
 import Parser from "luaparse";
 import { AstWalkVisitor, walkStatement } from "./astWalk";
 import { ResolveResult, Symbol } from "./resolver";
+import { copyNodeOrigin, identifierWithOrigin } from "./generatedNode";
+import { SourceMetadata } from "./sourceMetadata";
 
 export interface NonAdjacentLocalGroup {
   readonly body: Parser.Statement[];
@@ -12,6 +14,11 @@ export interface NonAdjacentLocalGroup {
 
 export interface NonAdjacentLocalPlan {
   readonly groups: readonly NonAdjacentLocalGroup[];
+}
+
+export interface TransformResult {
+  readonly changed: boolean;
+  readonly invalidatesResolve: boolean;
 }
 
 export interface NonAdjacentLocalPlannerOptions {
@@ -96,6 +103,48 @@ export function planNonAdjacentLocals(
 
   processBlock(chunk.body);
   return { groups };
+}
+
+/** plannerが安全性と費用を確認したgroupだけをASTへ適用する。 */
+export function applyNonAdjacentLocalPlan(
+  plan: NonAdjacentLocalPlan,
+  metadata?: SourceMetadata,
+): TransformResult {
+  // nested blockを含む各bodyは別配列である。同じbody内では後ろから置換し、
+  // plannerが記録したindexを先行groupの挿入でずらさない。
+  [...plan.groups].reverse().forEach((group) => {
+    const declaration: Parser.LocalStatement = {
+      type: "LocalStatement",
+      variables: group.statements.map((statement) => statement.variables[0]),
+      init: [],
+    };
+    copyNodeOrigin(declaration, group.statements[0]);
+
+    const assignments = group.statements.map((statement) => {
+      const assignment: Parser.AssignmentStatement = {
+        type: "AssignmentStatement",
+        variables: [identifierWithOrigin(statement.variables[0])],
+        init: [statement.init[0]],
+      };
+      copyNodeOrigin(assignment, statement);
+      return assignment;
+    });
+
+    for (let offset = group.indexes.length - 1; offset >= 0; offset--) {
+      const index = group.indexes[offset];
+      const source = group.statements[offset];
+      const replacements =
+        offset === 0
+          ? [declaration, assignments[offset]]
+          : [assignments[offset]];
+      metadata?.replaceStatement(source, replacements);
+      group.body.splice(index, 1, ...replacements);
+    }
+  });
+  return {
+    changed: plan.groups.length > 0,
+    invalidatesResolve: plan.groups.length > 0,
+  };
 }
 
 function candidateOf(
