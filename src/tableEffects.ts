@@ -260,6 +260,19 @@ export function analyzeTableEffects(
     return allocation ? freshByAllocation.get(allocation) : undefined;
   }
 
+  function isTrackedLocalAlias(
+    expression: Parser.Expression,
+    owner: Parser.Statement,
+    functionDepth: number,
+  ): boolean {
+    if (expression.type !== "Identifier") return false;
+    const point = valueFlow.controlFlow.pointOf(owner);
+    if (!point) return false;
+    const allocation = valueFlow.allocationOfBase(expression, point);
+    const table = allocation ? freshByAllocation.get(allocation) : undefined;
+    return table?.functionDepth === functionDepth;
+  }
+
   function analyzeStatement(
     statement: Parser.Statement,
     functionDepth: number,
@@ -267,23 +280,16 @@ export function analyzeTableEffects(
     switch (statement.type) {
       case "LocalStatement":
         statement.init.forEach((expression) => {
-          if (expression.type !== "Identifier") {
+          if (!isTrackedLocalAlias(expression, statement, functionDepth)) {
             analyzeExpression(expression, statement, "alias", functionDepth);
           }
         });
         return;
       case "AssignmentStatement":
-        statement.init.forEach((expression, index) => {
-          const target = statement.variables[index];
-          const targetSymbol =
-            target?.type === "Identifier"
-              ? resolved.symbolOf(target)
-              : undefined;
-          const aliasAssignment =
-            expression.type === "Identifier" && targetSymbol?.kind === "local";
-          if (!aliasAssignment) {
-            analyzeExpression(expression, statement, "store", functionDepth);
-          }
+        statement.init.forEach((expression) => {
+          // 既存bindingへの代入はupvalueへの公開になり得る。代入先localの
+          // execution unitを証明する解析が入るまでは、単純aliasでもescape扱い。
+          analyzeExpression(expression, statement, "store", functionDepth);
         });
         statement.variables.forEach((variable) => {
           if (

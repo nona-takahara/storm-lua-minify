@@ -67,6 +67,23 @@ describe("fresh table effect analysis", () => {
     ]);
   });
 
+  test("treats an alias assignment through a closure as an escape", () => {
+    const analysis = analyze(`
+local t={x=1,y=2}
+local alias
+local bind=function() alias=t end
+local mutate=function() alias.y=9 end
+local first=t.x
+bind()
+mutate()
+local second=t.y
+`);
+    expect(analysis.isNonescaping(analysis.freshTables[0])).toBe(false);
+    expect(analysis.escapes.map((escape) => escape.reason)).toContain(
+      "capture",
+    );
+  });
+
   test("keeps writes to different static keys distinct", () => {
     const analysis = analyze("local t={} t.x=1 t.y=2");
     expect(

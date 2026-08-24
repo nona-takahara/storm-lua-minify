@@ -110,6 +110,23 @@ use(first,second)
     );
   });
 
+  test("does not move reads when a closure publishes an alias", () => {
+    const source = `
+local tableValue={x=1,y=2}
+local alias
+local bind=function() alias=tableValue end
+local mutate=function() alias.y=9 end
+local first=tableValue.x
+bind()
+mutate()
+local second=tableValue.y
+use(first,second)
+`;
+    expect(minify(source)).toBe(
+      minify(source, { effectAwareTableReads: false }),
+    );
+  });
+
   test("master safe opt-out disables table read movement", () => {
     const source = `
 local tableValue={x=1,y=2}

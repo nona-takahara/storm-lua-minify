@@ -38,6 +38,20 @@ describe("fresh table read merge planner", () => {
     expect(result.plan.groups).toEqual([]);
   });
 
+  test("rejects movement when a closure publishes an alias", () => {
+    const result = plan(`
+local t={x=1,y=2}
+local alias
+local bind=function() alias=t end
+local mutate=function() alias.y=9 end
+local first=t.x
+bind()
+mutate()
+local second=t.y
+`);
+    expect(result.plan.groups).toEqual([]);
+  });
+
   test("treats every write as dirty in whole-table mode", () => {
     const result = plan("local t={x=1} local first=t.x t.y=2 local second=t.x");
     expect(result.plan.groups).toEqual([]);
