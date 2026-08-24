@@ -1,0 +1,59 @@
+import Parser from "luaparse";
+import { describe, expect, test } from "vitest";
+import { resolveScopes } from "../src/resolver";
+import { analyzeTableEffects } from "../src/tableEffects";
+
+function analyze(source: string) {
+  const chunk = Parser.parse(source, { luaVersion: "5.3" });
+  return analyzeTableEffects(chunk, resolveScopes(chunk));
+}
+
+describe("fresh table effect analysis", () => {
+  test("normalizes member and simple string index keys", () => {
+    const analysis = analyze('local t={} local a=t.x t["x"]=1 local b=t[key]');
+
+    expect(
+      analysis.effects.map((effect) => [
+        effect.access,
+        effect.staticKey ?? "dynamic",
+      ]),
+    ).toEqual([
+      ["read", "x"],
+      ["write", "x"],
+      ["read", "dynamic"],
+    ]);
+  });
+
+  test("does not decode escaped string keys as static", () => {
+    const analysis = analyze('local t={} return t["x\\n"]');
+    expect(analysis.effects[0].staticKey).toBeUndefined();
+  });
+
+  test("keeps a fresh table nonescaping across unrelated calls", () => {
+    const analysis = analyze("local t={x=1} tick() local value=t.x");
+    expect(analysis.freshTables).toHaveLength(1);
+    expect(analysis.isNonescaping(analysis.freshTables[0])).toBe(true);
+  });
+
+  test.each([
+    ["alias", "local t={} local alias=t", "alias"],
+    ["call", "local t={} consume(t)", "call"],
+    ["return", "local t={} return t", "return"],
+    ["store", "local t={} global=t", "store"],
+    ["capture", "local t={} local f=function() return t.x end", "capture"],
+  ] as const)("marks %s as an escape", (_label, source, reason) => {
+    const analysis = analyze(source);
+    expect(analysis.escapes.map((escape) => escape.reason)).toContain(reason);
+    expect(analysis.isNonescaping(analysis.freshTables[0])).toBe(false);
+  });
+
+  test("keeps writes to different static keys distinct", () => {
+    const analysis = analyze("local t={} t.x=1 t.y=2");
+    expect(
+      analysis.effects.map((effect) => [effect.access, effect.staticKey]),
+    ).toEqual([
+      ["write", "x"],
+      ["write", "y"],
+    ]);
+  });
+});
