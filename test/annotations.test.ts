@@ -33,6 +33,27 @@ test("annotation and configured global-name protection are combined", () => {
   assert.match(code, /configuredGlobal=4/);
 });
 
+test("global rename is disabled by default and enabled only by explicit opt-in", () => {
+  const commonMode = {
+    moduleLikeLua: false,
+    mergeLocals: false,
+    globalAlias: false,
+  } as const;
+  const defaultResult = runMinifier({
+    label: "global rename default",
+    fixture: "annotations",
+    mode: commonMode,
+  });
+  const optedInResult = runMinifier({
+    label: "global rename opt-in",
+    fixture: "annotations",
+    mode: { ...commonMode, globalRename: true },
+  });
+
+  assert.match(defaultResult.code, /configuredGlobal=4/);
+  assert.doesNotMatch(optedInResult.code, /configuredGlobal/);
+});
+
 test("removeUnused false preserves otherwise removable locals", () => {
   const { code } = runMinifier({
     label: "annotations no removal",
