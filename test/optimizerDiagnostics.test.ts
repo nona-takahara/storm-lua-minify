@@ -106,7 +106,9 @@ describe("optimization diagnostics", () => {
         "control-flow-barrier",
         "nonpositive-cost",
       ] as const
-    ).forEach((reason) => expect(reasons.has(reason)).toBe(true));
+    ).forEach((reason) => {
+      expect(reasons.has(reason)).toBe(true);
+    });
     expect(
       diagnostics.every(
         (item) =>

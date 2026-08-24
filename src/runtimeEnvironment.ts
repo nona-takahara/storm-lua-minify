@@ -146,9 +146,9 @@ export function analyzeLocalResourceUsage(
           visitBlock(statement.body, active);
           break;
         case "IfStatement":
-          statement.clauses.forEach((clause) =>
-            visitBlock(clause.body, active),
-          );
+          statement.clauses.forEach((clause) => {
+            visitBlock(clause.body, active);
+          });
           break;
         case "ForNumericStatement":
           visitBlock(statement.body, active + 1);

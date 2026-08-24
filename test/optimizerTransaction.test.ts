@@ -62,7 +62,10 @@ use(first,second)
     expect(result).toMatchObject({ accepted: false, reason: "not-shorter" });
     expect(result.selected).toEqual(result.baseline);
     expect(result.selected.code).toContain("--# preserved");
-    expect(JSON.parse(result.selected.sourceMap).sources).toContain("main.lua");
+    const sourceMap = JSON.parse(result.selected.sourceMap) as {
+      sources: unknown;
+    };
+    expect(sourceMap.sources).toContain("main.lua");
   });
 
   test("remains deterministic across modules", () => {

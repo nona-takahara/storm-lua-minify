@@ -236,7 +236,7 @@ function candidateOf(
 ): CandidateDecision {
   if (statement.type !== "LocalStatement") return undefined;
   const init = statement.init[0];
-  if (init?.type !== "MemberExpression" && init?.type !== "IndexExpression") {
+  if (init.type !== "MemberExpression" && init.type !== "IndexExpression") {
     return undefined;
   }
   if (statement.variables.length !== 1 || statement.init.length !== 1) {
@@ -259,8 +259,10 @@ function candidateOf(
     }
     return { reason: "dynamic-key" };
   }
-  const escape = analysis.escapeReasonsOf(read.table)[0];
-  if (escape) return { reason: escapeReasonOf(escape) };
+  const escapeReasons = analysis.escapeReasonsOf(read.table);
+  if (escapeReasons.length > 0) {
+    return { reason: escapeReasonOf(escapeReasons[0]) };
+  }
   return { candidate: { statement, index, read } };
 }
 
