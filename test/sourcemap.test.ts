@@ -143,6 +143,47 @@ test("sourcemap: 非連続localの合成代入左辺が元の宣言位置と名�
   });
 });
 
+test("sourcemap: table readを統合したlocalの変数とRHSが各元宣言へマップされる", async () => {
+  const { code, map } = runMinifier({
+    label: "sourcemap: effect-aware table read merge",
+    fixture: "effect-aware-table",
+    mode: {
+      moduleLikeLua: false,
+      runtimeProfile: "stormworks",
+      effectAwareLocalHoist: false,
+    },
+  });
+
+  await SourceMapConsumer.with(map, null, (consumer) => {
+    const secondVariable = consumer.generatedPositionFor({
+      source: "main.lua",
+      line: 4,
+      column: 6,
+    });
+    assert.ok(
+      secondVariable.line !== null && secondVariable.column !== null,
+      "second local variable must have a generated mapping",
+    );
+    const variableOrigin = consumer.originalPositionFor({
+      line: secondVariable.line,
+      column: secondVariable.column,
+    });
+    assert.equal(variableOrigin.source, "main.lua");
+    assert.equal(variableOrigin.line, 4);
+    assert.equal(variableOrigin.column, 6);
+    assert.equal(variableOrigin.name, "second");
+
+    const secondRead = locateInGenerated(code, ".y");
+    const readOrigin = consumer.originalPositionFor({
+      line: secondRead.line,
+      column: secondRead.column + 1,
+    });
+    assert.equal(readOrigin.source, "main.lua");
+    assert.equal(readOrigin.line, 4);
+    assert.equal(readOrigin.name, "y");
+  });
+});
+
 test("sourcemap: ドット区切りモジュール名のsourcesはOSに依存せず'/'区切りになる", () => {
   const { map } = runMinifier({
     label:
