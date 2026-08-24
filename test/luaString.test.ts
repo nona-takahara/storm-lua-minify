@@ -1,6 +1,10 @@
 import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
-import { decodeLuaStringLiteral, luaByteStringKey } from "../src/luaString";
+import {
+  decodeLuaStringLiteral,
+  encodeLuaByteString,
+  luaByteStringKey,
+} from "../src/luaString";
 
 function decode(raw: string): number[] | undefined {
   const chunk = Parser.parse(`return ${raw}`, { luaVersion: "5.3" });
@@ -41,5 +45,29 @@ describe("Lua byte string decoder", () => {
     }
     const decoded = decodeLuaStringLiteral(literal.arguments[0]);
     expect(decoded.ok && luaByteStringKey(decoded.value)).toBe("78");
+  });
+
+  test.each([
+    { bytes: [] },
+    { bytes: [0, 10, 13, 255] },
+    { bytes: [0x22, 0x27, 0x5c] },
+    { bytes: [0x61, 0xe3, 0x81, 0x82] },
+  ])("printer representation round-trips byte sequence $bytes", ({ bytes }) => {
+    const raw = encodeLuaByteString({ bytes: Uint8Array.from(bytes) });
+    expect(decode(raw)).toEqual(bytes);
+  });
+
+  test.each([
+    ['"\\xg0"', "invalid-escape"],
+    ['"\\256"', "out-of-range-byte"],
+    ['"\\u{110000}"', "invalid-code-point"],
+    ['"unterminated', "invalid-delimiter"],
+  ] as const)("rejects malformed literal %s", (raw, reason) => {
+    const result = decodeLuaStringLiteral({
+      type: "StringLiteral",
+      raw,
+      value: "",
+    });
+    expect(result).toEqual({ ok: false, reason });
   });
 });

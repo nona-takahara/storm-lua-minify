@@ -14,6 +14,11 @@ import {
 } from "../src/constantFold";
 import { SourceMetadata } from "../src/sourceMetadata";
 import { Minifier } from "../src/minifier";
+import {
+  decodeLuaStringLiteral,
+  luaByteStringKey,
+  luaByteStringOfText,
+} from "../src/luaString";
 
 const PARSE_SETTINGS = {
   luaVersion: "5.3" as const,
@@ -110,7 +115,10 @@ function assertRoundTrips(expr: Parser.Expression): ConstantValue {
   } else if (original.kind === "float" && roundTripped.kind === "float") {
     assert.equal(roundTripped.value, original.value);
   } else if (original.kind === "string" && roundTripped.kind === "string") {
-    assert.equal(roundTripped.value, original.value);
+    assert.equal(
+      luaByteStringKey(roundTripped.value),
+      luaByteStringKey(original.value),
+    );
   } else if (original.kind === "boolean" && roundTripped.kind === "boolean") {
     assert.equal(roundTripped.value, original.value);
   }
@@ -136,7 +144,12 @@ function assertBoolean(expr: Parser.Expression, expected: boolean): void {
 
 function assertStringValue(expr: Parser.Expression, expected: string): void {
   assert.equal(expr.type, "StringLiteral");
-  assert.equal(expr.value, expected);
+  const decoded = decodeLuaStringLiteral(expr);
+  assert.ok(decoded.ok);
+  assert.equal(
+    luaByteStringKey(decoded.value),
+    luaByteStringKey(luaByteStringOfText(expected)),
+  );
 }
 
 // ============================================================
@@ -291,9 +304,9 @@ test('#"abc" folds to the byte length 3', () => {
   assertInt(foldExpr('#"abc"'), 3n);
 });
 
-test("the length of a long-bracket string is not folded", () => {
-  // 長括弧形式は定数として認めていないので、バイト長も求めない。
-  assert.equal(foldExpr("#[[abc]]").type, "UnaryExpression");
+test("long-bracket and Unicode string lengths use Lua bytes", () => {
+  assertInt(foldExpr("#[[abc]]"), 3n);
+  assertInt(foldExpr('#"あ"'), 3n);
 });
 
 test("the length of a table constructor is not folded", () => {
@@ -320,16 +333,17 @@ test('"abc" >= "abd" folds to false', () => {
   assertBoolean(foldExpr('"abc" >= "abd"'), false);
 });
 
-test("long-bracket string comparison is not folded", () => {
-  assert.equal(foldExpr("[[a]] < [[b]]").type, "BinaryExpression");
+test("long-bracket and escaped strings compare by Lua bytes", () => {
+  assertBoolean(foldExpr("[[a]] < [[b]]"), true);
+  assertBoolean(foldExpr('"\\x61" == "a"'), true);
 });
 
-test("long-bracket string concatenation is not folded", () => {
-  assert.equal(foldExpr("[[abc]]..[[def]]").type, "BinaryExpression");
+test("long-bracket string concatenation is folded through shared bytes", () => {
+  assertStringValue(foldExpr("[[abc]]..[[def]]"), "abcdef");
 });
 
-test("concatenation of a string containing an escape is not folded", () => {
-  assert.equal(foldExpr('"a\\nb".."c"').type, "BinaryExpression");
+test("concatenation preserves escaped byte values", () => {
+  assertStringValue(foldExpr('"a\\nb".."c"'), "a\nbc");
 });
 
 test("(1+2).x folds to a literal base, and the printer keeps the parentheses", () => {

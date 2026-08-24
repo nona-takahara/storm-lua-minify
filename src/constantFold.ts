@@ -13,6 +13,14 @@
 import Parser from "luaparse";
 import { ResolveResult, Symbol } from "./resolver";
 import { SourceMetadata } from "./sourceMetadata";
+import {
+  compareLuaByteStrings,
+  concatLuaByteStrings,
+  decodeLuaStringLiteral,
+  encodeLuaByteString,
+  LuaByteString,
+  luaByteStringKey,
+} from "./luaString";
 
 // ============================================================
 // 定数値の内部表現
@@ -28,7 +36,7 @@ type ConstantValue =
   | { kind: "boolean"; value: boolean }
   | { kind: "int"; value: bigint }
   | { kind: "float"; value: number }
-  | { kind: "string"; value: string; raw: string };
+  | { kind: "string"; value: LuaByteString; raw: string };
 
 const INT64_MIN = -(2n ** 63n);
 
@@ -77,28 +85,10 @@ function numericConstantOf(
 function stringConstantOf(
   node: Parser.StringLiteral,
 ): ConstantValue | undefined {
-  const raw = node.raw;
-  if (raw.length < 2) return undefined;
-  const quote = raw.charAt(0);
-  if (
-    (quote !== '"' && quote !== "'") ||
-    raw.charAt(raw.length - 1) !== quote
-  ) {
-    // 長括弧([[...]])形式などは対象外
-    return undefined;
-  }
-  if (raw.includes("\\")) return undefined;
-  const inner = raw.slice(1, -1);
-  for (let i = 0; i < inner.length; i++) {
-    const code = inner.charCodeAt(i);
-    if (code < 0x20 || code > 0x7e) return undefined;
-  }
-  // node.valueは使わない: このプロジェクトのluaparse設定はencodingModeを指定して
-  // おらず、既定値"none"はdiscardStrings:trueのためStringLiteral.valueは常にnull
-  // になる（他のファイルが文字列の判定・比較に一貫してrawしか使わないのはこのため）。
-  // エスケープの無い印字可能ASCIIだけを
-  // 対象にしているので、raw内側の文字列(inner)がそのままLua側の値と一致する。
-  return { kind: "string", value: inner, raw };
+  const decoded = decodeLuaStringLiteral(node);
+  return decoded.ok
+    ? { kind: "string", value: decoded.value, raw: node.raw }
+    : undefined;
 }
 
 // 式が「今すぐ書き出せる定数」かどうかを判定する。畳み込み・伝搬どちらの判断でも
@@ -233,7 +223,9 @@ function literalNodeFor(
     case "string": {
       const node: Parser.StringLiteral = {
         type: "StringLiteral",
-        value: value.value,
+        // Printerと再解析はrawを使う。luaparse型ではstring必須だが、既定の
+        // discardStrings環境では意味値を保持しないため空文字を入れる。
+        value: "",
         raw: value.raw,
       };
       withOriginPosition(node, origin);
@@ -399,11 +391,9 @@ function evalOrderComparison(
   l: ConstantValue,
   r: ConstantValue,
 ): ConstantValue | undefined {
-  // 文字列同士の比較は、Luaでは1バイトずつの大小で決まる。定数として認めた
-  // 文字列はエスケープを含まない印字可能ASCIIだけなので、JavaScriptの文字列
-  // 比較と同じ順序になる。
   if (l.kind === "string" && r.kind === "string") {
-    return { kind: "boolean", value: compareValues(op, l.value, r.value) };
+    const comparison = compareLuaByteStrings(l.value, r.value);
+    return { kind: "boolean", value: compareValues(op, comparison, 0) };
   }
   // 数値と文字列の比較はLuaでは実行時エラーなので、畳み込んでエラーを消さない。
   if (!isNumeric(l) || !isNumeric(r)) return undefined;
@@ -449,7 +439,11 @@ function valuesEqual(l: ConstantValue, r: ConstantValue): boolean | undefined {
     return l.kind === "boolean" && r.kind === "boolean" && l.value === r.value;
   }
   if (l.kind === "string" || r.kind === "string") {
-    return l.kind === "string" && r.kind === "string" && l.value === r.value;
+    return (
+      l.kind === "string" &&
+      r.kind === "string" &&
+      luaByteStringKey(l.value) === luaByteStringKey(r.value)
+    );
   }
   if (l.kind === "int" && r.kind === "int") return l.value === r.value;
   if (l.kind === "float" && r.kind === "float") return l.value === r.value;
@@ -464,12 +458,12 @@ function evalConcat(
 ): ConstantValue | undefined {
   // 両辺が文字列定数のときだけ。数値との連結は対象外（1と1.0で表記が変わるため）。
   if (l.kind !== "string" || r.kind !== "string") return undefined;
-  const combined = l.value + r.value;
-  const useDouble = !combined.includes('"');
-  const useSingle = !combined.includes("'");
-  if (!useDouble && !useSingle) return undefined; // どちらの引用符も含むなら畳み込まない
-  const quote = useDouble ? '"' : "'";
-  return { kind: "string", value: combined, raw: quote + combined + quote };
+  const combined = concatLuaByteStrings(l.value, r.value);
+  return {
+    kind: "string",
+    value: combined,
+    raw: encodeLuaByteString(combined),
+  };
 }
 
 function isTruthy(v: ConstantValue): boolean {
@@ -594,12 +588,13 @@ function tryFoldUnary(
       expr,
     );
   }
-  // 残るのは`#`。Luaの`#`は文字列のバイト長を返す。定数として認めた文字列は
-  // エスケープを含まない印字可能ASCIIだけなので、1文字が1バイトに対応し、
-  // そのまま長さになる。テーブルへの`#`は要素数の解釈が実行時に決まるので
-  // 対象外（そもそもテーブルは定数として認めていない）。
+  // 残るのは`#`。Lua stringは共有decoderが返すbyte列なので、JavaScriptの
+  // code unit数ではなくbyte数を使う。tableへの`#`は実行時に決まるため対象外。
   if (v.kind !== "string") return undefined;
-  return literalNodeFor({ kind: "int", value: BigInt(v.value.length) }, expr);
+  return literalNodeFor(
+    { kind: "int", value: BigInt(v.value.bytes.length) },
+    expr,
+  );
 }
 
 // ============================================================
@@ -684,7 +679,7 @@ function printedLengthOf(value: ConstantValue): number {
       return (value.value < 0 ? 1 : 0) + raw.length;
     }
     case "string":
-      return value.raw.length; // 引用符込み
+      return new TextEncoder().encode(value.raw).length;
   }
 }
 

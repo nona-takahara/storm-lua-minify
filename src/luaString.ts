@@ -123,6 +123,51 @@ export function luaByteStringKey(value: LuaByteString): string {
   ).join("");
 }
 
+export function compareLuaByteStrings(
+  left: LuaByteString,
+  right: LuaByteString,
+): number {
+  const length = Math.min(left.bytes.length, right.bytes.length);
+  for (let index = 0; index < length; index++) {
+    if (left.bytes[index] !== right.bytes[index]) {
+      return left.bytes[index] - right.bytes[index];
+    }
+  }
+  return left.bytes.length - right.bytes.length;
+}
+
+export function concatLuaByteStrings(
+  left: LuaByteString,
+  right: LuaByteString,
+): LuaByteString {
+  const bytes = new Uint8Array(left.bytes.length + right.bytes.length);
+  bytes.set(left.bytes);
+  bytes.set(right.bytes, left.bytes.length);
+  return { bytes };
+}
+
+/** 任意のLua byte列を、再decode可能な決定論的quoted literalへ戻す。 */
+export function encodeLuaByteString(value: LuaByteString): string {
+  const encodeWith = (quote: number): string => {
+    let raw = String.fromCharCode(quote);
+    value.bytes.forEach((byte) => {
+      if (byte === quote || byte === 0x5c) {
+        raw += `\\${String.fromCharCode(byte)}`;
+      } else if (byte >= 0x20 && byte <= 0x7e) {
+        raw += String.fromCharCode(byte);
+      } else {
+        raw += `\\x${byte.toString(16).padStart(2, "0")}`;
+      }
+    });
+    return raw + String.fromCharCode(quote);
+  };
+  const doubleQuoted = encodeWith(0x22);
+  const singleQuoted = encodeWith(0x27);
+  return singleQuoted.length < doubleQuoted.length
+    ? singleQuoted
+    : doubleQuoted;
+}
+
 const SIMPLE_ESCAPES: Readonly<Partial<Record<string, number>>> = {
   a: 0x07,
   b: 0x08,
