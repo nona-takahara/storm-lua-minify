@@ -1,2 +1,3 @@
-local a,b,c,d=print,1,2,3
+local
+a,b,c,d=print,1,2,3
 a(b|c&d)a((b|c)&d)a(b&c|d)a(b~c&d)a(b<<c+d)a((b<<c)+d)a(b//c//d)a(~b&c)

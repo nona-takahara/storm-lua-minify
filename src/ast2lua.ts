@@ -9,6 +9,7 @@ import { staticStringArgument } from "./linker";
 import { KeywordLocator } from "./keywordLocator";
 import { originalNameOf } from "./transform";
 import { isPreservedComment } from "./sourceMetadata";
+import { GeneratedStatement } from "./generatedAst";
 
 export type Chunk = Parser.Chunk & {
   globals?: (Parser.Base<"Identifer"> & {
@@ -225,10 +226,22 @@ interface ExpressionOptoions {
   parent?: string | undefined;
 }
 
+const requiredWhitespaceByNode = new WeakMap<SourceNode, " " | "\n">();
+
+function whitespaceOf(...values: (string | SourceNode)[]): " " | "\n" {
+  for (const value of values) {
+    if (value instanceof SourceNode) {
+      const whitespace = requiredWhitespaceByNode.get(value);
+      if (whitespace) return whitespace;
+    }
+  }
+  return "\n";
+}
+
 function addWithSeparator(
   val: SourceNode,
   adding: (string | SourceNode)[] | SourceNode | string,
-  separator = " ",
+  separator = whitespaceOf(val),
 ) {
   if (
     isNeedSeparator(
@@ -247,7 +260,7 @@ function addWithSeparator(
 function prependWithSeparator(
   val: SourceNode,
   prepending: (string | SourceNode)[] | SourceNode | string,
-  separator = " ",
+  separator = whitespaceOf(val),
 ) {
   if (
     isNeedSeparator(
@@ -266,7 +279,7 @@ function prependWithSeparator(
 function insertSeparator(
   a: string | SourceNode,
   b: string | SourceNode,
-  separator = " ",
+  separator = whitespaceOf(a, b),
 ) {
   return isNeedSeparator(a.toString(), b.toString()) ? separator : undefined;
 }
@@ -277,6 +290,7 @@ export class MinifyFile {
   private ast: Chunk;
   private minifier: Minifier;
   private mode: MinifierMode;
+  private requiredWhitespace: " " | "\n";
 
   constructor(
     fileName: string,
@@ -290,6 +304,12 @@ export class MinifyFile {
     this.ast = ast;
     this.minifier = minifier;
     this.mode = mode;
+    this.requiredWhitespace = mode.requiredWhitespace ?? "\n";
+  }
+
+  /** 合成文同士の境界も、通常の文リストと同じ区切り判定で出力する。 */
+  printGeneratedStatements(statements: GeneratedStatement[]): SourceNode {
+    return this.formatStatementList(statements);
   }
 
   parse() {
@@ -352,13 +372,15 @@ export class MinifyFile {
     const column = node?.loc?.start.column;
     // this.fileNameは常にこのMinifyFileインスタンスが担当するモジュール自身の
     // ファイル名（Linkパスで解決済み）なので、ここで出力するノードの由来ファイルとして正しい。
-    return new SourceNode(
+    const sourceNode = new SourceNode(
       line == undefined ? null : line,
       column == undefined ? null : column,
       this.fileName,
       chuncks,
       name,
     );
+    requiredWhitespaceByNode.set(sourceNode, this.requiredWhitespace);
+    return sourceNode;
   }
 
   private _keywordLocator: KeywordLocator | undefined;
@@ -391,6 +413,9 @@ export class MinifyFile {
    * （入れ子の`if...then`等）を誤って拾うことはない。
    */
   private keywordAfter(anchor: Parser.Node, value: string): SourceNode {
+    if (!anchor.loc?.end) {
+      return this.sourceNodeHelper(undefined, value);
+    }
     return this.keywordFrom(anchor.loc?.end, value);
   }
 
@@ -423,13 +448,14 @@ export class MinifyFile {
     );
   }
 
-  private formatStatementList(body: Parser.Statement[] | Parser.Statement) {
+  private formatStatementList(body: GeneratedStatement[] | GeneratedStatement) {
     const result = this.sourceNodeHelper(undefined, []);
     const metadata = this.minifier.getSourceMetadata(this.moduleName);
     wrapArray(body).forEach((statement) => {
       const statementNode = this.sourceNodeHelper(undefined, []);
-      metadata
-        .beforeOf(statement)
+      const sourceStatement =
+        statement.type === "ModuleSplice" ? undefined : statement;
+      (sourceStatement ? metadata.beforeOf(sourceStatement) : [])
         .filter(isPreservedComment)
         .forEach((comment) => {
           statementNode.add([
@@ -438,12 +464,11 @@ export class MinifyFile {
           ]);
         });
       statementNode.add(this.formatStatement(statement));
-      metadata
-        .trailingOf(statement)
+      (sourceStatement ? metadata.trailingOf(sourceStatement) : [])
         .filter(isPreservedComment)
         .forEach((comment) => {
           statementNode.add([
-            " ",
+            this.requiredWhitespace,
             this.sourceNodeHelper(comment, comment.raw),
             "\n",
           ]);
@@ -493,7 +518,10 @@ export class MinifyFile {
 
     const result = this.sourceNodeHelper(statement, []);
     addWithSeparator(result, spliced.statements);
-    addWithSeparator(result, isLocal ? ["local ", targetNode] : [targetNode]);
+    if (isLocal) {
+      addWithSeparator(result, "local");
+    }
+    addWithSeparator(result, targetNode);
     addWithSeparator(result, "=");
     addWithSeparator(result, spliced.finalExpression);
     return result;
@@ -529,7 +557,10 @@ export class MinifyFile {
     return this.minifier.printModuleInline(moduleRef.moduleName);
   }
 
-  private formatStatement(statement: Parser.Statement): SourceNode {
+  private formatStatement(statement: GeneratedStatement): SourceNode {
+    if (statement.type === "ModuleSplice") {
+      return this.minifier.printModuleInline(statement.moduleName);
+    }
     if (
       statement.type == "AssignmentStatement" ||
       statement.type == "LocalStatement"
@@ -562,10 +593,11 @@ export class MinifyFile {
       const variables = statement.variables
         .map((variable) => [this.formatExpression(variable), ","])
         .flat();
-      const result = this.sourceNodeHelper(statement, [
-        "local ",
+      const result = this.sourceNodeHelper(statement, "local");
+      addWithSeparator(
+        result,
         this.sourceNodeHelper(undefined, variables.slice(0, -1)),
-      ]);
+      );
 
       if (statement.init.length) {
         const inits = statement.init
@@ -651,8 +683,11 @@ export class MinifyFile {
     } else if (statement.type == "FunctionDeclaration") {
       const result = this.sourceNodeHelper(
         statement,
-        (statement.isLocal ? "local " : "") + "function ",
+        statement.isLocal ? "local" : "function",
       );
+      if (statement.isLocal) {
+        addWithSeparator(result, "function");
+      }
       if (statement.identifier) {
         addWithSeparator(result, this.formatExpression(statement.identifier));
       }
@@ -728,10 +763,9 @@ export class MinifyFile {
       ]);
     } else if (statement.type == "GotoStatement") {
       // The identifier names in a `GotoStatement` can safely be renamed
-      return this.sourceNodeHelper(statement, [
-        "goto ",
-        this.generateIdentifier(statement.label),
-      ]);
+      const result = this.sourceNodeHelper(statement, "goto");
+      addWithSeparator(result, this.generateIdentifier(statement.label));
+      return result;
     } else {
       throw TypeError(
         "Unknown statement type: `" + JSON.stringify(statement) + "`",
@@ -1053,11 +1087,11 @@ export class MinifyFile {
       // （挙動互換性のため、ホイストした共有ローカルへの参照にはしない）。
       // 式の位置に置けるようにIIFEで包む。
       const body = this.minifier.printModuleInline(ref.moduleName);
-      return this.sourceNodeHelper(expression, [
-        "(function() ",
-        body,
-        " end)()",
-      ]);
+      const result = this.sourceNodeHelper(expression, "(function()");
+      addWithSeparator(result, body);
+      addWithSeparator(result, "end");
+      result.add(")()");
+      return result;
     }
 
     // -mモードのrequireはそのまま呼び出しとして出力し、実行時のrequire関数に委ねる

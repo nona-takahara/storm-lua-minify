@@ -11,9 +11,13 @@ import { mergeLocalDeclarations, insertGlobalAliases } from "./transform";
 import { SourceMetadata } from "./sourceMetadata";
 import { removeUnusedLocals } from "./removeUnused";
 import { foldConstants } from "./constantFold";
+import { buildRequireWrapperAst, GeneratedStatement } from "./generatedAst";
 
 export interface MinifierMode {
   moduleLikeLua: boolean;
+  // 字句の結合を防ぐために必要な1バイトの空白。省略時は、出力サイズを
+  // 増やさずStormworksの行単位診断を改善できるLFを使う。
+  requiredWhitespace?: " " | "\n";
   // 識別子の短縮(リネーム)を行うかどうか。デバッグ用途でfalseにできる。省略時はtrue扱い。
   rename?: boolean;
   // 内部でのみ使用するグローバル識別子の短縮（#8a）を行うかどうか。省略時はfalse扱い。
@@ -93,15 +97,9 @@ export class Minifier {
     this.transformAll();
     this.renameAll();
 
-    const parts: (SourceNode | string)[] = [];
-
-    if (this.mode.moduleLikeLua) {
-      parts.push(this.buildRequireWrapper());
-    }
-
-    parts.push(this.printModule(this.entryModule));
-
-    const result = new SourceNode(null, null, null, parts);
+    const result = this.mode.moduleLikeLua
+      ? this.printModuleWithRequireWrapper()
+      : this.printModule(this.entryModule);
 
     this.moduleSourceText.forEach((v, k) => {
       const fileName = this.moduleNameAndFileName.get(k);
@@ -441,26 +439,28 @@ export class Minifier {
     return targets;
   }
 
-  private buildRequireWrapper(): SourceNode {
+  private printModuleWithRequireWrapper(): SourceNode {
     const targets = this.collectRequireTargets();
-    const parts: (SourceNode | string)[] = [
-      "function require(m,r)package=package or{loaded={}};if package.loaded[m]then return package.loaded[m]end\n",
-    ];
-    this.linkOrder.forEach((moduleName) => {
-      if (moduleName === this.entryModule || !targets.has(moduleName)) {
-        return;
-      }
-      parts.push(
-        'if m=="',
-        moduleName,
-        '"then r=(function() ',
-        this.printModule(moduleName),
-        " end)()end\n",
-      );
-    });
-    parts.push(
-      "package.loaded[m]=package.loaded[m]or r or true;return package.loaded[m]end\n",
+    const moduleNames = this.linkOrder.filter(
+      (moduleName) =>
+        moduleName !== this.entryModule && targets.has(moduleName),
     );
-    return new SourceNode(null, null, null, parts);
+    const wrapperAst = buildRequireWrapperAst(moduleNames);
+    const entryAst = this.moduleAST.get(this.entryModule);
+    const entryFileName = this.moduleNameAndFileName.get(this.entryModule);
+    if (!entryAst || !entryFileName) {
+      throw new Error(this.entryModule + " is not found");
+    }
+    const statements: GeneratedStatement[] = [
+      wrapperAst,
+      { type: "ModuleSplice", moduleName: this.entryModule },
+    ];
+    return new MinifyFile(
+      entryFileName,
+      this.entryModule,
+      entryAst,
+      this,
+      this.mode,
+    ).printGeneratedStatements(statements);
   }
 }

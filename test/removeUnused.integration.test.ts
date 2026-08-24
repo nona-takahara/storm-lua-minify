@@ -13,9 +13,9 @@ test("stage 4 composes with require splicing, comments, rename, and local mergin
 
   assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
   assert.match(code, /--# before effects\ndependencyEffect\(\)/);
-  assert.match(code, /sideEffect\(\) --# after effects/);
+  assert.match(code, /sideEffect\(\)\n--# after effects/);
   assert.doesNotMatch(code, /removableName|removable/);
-  assert.match(code, /local [a-zA-Z_]=produce\(\)/);
+  assert.match(code, /local\n[a-zA-Z_]=produce\(\)/);
 
   const generatedIndex = code.indexOf("sideEffect");
   assert.notEqual(generatedIndex, -1);
@@ -28,7 +28,7 @@ test("stage 4 composes with require splicing, comments, rename, and local mergin
     assert.equal(original.line, 2);
     assert.equal(original.name, "sideEffect");
 
-    const retainedIndex = code.indexOf("local ") + "local ".length;
+    const retainedIndex = code.indexOf("=produce") - 1;
     const retained = consumer.originalPositionFor({
       line: code.slice(0, retainedIndex).split("\n").length,
       column: retainedIndex - (code.lastIndexOf("\n", retainedIndex) + 1),
@@ -53,8 +53,8 @@ test("removeUnused false disables all stage 4 transformations", () => {
   });
   assert.match(
     code,
-    /local unusedModule,unusedResult=require\("dep"\),sideEffect\(\)/,
+    /local\nunusedModule,unusedResult=require\("dep"\),sideEffect\(\)/,
   );
-  assert.match(code, /local removableName=1/);
-  assert.match(code, /local retained,removable=produce\(\),2/);
+  assert.match(code, /local\nremovableName=1/);
+  assert.match(code, /local\nretained,removable=produce\(\),2/);
 });

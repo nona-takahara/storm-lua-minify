@@ -57,16 +57,16 @@ test("ビット演算子・整数除算の優先順序が壊れない (#27)", ()
 // オペランドとして現れるときは丸括弧が要る。括弧が落ちると`0.5 % (2 .. 16)`が
 // `0.5%2 ..16`になり、値が0.5から"0.516"へエラーにならないまま変わる。
 test("連結を含む式が優先順位の高い演算子のオペランドになるとき括弧が保たれる (#52)", () => {
-  assert.match(minifyExpression("0.5 % (2 .. 16)"), /0\.5%\(2 ?\.\.16\)/);
-  assert.match(minifyExpression("(1 .. 2) + 3"), /\(1 ?\.\.2\)\+3/);
-  assert.match(minifyExpression("-(1 .. 2)"), /-\(1 ?\.\.2\)/);
-  assert.match(minifyExpression("#(1 .. 2)"), /#\(1 ?\.\.2\)/);
+  assert.match(minifyExpression("0.5 % (2 .. 16)"), /0\.5%\(2[ \n]\.\.16\)/);
+  assert.match(minifyExpression("(1 .. 2) + 3"), /\(1[ \n]\.\.2\)\+3/);
+  assert.match(minifyExpression("-(1 .. 2)"), /-\(1[ \n]\.\.2\)/);
+  assert.match(minifyExpression("#(1 .. 2)"), /#\(1[ \n]\.\.2\)/);
 
   // `..`のほうが優先順位の高い相手では、括弧が無いのが正しい。
-  assert.match(minifyExpression("(1 .. 2) < 3"), /1 ?\.\.2<3/);
-  assert.match(minifyExpression("(1 + 2) .. 3"), /1\+2 ?\.\.3/);
+  assert.match(minifyExpression("(1 .. 2) < 3"), /1[ \n]\.\.2<3/);
+  assert.match(minifyExpression("(1 + 2) .. 3"), /1\+2[ \n]\.\.3/);
   // `..`は右結合なので、右側の括弧は落としてよい。
-  assert.match(minifyExpression("1 .. (2 .. 3)"), /1 ?\.\.2 ?\.\.3/);
+  assert.match(minifyExpression("1 .. (2 .. 3)"), /1[ \n]\.\.2[ \n]\.\.3/);
 });
 
 // #52と同じ原因（結合則の決定が丸括弧の判定を素通りしていた）で、右結合の`^`でも
