@@ -19,6 +19,7 @@ describe("optimizer pass orchestrator", () => {
     });
 
     expect(orchestrator.resolved).not.toBe(original);
+    expect(orchestrator.astGeneration).toBe(1);
     expect(orchestrator.resolveGeneration).toBe(1);
     expect(orchestrator.resolved.symbols.map((symbol) => symbol.name)).toEqual([
       "inserted",
@@ -29,6 +30,8 @@ describe("optimizer pass orchestrator", () => {
         name: "insert-local",
         changed: true,
         invalidatesResolve: true,
+        astGenerationBefore: 0,
+        astGenerationAfter: 1,
         resolveGenerationBefore: 0,
         resolveGenerationAfter: 1,
       },
@@ -42,6 +45,7 @@ describe("optimizer pass orchestrator", () => {
     orchestrator.run("inspect", () => UNCHANGED);
 
     expect(orchestrator.resolveGeneration).toBe(0);
+    expect(orchestrator.astGeneration).toBe(0);
     expect(orchestrator.records[0]).toMatchObject({
       changed: false,
       resolveGenerationBefore: 0,
@@ -59,5 +63,42 @@ describe("optimizer pass orchestrator", () => {
         invalidatesResolve: true,
       })),
     ).toThrow(/cannot invalidate Resolve/);
+  });
+
+  test("caches facts within an AST generation and drops them after any change", () => {
+    const chunk = Parser.parse("local value=1", { luaVersion: "5.3" });
+    const orchestrator = new PassOrchestrator(chunk, resolveScopes(chunk));
+    const key = {};
+    const built: number[] = [];
+    const analyze = (
+      _chunk: Parser.Chunk,
+      _resolved: unknown,
+      generation: number,
+    ) => {
+      built.push(generation);
+      return { generation };
+    };
+
+    const first = orchestrator.analysis(key, analyze);
+    expect(orchestrator.analysis(key, analyze)).toBe(first);
+    orchestrator.run("rewrite-without-binding-change", () => ({
+      changed: true,
+      invalidatesResolve: false,
+    }));
+    const second = orchestrator.analysis(key, analyze);
+
+    expect(second).not.toBe(first);
+    expect(built).toEqual([0, 1]);
+    expect(orchestrator.astGeneration).toBe(1);
+    expect(orchestrator.resolveGeneration).toBe(0);
+  });
+
+  test("rejects an analysis built for another AST generation", () => {
+    const chunk = Parser.parse("return 1", { luaVersion: "5.3" });
+    const orchestrator = new PassOrchestrator(chunk, resolveScopes(chunk));
+
+    expect(() => orchestrator.analysis({}, () => ({ generation: 99 }))).toThrow(
+      /stale AST generation/,
+    );
   });
 });

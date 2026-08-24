@@ -6,6 +6,7 @@ import {
   ProgramPoint,
 } from "./controlFlow";
 import { ResolveResult, Symbol } from "./resolver";
+import { OptimizerFacts, ValueSlotFact } from "./optimizerFacts";
 
 export interface Allocation {
   readonly id: number;
@@ -66,8 +67,12 @@ const UNKNOWN_ENTRY: AbstractValue = {
 export function analyzeValueFlow(
   chunk: Parser.Chunk,
   resolved: ResolveResult,
-  version = 0,
+  facts: OptimizerFacts,
+  version = facts.generation,
 ): ValueFlowAnalysis {
+  if (facts.generation !== version) {
+    throw new Error("Value flow requires facts from the same AST generation");
+  }
   const controlFlow = analyzeControlFlow(chunk, version);
   const allocations: Allocation[] = [];
   const definitions: Definition[] = [];
@@ -130,6 +135,18 @@ export function analyzeValueFlow(
     return { kind: "unknown", reason: "unsupported-expression" };
   };
 
+  const abstractSlot = (
+    slot: ValueSlotFact | undefined,
+    point: ProgramPoint,
+    values: ReadonlyMap<Symbol, AbstractValue>,
+  ): AbstractValue => {
+    if (!slot || slot.source.kind === "nil-padding") return { kind: "nil" };
+    if (slot.source.kind === "tail-expansion" && slot.source.offset > 0) {
+      return { kind: "unknown", reason: "multi-value-tail" };
+    }
+    return abstractExpression(slot.source.expression, point, values);
+  };
+
   controlFlow.regions.forEach((region) => {
     const values = new Map<Symbol, AbstractValue>();
     const reaching = new Map<Symbol, Definition>();
@@ -139,23 +156,25 @@ export function analyzeValueFlow(
       const statement = point.statement;
       const writes: { symbol: Symbol; value: AbstractValue }[] = [];
       if (statement.type === "LocalStatement") {
+        const slots = facts.valueSlotsOf(statement);
         statement.variables.forEach((identifier, index) => {
           const symbol = resolved.symbolOf(identifier);
           if (symbol) {
             writes.push({
               symbol,
-              value: abstractExpression(statement.init[index], point, values),
+              value: abstractSlot(slots[index], point, values),
             });
           }
         });
       } else if (statement.type === "AssignmentStatement") {
+        const slots = facts.valueSlotsOf(statement);
         statement.variables.forEach((variable, index) => {
           if (variable.type !== "Identifier") return;
           const symbol = resolved.symbolOf(variable);
           if (symbol) {
             writes.push({
               symbol,
-              value: abstractExpression(statement.init[index], point, values),
+              value: abstractSlot(slots[index], point, values),
             });
           }
         });

@@ -13,6 +13,7 @@ import {
   ConstantValue,
 } from "../src/constantFold";
 import { SourceMetadata } from "../src/sourceMetadata";
+import { analyzeOptimizerFacts } from "../src/optimizerFacts";
 import { Minifier } from "../src/minifier";
 import {
   decodeLuaStringLiteral,
@@ -31,7 +32,14 @@ function fold(code: string): Parser.Chunk {
   const chunk = Parser.parse(code, PARSE_SETTINGS);
   const metadata = new SourceMetadata(chunk, code);
   let resolved = resolveScopes(chunk);
-  while (foldConstants(chunk, resolved, metadata)) {
+  while (
+    foldConstants(
+      chunk,
+      resolved,
+      metadata,
+      analyzeOptimizerFacts(chunk, resolved),
+    )
+  ) {
     resolved = resolveScopes(chunk);
   }
   return chunk;

@@ -1,31 +1,13 @@
-import fs from "fs";
-import os from "os";
-import path from "path";
-import { afterEach, describe, expect, test } from "vitest";
-import { Minifier, MinifierMode } from "../src/minifier";
-
-const temporaryDirectories: string[] = [];
-
-afterEach(() => {
-  temporaryDirectories.splice(0).forEach((directory) => {
-    fs.rmSync(directory, { recursive: true, force: true });
-  });
-});
+import { describe, expect, test } from "vitest";
+import { MinifierMode } from "../src/minifier";
+import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
 
 function minify(source: string, mode: Partial<MinifierMode>): string {
-  const directory = fs.mkdtempSync(
-    path.join(os.tmpdir(), "storm-local-run-planner-test-"),
-  );
-  temporaryDirectories.push(directory);
-  const entry = path.join(directory, "main.lua");
-  fs.writeFileSync(entry, source);
-  return new Minifier(
-    entry,
-    { locations: true, luaVersion: "5.3", ranges: true, scope: true },
+  return minifyTemporaryLuaSource(
+    source,
     { moduleLikeLua: false, requiredWhitespace: " ", ...mode },
-  )
-    .parse()
-    .toStringWithSourceMap({ file: "main.min.lua" }).code;
+    { prefix: "storm-local-run-planner-test-" },
+  ).code;
 }
 
 describe("Issue #42 local-run planner profiles", () => {

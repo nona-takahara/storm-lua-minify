@@ -1,12 +1,12 @@
 import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
 import { resolveScopes } from "../src/resolver";
-import { analyzeValueFlow } from "../src/valueFlow";
+import { analyzeOptimizer } from "../src/optimizerAnalysis";
 
 function analyze(source: string) {
   const chunk = Parser.parse(source, { luaVersion: "5.3" });
   const resolved = resolveScopes(chunk);
-  return { chunk, resolved, flow: analyzeValueFlow(chunk, resolved) };
+  return { chunk, resolved, flow: analyzeOptimizer(chunk, resolved).valueFlow };
 }
 
 describe("linear allocation value flow", () => {
@@ -62,5 +62,34 @@ describe("linear allocation value flow", () => {
     const { flow } = analyze("local a={} local b={} a=b");
     expect(flow.allocations.map((allocation) => allocation.id)).toEqual([0, 1]);
     expect(flow.allocations[0].origin).not.toBe(flow.allocations[1].origin);
+  });
+
+  test("uses shared Lua value adjustment facts for nil padding", () => {
+    const { chunk, resolved, flow } = analyze(
+      "local first,missing={} local useMissing=missing",
+    );
+    const declaration = chunk.body[0] as Parser.LocalStatement;
+    const use = chunk.body[1] as Parser.LocalStatement;
+    const missing = resolved.symbolOf(declaration.variables[1]);
+    const point = flow.controlFlow.pointOf(use);
+    if (!missing || !point) throw new Error("missing facts");
+
+    expect(flow.valueBefore(point, missing)).toEqual({ kind: "nil" });
+  });
+
+  test("keeps an expanded tail unknown instead of assigning one RHS by index", () => {
+    const { chunk, resolved, flow } = analyze(
+      "local first,second=values() local useSecond=second",
+    );
+    const declaration = chunk.body[0] as Parser.LocalStatement;
+    const use = chunk.body[1] as Parser.LocalStatement;
+    const second = resolved.symbolOf(declaration.variables[1]);
+    const point = flow.controlFlow.pointOf(use);
+    if (!second || !point) throw new Error("missing facts");
+
+    expect(flow.valueBefore(point, second)).toEqual({
+      kind: "unknown",
+      reason: "multi-value-tail",
+    });
   });
 });

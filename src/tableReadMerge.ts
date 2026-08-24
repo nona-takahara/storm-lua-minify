@@ -1,5 +1,4 @@
 import Parser from "luaparse";
-import { AstWalkVisitor, walkStatement } from "./astWalk";
 import { copyNodeOrigin } from "./generatedNode";
 import { SourceMetadata } from "./sourceMetadata";
 import { TransformResult } from "./optimizerPass";
@@ -170,6 +169,7 @@ export function planTableReadMerges(
         body,
         run[0]?.index ?? index,
         candidate,
+        tableEffects,
       );
       const stability = tableEffects.stabilityBetween(
         candidate.read.table,
@@ -335,21 +335,26 @@ function shadowsInterveningReference(
   body: Parser.Statement[],
   start: number,
   candidate: Candidate,
+  analysis: TableEffectAnalysis,
 ): boolean {
   const name = candidate.statement.variables[0].name;
   for (let index = start; index <= candidate.index; index++) {
-    const names: string[] = [];
-    const visitor: AstWalkVisitor = {
-      onIdentifierReference: (identifier) => {
-        names.push(identifier.name);
-      },
-      onBlock: (nested) => {
-        nested.forEach((statement) => {
-          walkStatement(statement, visitor);
-        });
-      },
-    };
-    walkStatement(body[index], visitor);
+    const names = analysis.facts
+      .operationsWithin(body[index])
+      .filter(
+        (operation) => operation.kind === "read" || operation.kind === "write",
+      )
+      .map((operation) => {
+        if (!("location" in operation)) return undefined;
+        if (operation.location.kind === "global") {
+          return operation.location.binding.name;
+        }
+        return operation.location.kind === "local" ||
+          operation.location.kind === "parameter" ||
+          operation.location.kind === "upvalue"
+          ? operation.location.symbol.name
+          : undefined;
+      });
     if (names.includes(name)) return true;
   }
   return false;

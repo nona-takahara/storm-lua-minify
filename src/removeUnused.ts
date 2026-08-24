@@ -1,6 +1,7 @@
 import Parser from "luaparse";
 import { ResolveResult } from "./resolver";
 import { SourceMetadata } from "./sourceMetadata";
+import { OptimizerFacts } from "./optimizerFacts";
 
 function rangeOf(node: object): [number, number] | undefined {
   return (node as { range?: [number, number] }).range;
@@ -19,34 +20,6 @@ function nestedBodies(statement: Parser.Statement): Parser.Statement[][] {
       return statement.clauses.map((clause) => clause.body);
     default:
       return [];
-  }
-}
-
-/**
- * 初期値ごと捨ててよい式か。基準は「評価しても何も起きないこと」で、値が
- * その場で決まっていて、実行時のエラーもメタメソッドの呼び出しも起こさない
- * 式だけが当たる。
- *
- * 負の数値定数は、Luaの構文では数値リテラルではなく単項マイナスの式になる。
- * `-5` と `5` は同じだけ何も起こさないので、同じ扱いにする。単項マイナスを
- * 数値リテラル以外へ適用した形（`-"abc"` など）は実行時エラーになりうるので
- * 含めない。エラーを消してはならない。
- */
-function isDiscardableInitializer(expression: Parser.Expression): boolean {
-  switch (expression.type) {
-    case "NilLiteral":
-    case "BooleanLiteral":
-    case "NumericLiteral":
-    case "StringLiteral":
-    case "FunctionDeclaration":
-      return true;
-    case "UnaryExpression":
-      return (
-        expression.operator === "-" &&
-        expression.argument.type === "NumericLiteral"
-      );
-    default:
-      return false;
   }
 }
 
@@ -95,11 +68,12 @@ function removeFromBlock(
   body: Parser.Statement[],
   resolved: ResolveResult,
   metadata: SourceMetadata,
+  facts: OptimizerFacts,
 ): boolean {
   let changed = false;
   body.forEach((statement) => {
     nestedBodies(statement).forEach((nested) => {
-      changed = removeFromBlock(nested, resolved, metadata) || changed;
+      changed = removeFromBlock(nested, resolved, metadata, facts) || changed;
     });
   });
 
@@ -130,7 +104,8 @@ function removeFromBlock(
       if (
         statement.init.every(
           (expression) =>
-            isDiscardableInitializer(expression) || isStatementCall(expression),
+            facts.discardabilityOf(expression).discardable ||
+            isStatementCall(expression),
         )
       ) {
         const calls = statement.init.filter(isStatementCall).map(callStatement);
@@ -155,7 +130,8 @@ function removeFromBlock(
       const retainedIndexes = variables
         .map((_, index) => index)
         .filter(
-          (index) => !(unused[index] && isDiscardableInitializer(init[index])),
+          (index) =>
+            !(unused[index] && facts.discardabilityOf(init[index]).discardable),
         );
       variables = retainedIndexes.map((index) => variables[index]);
       init = retainedIndexes.map((index) => init[index]);
@@ -211,6 +187,7 @@ export function removeUnusedLocals(
   chunk: Parser.Chunk,
   resolved: ResolveResult,
   metadata: SourceMetadata,
+  facts: OptimizerFacts,
 ): boolean {
-  return removeFromBlock(chunk.body, resolved, metadata);
+  return removeFromBlock(chunk.body, resolved, metadata, facts);
 }

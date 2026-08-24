@@ -12,6 +12,7 @@
 // Luaの結果と一致する。
 import Parser from "luaparse";
 import { ResolveResult, Symbol } from "./resolver";
+import { OptimizerFacts } from "./optimizerFacts";
 import { SourceMetadata } from "./sourceMetadata";
 import {
   compareLuaByteStrings,
@@ -617,46 +618,20 @@ function childBlocksOf(statement: Parser.Statement): Parser.Statement[][] {
   }
 }
 
-// シンボルが（AssignmentStatementの左辺、または非local形の`function name() end`
-// による代入で）どこかで再代入されているかを走査する。
-//
-// resolver.SymbolのreferencesはAssignmentStatementの左辺に現れた識別子も同じ配列
-// に積む（読みと書きを区別しない）ため、参照数だけでは再代入を検出できない。
-// AssignmentStatement.variablesを自分で走査して判定する。
-// これを落とすと`local x=5 x=7`が`5=7`という壊れた出力になる。
-function collectReassignedSymbols(
-  body: Parser.Statement[],
-  resolved: ResolveResult,
-): Set<Symbol> {
+// 共通operationのwriteから再代入を求める。Symbol.referencesはread/writeを区別しない
+// ため参照数では代用できない。これを落とすと`local x=5 x=7`が`5=7`になる。
+function collectReassignedSymbols(facts: OptimizerFacts): Set<Symbol> {
   const out = new Set<Symbol>();
-
-  function note(id: Parser.Identifier): void {
-    const symbol = resolved.symbolOf(id);
-    if (symbol) out.add(symbol);
-  }
-
-  function visit(block: Parser.Statement[]): void {
-    block.forEach((statement) => {
-      childBlocksOf(statement).forEach(visit);
-      if (statement.type === "AssignmentStatement") {
-        statement.variables.forEach((v) => {
-          if (v.type === "Identifier") note(v);
-        });
-      } else if (
-        statement.type === "FunctionDeclaration" &&
-        !statement.isLocal &&
-        statement.identifier?.type === "Identifier"
-      ) {
-        // 非local形の`function f() end`は、既存のローカル/グローバルfへの代入
-        // として働く（resolver.tsのresolveFunctionDeclaration参照）。
-        // AssignmentStatementの左辺だけを見ているとこの形式を見逃し、
-        // 「再代入されているのに定数として配ってしまう」危険があるため含める。
-        note(statement.identifier);
-      }
-    });
-  }
-
-  visit(body);
+  facts.operations.forEach((operation) => {
+    if (
+      operation.kind === "write" &&
+      (operation.location.kind === "local" ||
+        operation.location.kind === "parameter" ||
+        operation.location.kind === "upvalue")
+    ) {
+      out.add(operation.location.symbol);
+    }
+  });
   return out;
 }
 
@@ -971,8 +946,9 @@ export function foldConstants(
   chunk: Parser.Chunk,
   resolved: ResolveResult,
   metadata: SourceMetadata,
+  facts: OptimizerFacts,
 ): boolean {
-  const reassigned = collectReassignedSymbols(chunk.body, resolved);
+  const reassigned = collectReassignedSymbols(facts);
   const propagate = collectPropagationCandidates(
     chunk.body,
     resolved,

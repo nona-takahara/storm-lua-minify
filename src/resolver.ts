@@ -45,6 +45,9 @@ export interface ResolveResult {
   // グローバルが存在してもここではfalseになる（#8a: ノード同一性ベースで
   // 判定するため、名前文字列だけを見た誤リネームを防ぐ）。
   isGlobalReference(identifier: Parser.Identifier): boolean;
+  // 関数本体の字句scope。upvalue/capture解析がAST範囲や宣言名を再推測せず、
+  // Resolveと同じ束縛境界を参照するために公開する。
+  scopeOfFunction(fn: Parser.FunctionDeclaration): Scope | undefined;
 }
 
 interface MutableScope extends Scope {
@@ -60,6 +63,7 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
   const globals = new Map<string, GlobalBinding>();
   const identifierSymbols = new WeakMap<Parser.Identifier, Symbol>();
   const globalReferenceNodes = new WeakSet<Parser.Identifier>();
+  const functionScopes = new WeakMap<Parser.FunctionDeclaration, Scope>();
 
   function createScope(
     kind: Scope["kind"],
@@ -300,6 +304,7 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
       }
     }
     const inner = createScope("function", scope);
+    functionScopes.set(fn, inner);
     fn.parameters.forEach((parameter) => {
       if (parameter.type === "Identifier") {
         declare(inner, parameter, "param");
@@ -354,6 +359,7 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
         return;
       case "FunctionDeclaration": {
         const inner = createScope("function", scope);
+        functionScopes.set(expr, inner);
         expr.parameters.forEach((parameter) => {
           if (parameter.type === "Identifier") {
             declare(inner, parameter, "param");
@@ -393,5 +399,6 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
     globals,
     symbolOf: (identifier) => identifierSymbols.get(identifier),
     isGlobalReference: (identifier) => globalReferenceNodes.has(identifier),
+    scopeOfFunction: (fn) => functionScopes.get(fn),
   };
 }

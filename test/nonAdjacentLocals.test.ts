@@ -6,6 +6,7 @@ import {
 } from "../src/nonAdjacentLocals";
 import { resolveScopes, Symbol } from "../src/resolver";
 import { SourceMetadata } from "../src/sourceMetadata";
+import { analyzeOptimizerFacts } from "../src/optimizerFacts";
 
 function plan(
   source: string,
@@ -15,6 +16,7 @@ function plan(
   const chunk = Parser.parse(source, { luaVersion: "5.3" });
   const resolved = resolveScopes(chunk);
   return planNonAdjacentLocals(chunk, resolved, {
+    facts: analyzeOptimizerFacts(chunk, resolved),
     outputNameLengthOf,
     preserveRequireSplice,
   });
@@ -44,6 +46,16 @@ describe("non-adjacent local planner", () => {
 
     expect(result.groups).toHaveLength(1);
     expect(result.groups[0].indexes).toEqual([0, 2]);
+  });
+
+  test.each([
+    ["an intervening write", "local first=f() x=2 local x=g()"],
+    [
+      "a nested closure reference",
+      "local first=function() return x end tick() local x=g()",
+    ],
+  ])("rejects hoisting across %s", (_label, source) => {
+    expect(plan(source).groups).toEqual([]);
   });
 
   test("excludes a self-shadowing initializer without losing the next group", () => {
@@ -99,6 +111,7 @@ describe("non-adjacent local planner", () => {
     const resolved = resolveScopes(chunk);
     const result = applyNonAdjacentLocalPlan(
       planNonAdjacentLocals(chunk, resolved, {
+        facts: analyzeOptimizerFacts(chunk, resolved),
         outputNameLengthOf: () => 1,
         preserveRequireSplice: false,
       }),
@@ -153,6 +166,7 @@ local third=h() --# trailing`;
     const resolved = resolveScopes(chunk);
     applyNonAdjacentLocalPlan(
       planNonAdjacentLocals(chunk, resolved, {
+        facts: analyzeOptimizerFacts(chunk, resolved),
         outputNameLengthOf: () => 1,
         preserveRequireSplice: false,
       }),
