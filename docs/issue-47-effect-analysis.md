@@ -18,7 +18,7 @@ Issue #44 の定数伝搬・畳み込みは実装済みである。Issue #42 の
 
 | 軸                            | 役割                                         | 既定                                                                |
 | ----------------------------- | -------------------------------------------- | ------------------------------------------------------------------- |
-| runtime profile               | `stormworks` / `lua53` の能力を選ぶ          | 従来互換の `lua53`                                                  |
+| runtime profile               | `stormworks` / `lua53` の能力を選ぶ          | CLI は `stormworks`。API の省略時だけ従来互換の `lua53`             |
 | safe effect transforms        | 選択環境で通常の観測可能な意味を保存する変換 | Stormworks では有効・opt-out。Lua では保守的な範囲だけ有効・opt-out |
 | semantic-changing assumptions | 未知の call や alias が変更しない等の仮定    | 無効・opt-in                                                        |
 
@@ -27,6 +27,8 @@ Issue 本文の一律 opt-in より、今回指定された条件を優先する
 safe は、結果だけでなくエラーの有無と順序、call 順、metamethod、字句束縛、複数戻り値、goto の可否を保存する。ただし純 Lua の `debug.getlocal` 等による local の生存期間・名前の観測は宣言 hoist と両立しない。safe が通常のプログラム意味論を対象とし、debug/introspection を保証しないことを API 文書に明記し、必要なら変換全体を opt-out できるようにする。
 
 Stormworks profile では、実行中に metatable を編集できず、組み込み metatable が固定されるという条件を使ってよい。この条件は解析へ埋め込まず、profile の capability として参照する。
+
+公開オプション名は `runtimeProfile`、`effectAwareTransforms`、`effectAwareLocalHoist`、`effectAwareTableReads`、`fieldSensitiveTableEffects`、`allowLocalLifetimeChanges` とする。最後の一つだけが純 Lua で local lifetime の観測差を許可する opt-in であり、未知の副作用を無視する許可ではない。現段階では、実測上の必要性がないため、それ以外の semantic-changing transform は実装しない。
 
 ## パス順と invalidation
 

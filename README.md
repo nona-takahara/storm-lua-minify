@@ -14,6 +14,27 @@ npx storm-lua-minify script.lua
 
 - `-m`オプションを付加すると、モジュールの挙動をLuaの実際の挙動に近づけます
 
+## 実行環境と効果解析最適化
+
+CLIはStormworks向けツールとして、`--runtime-profile stormworks`を既定にします。このprofileでは、非連続な`local`宣言やfresh tableの安定したreadを効果解析でまとめる、意味保存の最適化が既定で有効です。ライブラリAPIで`runtimeProfile`を省略した場合だけは、既存利用との互換性のため`lua53`として扱います。
+
+| 実行環境          | 効果解析最適化の既定 | 変更方法                                                                 |
+| ----------------- | -------------------- | ------------------------------------------------------------------------ |
+| CLI / Stormworks  | 有効                 | 個別の`--no-*`、または`--no-effect-aware-transforms`で無効化             |
+| CLI / Lua 5.3     | 無効                 | `--runtime-profile lua53 --allow-local-lifetime-changes`で明示的に有効化 |
+| API / profile省略 | 無効                 | `runtimeProfile: "stormworks"`、またはLua用opt-inを指定                  |
+
+純Luaでは`debug.getlocal`やdebug hookから`local`の生存期間を観測できるため、通常の計算結果が同じでも宣言位置の変更が観測され得ます。この差を許可する`--allow-local-lifetime-changes`はopt-inです。未知のcall、alias、escape、動的table key、変更可能なmetatableを安全だと仮定する最適化は、このオプションでは有効になりません。
+
+- `--runtime-profile <stormworks|lua53>`: 効果解析が前提とする実行環境を選びます。CLI既定は`stormworks`です
+- `--no-effect-aware-transforms`: 効果解析による最適化をすべて無効にします
+- `--no-effect-aware-local-hoist`: 非連続`local`宣言のまとめ上げだけを無効にします
+- `--no-effect-aware-table-reads`: fresh・nonescape tableの安定したreadのまとめ上げだけを無効にします
+- `--no-field-sensitive-table-effects`: tableの変更追跡をstatic key単位からtable全体へ戻します
+- `--allow-local-lifetime-changes`: Lua 5.3 profileで、debug APIから観測可能な`local`生存期間の変更を許可します
+
+`-m` / `--module-like-lua`は`require`・`dofile`の出力方式を選ぶオプションであり、runtime profileとは独立です。また、現時点では未知の副作用を無視するような意味変更オプションは実装していません。将来追加する場合も、上記の意味保存オプションとは分けてopt-inにします。
+
 # Source Map
 
 このツールは、ミニファイ後のコードと合わせて [Source Map](https://tc39.es/source-map/) (`.lua.map`) を出力します。
