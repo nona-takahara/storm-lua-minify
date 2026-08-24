@@ -7,16 +7,15 @@ import { findModuleReferences } from "./linker";
 import { resolveScopes, ResolveResult } from "./resolver";
 import { assignRenames, RenameResult } from "./renamer";
 import { classifyAndRenameGlobals } from "./globalRename";
-import { mergeLocalDeclarations, insertGlobalAliases } from "./transform";
+import { insertGlobalAliases } from "./transform";
 import { SourceMetadata } from "./sourceMetadata";
 import { removeUnusedLocals } from "./removeUnused";
 import { foldConstants } from "./constantFold";
 import { buildRequireWrapperAst, GeneratedStatement } from "./generatedAst";
 import {
-  applyNonAdjacentLocalPlan,
-  planNonAdjacentLocals,
-} from "./nonAdjacentLocals";
-import { applyTableReadMergePlan, planTableReadMerges } from "./tableReadMerge";
+  applyStatementSchedule,
+  planStatementSchedule,
+} from "./statementScheduler";
 import { PassOrchestrator } from "./optimizerPass";
 import {
   analyzeLocalResourceUsage,
@@ -87,7 +86,13 @@ const NO_RENAME: RenameResult = {
   usedNames: new Set(),
 };
 
+function copyMap<K, V>(source: ReadonlyMap<K, V>, target: Map<K, V>): void {
+  target.clear();
+  source.forEach((value, key) => target.set(key, value));
+}
+
 export class Minifier {
+  readonly entryFilePath: string;
   readonly identifiersInUse: Set<string>;
   readonly moduleSourceText: Map<string, string>;
   readonly moduleAST: Map<string, Chunk>;
@@ -107,12 +112,16 @@ export class Minifier {
   private globalRenames = new Map<string, string>();
   private readonly moduleMetadata = new Map<string, SourceMetadata>();
   private readonly diagnosticCollector?: OptimizationDiagnosticCollector;
+  private readonly schedulerVariant?: "baseline" | "trial";
 
   constructor(
     entryFilePath: string,
     luaParseSettings: Partial<Options>,
     mode: MinifierMode,
+    schedulerVariant?: "baseline" | "trial",
   ) {
+    this.schedulerVariant = schedulerVariant;
+    this.entryFilePath = entryFilePath;
     this.identifiersInUse = new Set<string>();
     this.moduleSourceText = new Map<string, string>();
     this.moduleAST = new Map<string, Chunk>();
@@ -139,6 +148,55 @@ export class Minifier {
   }
 
   parse(): SourceNode {
+    if (
+      this.schedulerVariant === undefined &&
+      this.requiresSchedulerSelection()
+    ) {
+      return this.parseWithSchedulerSelection();
+    }
+    return this.parseOnce();
+  }
+
+  private parseWithSchedulerSelection(): SourceNode {
+    const baselineMinifier = new Minifier(
+      this.entryFilePath,
+      this.luaParseSettings,
+      this.mode,
+      "baseline",
+    );
+    const baseline = baselineMinifier.parseOnce();
+    const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
+    let trialMinifier: Minifier;
+    let trial: SourceNode;
+    try {
+      trialMinifier = new Minifier(
+        this.entryFilePath,
+        this.luaParseSettings,
+        this.mode,
+        "trial",
+      );
+      trial = trialMinifier.parseOnce();
+    } catch {
+      this.copyDiagnosticsFrom(baselineMinifier);
+      this.recordFinalSchedulerDecision("rejected", "trial-failed");
+      return this.adoptVariant(baselineMinifier, baseline);
+    }
+    const trialBytes = new TextEncoder().encode(trial.toString()).length;
+    if (trialBytes >= baselineBytes) {
+      this.copyDiagnosticsFrom(trialMinifier);
+      this.recordFinalSchedulerDecision("rejected", "final-output-not-shorter");
+      return this.adoptVariant(baselineMinifier, baseline);
+    }
+    this.copyDiagnosticsFrom(trialMinifier);
+    this.recordFinalSchedulerDecision(
+      "accepted",
+      "final-output-shorter",
+      baselineBytes - trialBytes,
+    );
+    return this.adoptVariant(trialMinifier, trial);
+  }
+
+  private parseOnce(): SourceNode {
     this.link();
     this.foldConstantsAll();
     this.removeUnusedAll();
@@ -159,6 +217,60 @@ export class Minifier {
     });
 
     return result;
+  }
+
+  private requiresSchedulerSelection(): boolean {
+    if (this.mode.mergeLocals !== false) return true;
+    if (this.mode.effectAwareTransforms === false) return false;
+    const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53");
+    const lifetimeAllowed =
+      !runtime.semantics.debugLocalIntrospection ||
+      this.mode.allowLocalLifetimeChanges === true;
+    return (
+      lifetimeAllowed &&
+      (this.mode.effectAwareLocalHoist !== false ||
+        this.mode.effectAwareTableReads !== false)
+    );
+  }
+
+  private copyDiagnosticsFrom(minifier: Minifier): void {
+    minifier.optimizationDiagnostics.forEach((diagnostic) =>
+      this.diagnosticCollector?.record(diagnostic),
+    );
+  }
+
+  private adoptVariant(minifier: Minifier, output: SourceNode): SourceNode {
+    this.identifiersInUse.clear();
+    minifier.identifiersInUse.forEach((name) =>
+      this.identifiersInUse.add(name),
+    );
+    copyMap(minifier.moduleSourceText, this.moduleSourceText);
+    copyMap(minifier.moduleAST, this.moduleAST);
+    copyMap(minifier.moduleNameAndFileName, this.moduleNameAndFileName);
+    this.linkOrder.splice(0, this.linkOrder.length, ...minifier.linkOrder);
+    copyMap(minifier.moduleResolve, this.moduleResolve);
+    copyMap(minifier.renameCache, this.renameCache);
+    this.globalRenames = new Map(minifier.globalRenames);
+    copyMap(minifier.moduleMetadata, this.moduleMetadata);
+    return output;
+  }
+
+  private recordFinalSchedulerDecision(
+    decision: "accepted" | "rejected",
+    reason:
+      "final-output-shorter" | "final-output-not-shorter" | "trial-failed",
+    byteSavings?: number,
+  ): void {
+    this.diagnosticCollector?.record({
+      pass: "statement-scheduler-final-cost",
+      decision,
+      reason,
+      candidateSize: 1,
+      estimatedByteSavings: byteSavings,
+      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      moduleName: this.entryModule,
+      sourceRange: [0, fs.readFileSync(this.entryFilePath, "utf8").length],
+    });
   }
 
   /**
@@ -326,51 +438,6 @@ export class Minifier {
         this.mode.effectAwareTransforms !== false &&
         (!runtime.semantics.debugLocalIntrospection ||
           this.mode.allowLocalLifetimeChanges === true);
-      if (
-        effectAwareLocalsEnabled &&
-        this.mode.effectAwareTableReads !== false
-      ) {
-        passes.run("effect-aware-table-reads", () => {
-          const analysis = optimizerAnalysis();
-          const tablePlan = planTableReadMerges(ast, analysis.tableEffects, {
-            dirtyGranularity:
-              this.mode.fieldSensitiveTableEffects === false
-                ? "table"
-                : "static-key",
-            canMoveStatement: (statement) => {
-              const metadata = this.getSourceMetadata(moduleName);
-              const annotations = metadata.annotationsOf(statement);
-              return (
-                metadata.beforeOf(statement).length === 0 &&
-                metadata.trailingOf(statement).length === 0 &&
-                !annotations.keep &&
-                !annotations.keepName &&
-                !annotations.exported
-              );
-            },
-            maxMergeArity: runtime.resources.conservativeParallelValueLimit,
-            maxMergeArityAt: (statement) =>
-              checkParallelEvaluation(runtime, {
-                activeLocalsBefore:
-                  localResources.activeLocalsBefore(statement) ??
-                  runtime.resources.maxActiveLocalsPerFunction,
-                parallelValueCount:
-                  runtime.resources.conservativeParallelValueLimit,
-              }).limit,
-            diagnostics: this.diagnosticCollector,
-            moduleName,
-            runtimeProfile: runtime.profile,
-            allowObservableValueChanges:
-              this.mode.aggressiveTableReadMerges === true,
-          });
-          return applyTableReadMergePlan(
-            tablePlan,
-            this.getSourceMetadata(moduleName),
-          );
-        });
-      }
-
-      resolved = passes.resolved;
       const keepNames = new Set(
         resolved.symbols.filter(
           (symbol) =>
@@ -380,8 +447,11 @@ export class Minifier {
         ),
       );
       if (
-        effectAwareLocalsEnabled &&
-        this.mode.effectAwareLocalHoist !== false
+        this.schedulerVariant !== "baseline" &&
+        (this.mode.mergeLocals !== false ||
+          (effectAwareLocalsEnabled &&
+            (this.mode.effectAwareLocalHoist !== false ||
+              this.mode.effectAwareTableReads !== false)))
       ) {
         const provisionalRenames =
           this.mode.rename === false
@@ -392,38 +462,75 @@ export class Minifier {
                 this.globalRenames,
                 keepNames,
               );
-        passes.run("effect-aware-local-hoist", (currentResolve) => {
-          const facts = optimizerAnalysis().facts;
-          const plan = planNonAdjacentLocals(ast, currentResolve, {
-            facts,
+        passes.run("statement-scheduler", (currentResolve) => {
+          const analysis = optimizerAnalysis();
+          const metadata = this.getSourceMetadata(moduleName);
+          const canMoveAnnotatedStatement = (
+            statement: Parser.LocalStatement,
+          ) => {
+            const annotations = metadata.annotationsOf(statement);
+            return (
+              metadata.beforeOf(statement).length === 0 &&
+              metadata.trailingOf(statement).length === 0 &&
+              !annotations.keep &&
+              !annotations.keepName &&
+              !annotations.exported
+            );
+          };
+          const plan = planStatementSchedule(ast, currentResolve, {
+            facts: analysis.facts,
+            dataflow: analysis.statementDataflow,
             outputNameLengthOf: (symbol) =>
               (provisionalRenames.nameOf(symbol.declaration) ?? symbol.name)
                 .length,
             preserveRequireSplice: !this.mode.moduleLikeLua,
+            enableLocalPacking:
+              effectAwareLocalsEnabled &&
+              this.mode.effectAwareLocalHoist !== false,
+            enableLexicalLocalMerge: this.mode.mergeLocals !== false,
+            tableEffects:
+              effectAwareLocalsEnabled &&
+              this.mode.effectAwareTableReads !== false
+                ? analysis.tableEffects
+                : undefined,
+            dirtyGranularity:
+              this.mode.fieldSensitiveTableEffects === false
+                ? "table"
+                : "static-key",
+            allowObservableTableValueChanges:
+              this.mode.aggressiveTableReadMerges === true,
+            maxTableMergeArity:
+              runtime.resources.conservativeParallelValueLimit,
+            maxTableMergeArityAt: (statement) =>
+              checkParallelEvaluation(runtime, {
+                activeLocalsBefore:
+                  localResources.activeLocalsBefore(statement) ??
+                  runtime.resources.maxActiveLocalsPerFunction,
+                parallelValueCount:
+                  runtime.resources.conservativeParallelValueLimit,
+              }).limit,
+            canMoveTableRead: canMoveAnnotatedStatement,
+            maxHoistedLocalsAt: (statement) => {
+              const active = localResources.activeLocalsBefore(statement);
+              if (active === undefined) return 0;
+              return Math.max(
+                0,
+                Math.min(
+                  runtime.resources.maxActiveLocalsPerFunction - active,
+                  runtime.resources.maxRegistersPerFunction - active,
+                ),
+              );
+            },
+            canChangeLocalLifetime: canMoveAnnotatedStatement,
             diagnostics: this.diagnosticCollector,
             moduleName,
             runtimeProfile: runtime.profile,
           });
-          return applyNonAdjacentLocalPlan(
+          return applyStatementSchedule(
             plan,
             this.getSourceMetadata(moduleName),
           );
         });
-      }
-
-      resolved = passes.resolved;
-      if (this.mode.mergeLocals !== false) {
-        passes.run("merge-local-declarations", (currentResolve) => ({
-          changed: mergeLocalDeclarations(
-            ast,
-            currentResolve,
-            {
-              preserveRequireSplice: !this.mode.moduleLikeLua,
-            },
-            this.getSourceMetadata(moduleName),
-          ),
-          invalidatesResolve: false,
-        }));
       }
 
       resolved = passes.resolved;

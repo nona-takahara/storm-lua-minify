@@ -4,11 +4,9 @@ import {
   OptimizationDiagnosticCollector,
   summarizeOptimizationDiagnostics,
 } from "../src/optimizerDiagnostics";
-import { planNonAdjacentLocals } from "../src/nonAdjacentLocals";
 import { resolveScopes } from "../src/resolver";
 import { analyzeOptimizer } from "../src/optimizerAnalysis";
-import { analyzeOptimizerFacts } from "../src/optimizerFacts";
-import { planTableReadMerges } from "../src/tableReadMerge";
+import { planStatementSchedule } from "../src/statementScheduler";
 import {
   createTemporaryLuaProject,
   minifyLuaProject,
@@ -22,15 +20,16 @@ describe("optimization diagnostics", () => {
     const resolved = resolveScopes(chunk);
     const collector = new OptimizationDiagnosticCollector();
 
-    planTableReadMerges(chunk, analyzeOptimizer(chunk, resolved).tableEffects, {
-      dirtyGranularity: "static-key",
-      diagnostics: collector,
-      moduleName: "main",
-    });
-    planNonAdjacentLocals(chunk, resolved, {
-      facts: analyzeOptimizerFacts(chunk, resolved),
+    const analysis = analyzeOptimizer(chunk, resolved);
+    planStatementSchedule(chunk, resolved, {
+      facts: analysis.facts,
+      dataflow: analysis.statementDataflow,
       outputNameLengthOf: () => 1,
-      preserveRequireSplice: true,
+      preserveRequireSplice: false,
+      enableLocalPacking: true,
+      enableLexicalLocalMerge: true,
+      tableEffects: analysis.tableEffects,
+      dirtyGranularity: "static-key",
       diagnostics: collector,
       moduleName: "main",
     });
@@ -38,15 +37,19 @@ describe("optimization diagnostics", () => {
       luaVersion: "5.3",
     });
     const rejectedResolved = resolveScopes(rejectedChunk);
-    planTableReadMerges(
-      rejectedChunk,
-      analyzeOptimizer(rejectedChunk, rejectedResolved).tableEffects,
-      {
-        dirtyGranularity: "static-key",
-        diagnostics: collector,
-        moduleName: "main",
-      },
-    );
+    const rejectedAnalysis = analyzeOptimizer(rejectedChunk, rejectedResolved);
+    planStatementSchedule(rejectedChunk, rejectedResolved, {
+      facts: rejectedAnalysis.facts,
+      dataflow: rejectedAnalysis.statementDataflow,
+      outputNameLengthOf: () => 1,
+      preserveRequireSplice: false,
+      enableLocalPacking: true,
+      enableLexicalLocalMerge: true,
+      tableEffects: rejectedAnalysis.tableEffects,
+      dirtyGranularity: "static-key",
+      diagnostics: collector,
+      moduleName: "main",
+    });
 
     const summary = summarizeOptimizationDiagnostics(collector.diagnostics);
     expect(summary.acceptedCandidates).toBeGreaterThanOrEqual(2);
@@ -98,16 +101,11 @@ describe("optimization diagnostics", () => {
     );
     diagnostics.push(...luaMinifier.optimizationDiagnostics);
     const reasons = new Set(diagnostics.map((item) => item.reason));
-    (
-      [
-        "profitable-group",
-        "dynamic-key",
-        "call-escape",
-        "control-flow-barrier",
-      ] as const
-    ).forEach((reason) => {
-      expect(reasons.has(reason)).toBe(true);
-    });
+    (["profitable-group", "dynamic-key", "call-escape"] as const).forEach(
+      (reason) => {
+        expect(reasons.has(reason)).toBe(true);
+      },
+    );
     expect(
       diagnostics.every(
         (item) =>

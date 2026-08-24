@@ -22,7 +22,20 @@ export type OptimizationDiagnosticReason =
   | "binding-shadow-hazard"
   | "output-name-unknown"
   | "nonpositive-cost"
-  | "resource-budget";
+  | "resource-budget"
+  | "final-output-shorter"
+  | "final-output-not-shorter"
+  | "trial-failed"
+  | "unknown-control-flow"
+  | "dependency-read-after-write"
+  | "dependency-write-after-read"
+  | "dependency-write-after-write"
+  | "dependency-call-order"
+  | "dependency-error-order"
+  | "dependency-metamethod-order"
+  | "dependency-allocation-order"
+  | "dependency-control-order"
+  | "dependency-scope-order";
 
 export interface OptimizationDiagnostic {
   readonly pass: string;

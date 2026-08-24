@@ -129,7 +129,9 @@ pnpm run verify:effect-semantics # Windowsのlua53で変換前後を差分実行
 pnpm run report:optimizer        # 候補・拒否理由・最終byte比較をJSON出力
 ```
 
-ライブラリAPIで`collectOptimizationDiagnostics: true`を指定すると、`Minifier.optimizationDiagnostics`からruntime／module／pass別の候補採否を取得できます。既定はoffで、on/offによって生成コードとSource Mapは変化しません。`selectTransactionalMinifierVariant`はbaselineとtrialを別Minifierへ隔離し、最終Rename／Print後に厳密に短いartifactだけを選択する高度な調査・planner統合用APIです。
+optimizerの文移動とlocal宣言packingは、共通のCFG・liveness・文間依存DAGを使います。通常のminifyでもschedulerなしのbaselineとschedulerありのtrialを別々の`Minifier`で最終Rename／Printまで評価し、trialがUTF-8 byte数で厳密に短い場合だけ採用します。同長・増加・trial失敗時は、AST、Resolve、SourceMetadata、Source Mapを共有していないbaselineへ戻ります。
+
+ライブラリAPIで`collectOptimizationDiagnostics: true`を指定すると、`Minifier.optimizationDiagnostics`からruntime／module／pass別の候補採否、依存DAG上の拒否理由、最終cost gateの判断を取得できます。既定はoffで、on/offによって生成コードとSource Mapは変化しません。`selectTransactionalMinifierVariant`は任意のmode同士を同じ条件で比較する調査用APIとして引き続き利用できます。
 
 # Lint / Format
 

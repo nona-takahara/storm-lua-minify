@@ -3,9 +3,9 @@ import { describe, expect, test } from "vitest";
 import { resolveScopes } from "../src/resolver";
 import { analyzeOptimizer } from "../src/optimizerAnalysis";
 import {
-  applyTableReadMergePlan,
-  planTableReadMerges,
-} from "../src/tableReadMerge";
+  applyStatementSchedule,
+  planStatementSchedule,
+} from "../src/statementScheduler";
 
 function plan(
   source: string,
@@ -14,16 +14,29 @@ function plan(
 ) {
   const chunk = Parser.parse(source, { luaVersion: "5.3" });
   const resolved = resolveScopes(chunk);
+  const analysis = analyzeOptimizer(chunk, resolved);
+  const schedule = planStatementSchedule(chunk, resolved, {
+    facts: analysis.facts,
+    dataflow: analysis.statementDataflow,
+    outputNameLengthOf: () => 1,
+    preserveRequireSplice: false,
+    enableLocalPacking: false,
+    enableLexicalLocalMerge: false,
+    tableEffects: analysis.tableEffects,
+    dirtyGranularity,
+    maxTableMergeArityAt: maxMergeArityAt,
+  });
   return {
     chunk,
-    plan: planTableReadMerges(
-      chunk,
-      analyzeOptimizer(chunk, resolved).tableEffects,
-      {
-        dirtyGranularity,
-        maxMergeArityAt,
-      },
-    ),
+    plan: {
+      generation: schedule.generation,
+      localGroups: schedule.localGroups,
+      tableGroups: schedule.tableGroups,
+      groups: schedule.tableGroups.map((group) => ({
+        ...group,
+        estimatedByteSavings: group.byteSavings,
+      })),
+    },
   };
 }
 
@@ -171,7 +184,7 @@ make()
     const result = plan(
       "local t={x=1,y=2} local first=t.x tick() local second=t.y",
     );
-    expect(applyTableReadMergePlan(result.plan)).toEqual({
+    expect(applyStatementSchedule(result.plan)).toEqual({
       changed: true,
       invalidatesResolve: true,
     });
@@ -192,9 +205,9 @@ make()
     expect(() => resolveScopes(result.chunk)).not.toThrow();
   });
 
-  test("leaves adjacent reads to the existing local merge", () => {
+  test("handles adjacent reads in the unified scheduler", () => {
     const result = plan("local t={x=1,y=2} local first=t.x local second=t.y");
-    expect(result.plan.groups).toEqual([]);
+    expect(result.plan.groups).toHaveLength(1);
   });
 
   test("splits large groups to preserve Lua register headroom", () => {

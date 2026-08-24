@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 import { selectTransactionalMinifierVariant } from "../src/optimizerTransaction";
-import { createTemporaryLuaProject } from "./lib/minifierHarness";
+import {
+  createTemporaryLuaProject,
+  minifyTemporaryLuaSource,
+} from "./lib/minifierHarness";
 
 function fixture(source: string): string {
   return createTemporaryLuaProject(
@@ -10,6 +13,77 @@ function fixture(source: string): string {
 }
 
 describe("transactional final-output selection", () => {
+  test("normal Minifier path selects scheduler output only after final print", () => {
+    const source =
+      "local first=makeFirst() if flag then tick() end local second=makeSecond() use(first,second)";
+    const selected = minifyTemporaryLuaSource(
+      source,
+      {
+        moduleLikeLua: false,
+        runtimeProfile: "stormworks",
+        collectOptimizationDiagnostics: true,
+      },
+      { prefix: "storm-normal-final-cost-" },
+    );
+    const baseline = minifyTemporaryLuaSource(
+      source,
+      {
+        moduleLikeLua: false,
+        runtimeProfile: "stormworks",
+        mergeLocals: false,
+        effectAwareTransforms: false,
+      },
+      { prefix: "storm-normal-final-cost-baseline-" },
+    );
+
+    expect(Buffer.byteLength(selected.code)).toBeLessThan(
+      Buffer.byteLength(baseline.code),
+    );
+    expect(selected.minifier.moduleAST.size).toBeGreaterThan(0);
+    expect(selected.minifier.moduleSourceText.size).toBeGreaterThan(0);
+    expect(selected.minifier.optimizationDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pass: "statement-scheduler-final-cost",
+          decision: "accepted",
+          reason: "final-output-shorter",
+        }),
+      ]),
+    );
+  });
+
+  test("normal Minifier path keeps baseline when final output is not shorter", () => {
+    const source = "return value";
+    const selected = minifyTemporaryLuaSource(
+      source,
+      {
+        moduleLikeLua: false,
+        collectOptimizationDiagnostics: true,
+      },
+      { prefix: "storm-normal-final-cost-equal-" },
+    );
+    const baseline = minifyTemporaryLuaSource(
+      source,
+      {
+        moduleLikeLua: false,
+        mergeLocals: false,
+        effectAwareTransforms: false,
+      },
+      { prefix: "storm-normal-final-cost-equal-baseline-" },
+    );
+
+    expect(selected.code).toBe(baseline.code);
+    expect(selected.minifier.optimizationDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pass: "statement-scheduler-final-cost",
+          decision: "rejected",
+          reason: "final-output-not-shorter",
+        }),
+      ]),
+    );
+  });
+
   test("selects a strictly shorter effect-aware final artifact", () => {
     const entryFilePath = fixture(`
 local t={x=1,y=2}

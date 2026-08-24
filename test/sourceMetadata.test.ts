@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import Parser from "luaparse";
 import { SourceMetadata } from "../src/sourceMetadata";
 import { resolveScopes } from "../src/resolver";
-import { mergeLocalDeclarations } from "../src/transform";
+import { analyzeOptimizer } from "../src/optimizerAnalysis";
+import {
+  applyStatementSchedule,
+  planStatementSchedule,
+} from "../src/statementScheduler";
 
 function metadata(code: string): {
   chunk: Parser.Chunk;
@@ -76,10 +80,17 @@ local a = call()
 --# second
 local b = call()`;
   const { chunk, metadata: result } = metadata(code);
-  mergeLocalDeclarations(
-    chunk,
-    resolveScopes(chunk),
-    { preserveRequireSplice: false },
+  const resolved = resolveScopes(chunk);
+  const analysis = analyzeOptimizer(chunk, resolved);
+  applyStatementSchedule(
+    planStatementSchedule(chunk, resolved, {
+      facts: analysis.facts,
+      dataflow: analysis.statementDataflow,
+      outputNameLengthOf: () => 1,
+      preserveRequireSplice: false,
+      enableLocalPacking: false,
+      enableLexicalLocalMerge: true,
+    }),
     result,
   );
   assert.equal(chunk.body.length, 1);
