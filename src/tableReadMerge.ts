@@ -22,6 +22,7 @@ export interface TableReadMergePlan {
 export interface TableReadMergeOptions {
   readonly dirtyGranularity: "table" | "static-key";
   readonly canMoveStatement?: (statement: Parser.LocalStatement) => boolean;
+  readonly maxMergeArity?: number;
 }
 
 interface Candidate {
@@ -32,7 +33,7 @@ interface Candidate {
 
 // Lua 5.3のlocal上限200とregister上限255の差より小さく保つ。
 // static table readは単純でも、全RHSを同時評価する巨大local文を生成しない。
-const MAX_MERGE_ARITY = 50;
+const DEFAULT_MAX_MERGE_ARITY = 50;
 
 export function planTableReadMerges(
   chunk: Parser.Chunk,
@@ -49,8 +50,9 @@ export function planTableReadMerges(
     let run: Candidate[] = [];
 
     const flush = () => {
-      for (let start = 0; start < run.length; start += MAX_MERGE_ARITY) {
-        const part = run.slice(start, start + MAX_MERGE_ARITY);
+      const maxMergeArity = options.maxMergeArity ?? DEFAULT_MAX_MERGE_ARITY;
+      for (let start = 0; start < run.length; start += maxMergeArity) {
+        const part = run.slice(start, start + maxMergeArity);
         if (part.length < 2) continue;
         if (
           !part.some(

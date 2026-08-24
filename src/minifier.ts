@@ -20,8 +20,9 @@ import { analyzeBindingEffects } from "./effectAnalysis";
 import { analyzeTableEffects } from "./tableEffects";
 import { applyTableReadMergePlan, planTableReadMerges } from "./tableReadMerge";
 import { PassOrchestrator } from "./optimizerPass";
+import { RuntimeProfile, runtimeEnvironmentOf } from "./runtimeEnvironment";
 
-export type RuntimeProfile = "lua53" | "stormworks";
+export type { RuntimeProfile } from "./runtimeEnvironment";
 
 export interface MinifierMode {
   moduleLikeLua: boolean;
@@ -303,6 +304,9 @@ export class Minifier {
                   !annotations.exported
                 );
               },
+              maxMergeArity: runtimeEnvironmentOf(
+                this.mode.runtimeProfile ?? "lua53",
+              ).resources.conservativeParallelValueLimit,
             },
           );
           return applyTableReadMergePlan(
