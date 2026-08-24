@@ -13,7 +13,7 @@ afterEach(() => {
   });
 });
 
-function minify(source: string, mode: Partial<MinifierMode> = {}): string {
+function minifyExact(source: string, mode: MinifierMode): string {
   const directory = fs.mkdtempSync(
     path.join(os.tmpdir(), "storm-table-read-merge-test-"),
   );
@@ -23,10 +23,18 @@ function minify(source: string, mode: Partial<MinifierMode> = {}): string {
   return new Minifier(
     entry,
     { locations: true, luaVersion: "5.3", ranges: true, scope: true },
-    { moduleLikeLua: false, runtimeProfile: "stormworks", ...mode },
+    mode,
   )
     .parse()
     .toStringWithSourceMap({ file: "main.min.lua" }).code;
+}
+
+function minify(source: string, mode: Partial<MinifierMode> = {}): string {
+  return minifyExact(source, {
+    moduleLikeLua: false,
+    runtimeProfile: "stormworks",
+    ...mode,
+  });
 }
 
 describe("effect-aware table read merge pipeline", () => {
@@ -95,6 +103,36 @@ use(first,second)
         effectAwareTableReads: false,
         effectAwareLocalHoist: false,
       }),
+    );
+  });
+
+  test("keeps the API default conservative for pure Lua", () => {
+    const source = `
+local tableValue={x=1,y=2}
+local first=tableValue.x
+tick()
+local second=tableValue.y
+use(first,second)
+`;
+    const apiDefault = minifyExact(source, {
+      moduleLikeLua: false,
+      effectAwareLocalHoist: false,
+    });
+    const explicitLua = minifyExact(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "lua53",
+      effectAwareLocalHoist: false,
+    });
+    const optedInLua = minifyExact(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "lua53",
+      allowLocalLifetimeChanges: true,
+      effectAwareLocalHoist: false,
+    });
+
+    expect(apiDefault).toBe(explicitLua);
+    expect(Buffer.byteLength(optedInLua)).toBeLessThan(
+      Buffer.byteLength(apiDefault),
     );
   });
 });

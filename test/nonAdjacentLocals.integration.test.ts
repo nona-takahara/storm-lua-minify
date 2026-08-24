@@ -97,4 +97,20 @@ describe("effect-aware non-adjacent locals pipeline", () => {
     );
     expect(enabled).toBe(disabled);
   });
+
+  test("table-read opt-out does not disable local hoisting", () => {
+    const enabled = minify(SOURCE, {
+      runtimeProfile: "stormworks",
+      effectAwareTableReads: false,
+    });
+    const localDisabled = minify(SOURCE, {
+      runtimeProfile: "stormworks",
+      effectAwareTableReads: false,
+      effectAwareLocalHoist: false,
+    });
+
+    expect(Buffer.byteLength(enabled)).toBeLessThan(
+      Buffer.byteLength(localDisabled),
+    );
+  });
 });
