@@ -49,6 +49,12 @@ export interface ValueFlowAnalysis {
     expression: Parser.Expression,
     point: ProgramPoint,
   ): Allocation | undefined;
+  stableAllocationBetween(
+    first: Parser.Statement,
+    last: Parser.Statement,
+    symbol: Symbol,
+    expected: Allocation,
+  ): boolean;
 }
 
 const UNKNOWN_ENTRY: AbstractValue = {
@@ -207,6 +213,18 @@ export function analyzeValueFlow(
         return undefined;
       }
       return value.allocations.values().next().value;
+    },
+    stableAllocationBetween: (first, last, symbol, expected) => {
+      const points = controlFlow.pointsBetween(first, last);
+      if (!points) return false;
+      return points.every((point) => {
+        const value = valueAt(beforeByPoint, point, symbol);
+        return (
+          value.kind === "allocations" &&
+          value.allocations.size === 1 &&
+          value.allocations.has(expected)
+        );
+      });
     },
   };
 }

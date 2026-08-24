@@ -77,6 +77,26 @@ use(first,second)
     );
   });
 
+  test("merges reads through a stable local alias", () => {
+    const source = `
+local tableValue={x=1,y=2}
+local alias=tableValue
+local first=alias.x
+tick()
+local second=tableValue.y
+use(first,second)
+`;
+    const enabled = minify(source, { effectAwareLocalHoist: false });
+    const disabled = minify(source, {
+      effectAwareTableReads: false,
+      effectAwareLocalHoist: false,
+    });
+
+    expect(Buffer.byteLength(enabled)).toBeLessThan(
+      Buffer.byteLength(disabled),
+    );
+  });
+
   test("does not move reads for an escaped table", () => {
     const source = `
 local tableValue={x=1,y=2}

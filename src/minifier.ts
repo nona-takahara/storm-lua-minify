@@ -16,7 +16,6 @@ import {
   applyNonAdjacentLocalPlan,
   planNonAdjacentLocals,
 } from "./nonAdjacentLocals";
-import { analyzeBindingEffects } from "./effectAnalysis";
 import { analyzeTableEffects } from "./tableEffects";
 import { applyTableReadMergePlan, planTableReadMerges } from "./tableReadMerge";
 import { PassOrchestrator } from "./optimizerPass";
@@ -286,7 +285,6 @@ export class Minifier {
         passes.run("effect-aware-table-reads", (currentResolve) => {
           const tablePlan = planTableReadMerges(
             ast,
-            analyzeBindingEffects(ast, currentResolve),
             analyzeTableEffects(ast, currentResolve),
             {
               dirtyGranularity:

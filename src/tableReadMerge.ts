@@ -1,6 +1,5 @@
 import Parser from "luaparse";
 import { AstWalkVisitor, walkStatement } from "./astWalk";
-import { EffectAnalysis } from "./effectAnalysis";
 import { copyNodeOrigin } from "./generatedNode";
 import { SourceMetadata } from "./sourceMetadata";
 import { TransformResult } from "./optimizerPass";
@@ -37,7 +36,6 @@ const DEFAULT_MAX_MERGE_ARITY = 50;
 
 export function planTableReadMerges(
   chunk: Parser.Chunk,
-  bindingEffects: EffectAnalysis,
   tableEffects: TableEffectAnalysis,
   options: TableReadMergeOptions,
 ): TableReadMergePlan {
@@ -77,13 +75,7 @@ export function planTableReadMerges(
 
     body.forEach((statement, index) => {
       if (isIntervening(statement)) return;
-      const candidate = candidateOf(
-        statement,
-        index,
-        bindingEffects,
-        tableEffects,
-        options,
-      );
+      const candidate = candidateOf(statement, index, tableEffects, options);
       if (!candidate) {
         flush();
         return;
@@ -91,12 +83,17 @@ export function planTableReadMerges(
 
       if (
         shadowsInterveningReference(body, run[0]?.index ?? index, candidate) ||
+        !tableEffects.stableBetween(
+          candidate.read.table,
+          candidate.read.baseSymbol,
+          run[0]?.statement ?? statement,
+          statement,
+        ) ||
         tableIsDirtyBetween(
           candidate.read,
           run[0]?.index ?? index,
           index,
           indexOf,
-          bindingEffects,
           tableEffects,
           options.dirtyGranularity,
         )
@@ -143,7 +140,6 @@ export function applyTableReadMergePlan(
 function candidateOf(
   statement: Parser.Statement,
   index: number,
-  bindingEffects: EffectAnalysis,
   analysis: TableEffectAnalysis,
   options: TableReadMergeOptions,
 ): Candidate | undefined {
@@ -162,12 +158,7 @@ function candidateOf(
       effect.access === "read" &&
       effect.expression === statement.init[0] &&
       effect.staticKey !== undefined &&
-      analysis.isNonescaping(effect.table) &&
-      // Symbolの現在値をallocationへ結び付けるpoints-to/CFGはまだ無い。
-      // 一度でも再代入されれば、以後のaccessを元fresh tableとはみなさない。
-      !bindingEffects
-        .accessesOf(effect.table.symbol)
-        .some((binding) => binding.access === "write"),
+      analysis.isNonescaping(effect.table),
   );
   return read ? { statement, index, read } : undefined;
 }
@@ -184,7 +175,6 @@ function tableIsDirtyBetween(
   start: number,
   end: number,
   indexOf: ReadonlyMap<Parser.Statement, number>,
-  bindingEffects: EffectAnalysis,
   tableEffects: TableEffectAnalysis,
   dirtyGranularity: TableReadMergeOptions["dirtyGranularity"],
 ): boolean {
@@ -192,13 +182,6 @@ function tableIsDirtyBetween(
     const index = indexOf.get(owner as Parser.Statement);
     return index !== undefined && start < index && index < end;
   };
-  const bindingWrite = bindingEffects
-    .accessesOf(read.table.symbol)
-    .some(
-      (effect) => effect.access === "write" && inOpenInterval(effect.owner),
-    );
-  if (bindingWrite) return true;
-
   return tableEffects.effectsOf(read.table).some((effect) => {
     if (effect.access !== "write" || !inOpenInterval(effect.owner))
       return false;

@@ -1,6 +1,5 @@
 import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
-import { analyzeBindingEffects } from "../src/effectAnalysis";
 import { resolveScopes } from "../src/resolver";
 import { analyzeTableEffects } from "../src/tableEffects";
 import {
@@ -16,12 +15,9 @@ function plan(
   const resolved = resolveScopes(chunk);
   return {
     chunk,
-    plan: planTableReadMerges(
-      chunk,
-      analyzeBindingEffects(chunk, resolved),
-      analyzeTableEffects(chunk, resolved),
-      { dirtyGranularity },
-    ),
+    plan: planTableReadMerges(chunk, analyzeTableEffects(chunk, resolved), {
+      dirtyGranularity,
+    }),
   };
 }
 
@@ -75,6 +71,31 @@ describe("fresh table read merge planner", () => {
   test("rejects movement across a table binding reassignment", () => {
     const result = plan("local t={x=1} local first=t.x t={} local second=t.x");
     expect(result.plan.groups).toEqual([]);
+  });
+
+  test("merges reads through stable local aliases", () => {
+    const result = plan(
+      "local t={x=1,y=2} local alias=t local first=alias.x tick() local second=t.y",
+    );
+    expect(result.plan.groups).toHaveLength(1);
+    expect(result.plan.groups[0].indexes).toEqual([2, 4]);
+    expect(result.plan.groups[0].reads[0].table).toBe(
+      result.plan.groups[0].reads[1].table,
+    );
+  });
+
+  test("optimizes fresh allocations independently on each side of reassignment", () => {
+    const result = plan(
+      "local t={x=1,y=2} local a=t.x tick() local b=t.y t={x=3,y=4} local c=t.x tick() local d=t.y",
+    );
+    expect(result.plan.groups).toHaveLength(2);
+    expect(result.plan.groups.map((group) => group.indexes)).toEqual([
+      [1, 3],
+      [5, 7],
+    ]);
+    expect(result.plan.groups[0].reads[0].table).not.toBe(
+      result.plan.groups[1].reads[0].table,
+    );
   });
 
   test("rejects reads after the symbol was replaced before the group", () => {

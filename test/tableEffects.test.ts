@@ -42,7 +42,6 @@ describe("fresh table effect analysis", () => {
   });
 
   test.each([
-    ["alias", "local t={} local alias=t", "alias"],
     ["call", "local t={} consume(t)", "call"],
     ["return", "local t={} return t", "return"],
     ["store", "local t={} global=t", "store"],
@@ -51,6 +50,21 @@ describe("fresh table effect analysis", () => {
     const analysis = analyze(source);
     expect(analysis.escapes.map((escape) => escape.reason)).toContain(reason);
     expect(analysis.isNonescaping(analysis.freshTables[0])).toBe(false);
+  });
+
+  test("tracks a local alias as the same nonescaping allocation", () => {
+    const analysis = analyze(
+      "local t={} local alias=t alias.x=1 local value=t.x",
+    );
+    expect(analysis.freshTables).toHaveLength(1);
+    expect(analysis.escapes).toEqual([]);
+    expect(
+      analysis.effects.map((effect) => effect.table.allocation.id),
+    ).toEqual([0, 0]);
+    expect(analysis.effects.map((effect) => effect.baseSymbol.name)).toEqual([
+      "alias",
+      "t",
+    ]);
   });
 
   test("keeps writes to different static keys distinct", () => {

@@ -5,10 +5,12 @@ import {
   luaByteStringKey,
   luaByteStringOfText,
 } from "./luaString";
+import { Allocation, analyzeValueFlow } from "./valueFlow";
 
 export interface FreshTable {
+  readonly allocation: Allocation;
   readonly symbol: Symbol;
-  readonly declaration: Parser.LocalStatement;
+  readonly declaration: Parser.LocalStatement | Parser.AssignmentStatement;
   readonly constructor: Parser.TableConstructorExpression;
   readonly functionDepth: number;
 }
@@ -20,6 +22,7 @@ export interface TableEffect {
   readonly staticKey: string | undefined;
   readonly expression: Parser.MemberExpression | Parser.IndexExpression;
   readonly owner: Parser.Statement;
+  readonly baseSymbol: Symbol;
 }
 
 export type TableEscapeReason =
@@ -38,6 +41,12 @@ export interface TableEffectAnalysis {
   readonly escapes: readonly TableEscape[];
   isNonescaping(table: FreshTable): boolean;
   effectsOf(table: FreshTable): readonly TableEffect[];
+  stableBetween(
+    table: FreshTable,
+    baseSymbol: Symbol,
+    first: Parser.Statement,
+    last: Parser.Statement,
+  ): boolean;
 }
 
 type ValueUse = "value-use" | "alias" | "call" | "return" | "store";
@@ -48,9 +57,41 @@ export function analyzeTableEffects(
   resolved: ResolveResult,
 ): TableEffectAnalysis {
   const freshTables: FreshTable[] = [];
-  const freshBySymbol = new Map<Symbol, FreshTable>();
+  const freshByAllocation = new Map<Allocation, FreshTable>();
+  const allocationByStableSymbol = new Map<Symbol, Allocation | null>();
   const effects: TableEffect[] = [];
   const escapes: TableEscape[] = [];
+  const valueFlow = analyzeValueFlow(chunk, resolved);
+
+  valueFlow.allocations.forEach((allocation) => {
+    const binding = bindingOfAllocation(allocation);
+    if (!binding) return;
+    const table: FreshTable = {
+      allocation,
+      symbol: binding.symbol,
+      declaration: binding.declaration,
+      constructor: allocation.origin,
+      functionDepth: depthOf(allocation.unit),
+    };
+    freshTables.push(table);
+    freshByAllocation.set(allocation, table);
+  });
+  valueFlow.definitions.forEach((definition) => {
+    if (
+      definition.value.kind !== "allocations" ||
+      definition.value.allocations.size !== 1
+    ) {
+      allocationByStableSymbol.set(definition.symbol, null);
+      return;
+    }
+    const allocation = definition.value.allocations.values().next().value;
+    if (!allocation) return;
+    const existing = allocationByStableSymbol.get(definition.symbol);
+    allocationByStableSymbol.set(
+      definition.symbol,
+      existing === undefined || existing === allocation ? allocation : null,
+    );
+  });
 
   analyzeBlock(chunk.body, 0);
 
@@ -61,7 +102,16 @@ export function analyzeTableEffects(
     functionDepth: number,
   ): void {
     const symbol = resolved.symbolOf(identifier);
-    const table = symbol ? freshBySymbol.get(symbol) : undefined;
+    const point = valueFlow.controlFlow.pointOf(owner);
+    const allocation =
+      symbol && point
+        ? valueFlow.allocationOfBase(identifier, point)
+        : undefined;
+    const fallback = symbol ? allocationByStableSymbol.get(symbol) : undefined;
+    const resolvedAllocation = allocation ?? fallback ?? undefined;
+    const table = resolvedAllocation
+      ? freshByAllocation.get(resolvedAllocation)
+      : undefined;
     if (!table) return;
     escapes.push({
       table,
@@ -159,7 +209,7 @@ export function analyzeTableEffects(
       analyzeExpression(argument, owner, "call", functionDepth);
     });
     if (base.type === "MemberExpression" && base.indexer === ":") {
-      const table = tableOfBase(base.base);
+      const table = tableOfBase(base.base, owner);
       if (table && base.base.type === "Identifier") {
         escapeIdentifier(base.base, "call", owner, functionDepth);
       }
@@ -172,14 +222,19 @@ export function analyzeTableEffects(
     owner: Parser.Statement,
     functionDepth: number,
   ): void {
-    const table = tableOfBase(expression.base);
-    if (table) {
+    const baseSymbol =
+      expression.base.type === "Identifier"
+        ? resolved.symbolOf(expression.base)
+        : undefined;
+    const table = tableOfBase(expression.base, owner);
+    if (table && baseSymbol) {
       effects.push({
         access,
         table,
         staticKey: staticKeyOf(expression),
         expression,
         owner,
+        baseSymbol,
       });
       if (
         functionDepth > table.functionDepth &&
@@ -195,10 +250,14 @@ export function analyzeTableEffects(
     }
   }
 
-  function tableOfBase(base: Parser.Expression): FreshTable | undefined {
-    if (base.type !== "Identifier") return undefined;
-    const symbol = resolved.symbolOf(base);
-    return symbol ? freshBySymbol.get(symbol) : undefined;
+  function tableOfBase(
+    base: Parser.Expression,
+    owner: Parser.Statement,
+  ): FreshTable | undefined {
+    const point = valueFlow.controlFlow.pointOf(owner);
+    if (!point) return undefined;
+    const allocation = valueFlow.allocationOfBase(base, point);
+    return allocation ? freshByAllocation.get(allocation) : undefined;
   }
 
   function analyzeStatement(
@@ -207,30 +266,24 @@ export function analyzeTableEffects(
   ): void {
     switch (statement.type) {
       case "LocalStatement":
-        if (
-          statement.variables.length === 1 &&
-          statement.init.length === 1 &&
-          statement.init[0].type === "TableConstructorExpression"
-        ) {
-          const symbol = resolved.symbolOf(statement.variables[0]);
-          if (symbol?.kind === "local") {
-            const table: FreshTable = {
-              symbol,
-              declaration: statement,
-              constructor: statement.init[0],
-              functionDepth,
-            };
-            freshTables.push(table);
-            freshBySymbol.set(symbol, table);
-          }
-        }
         statement.init.forEach((expression) => {
-          analyzeExpression(expression, statement, "alias", functionDepth);
+          if (expression.type !== "Identifier") {
+            analyzeExpression(expression, statement, "alias", functionDepth);
+          }
         });
         return;
       case "AssignmentStatement":
-        statement.init.forEach((expression) => {
-          analyzeExpression(expression, statement, "store", functionDepth);
+        statement.init.forEach((expression, index) => {
+          const target = statement.variables[index];
+          const targetSymbol =
+            target?.type === "Identifier"
+              ? resolved.symbolOf(target)
+              : undefined;
+          const aliasAssignment =
+            expression.type === "Identifier" && targetSymbol?.kind === "local";
+          if (!aliasAssignment) {
+            analyzeExpression(expression, statement, "store", functionDepth);
+          }
         });
         statement.variables.forEach((variable) => {
           if (
@@ -351,7 +404,42 @@ export function analyzeTableEffects(
     escapes,
     isNonescaping: (table) => !escapes.some((escape) => escape.table === table),
     effectsOf: (table) => effects.filter((effect) => effect.table === table),
+    stableBetween: (table, baseSymbol, first, last) =>
+      valueFlow.stableAllocationBetween(
+        first,
+        last,
+        baseSymbol,
+        table.allocation,
+      ),
   };
+
+  function bindingOfAllocation(allocation: Allocation):
+    | {
+        readonly symbol: Symbol;
+        readonly declaration:
+          Parser.LocalStatement | Parser.AssignmentStatement;
+      }
+    | undefined {
+    const owner = allocation.owner;
+    if (
+      owner.type !== "LocalStatement" &&
+      owner.type !== "AssignmentStatement"
+    ) {
+      return undefined;
+    }
+    const index = owner.init.indexOf(allocation.origin);
+    if (index < 0) return undefined;
+    const target = owner.variables[index];
+    if (target?.type !== "Identifier") return undefined;
+    const symbol = resolved.symbolOf(target);
+    return symbol ? { symbol, declaration: owner } : undefined;
+  }
+
+  function depthOf(unit: Allocation["unit"]): number {
+    let depth = 0;
+    for (let current = unit.parent; current; current = current.parent) depth++;
+    return depth;
+  }
 }
 
 export function staticKeyOf(
