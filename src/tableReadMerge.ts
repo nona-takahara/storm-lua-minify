@@ -9,6 +9,8 @@ import {
   OptimizationDiagnosticReason,
   OptimizationDiagnosticSink,
 } from "./optimizerDiagnostics";
+import { decodeLuaStringLiteral } from "./luaString";
+import { RuntimeProfile } from "./runtimeEnvironment";
 
 export interface TableReadMergeGroup {
   readonly body: Parser.Statement[];
@@ -26,8 +28,10 @@ export interface TableReadMergeOptions {
   readonly dirtyGranularity: "table" | "static-key";
   readonly canMoveStatement?: (statement: Parser.LocalStatement) => boolean;
   readonly maxMergeArity?: number;
+  readonly maxMergeArityAt?: (statement: Parser.LocalStatement) => number;
   readonly diagnostics?: OptimizationDiagnosticSink;
   readonly moduleName?: string;
+  readonly runtimeProfile?: RuntimeProfile;
 }
 
 interface Candidate {
@@ -35,6 +39,11 @@ interface Candidate {
   readonly index: number;
   readonly read: TableEffect;
 }
+
+type CandidateDecision =
+  | { readonly candidate: Candidate }
+  | { readonly reason: OptimizationDiagnosticReason }
+  | undefined;
 
 // Lua 5.3のlocal上限200とregister上限255の差より小さく保つ。
 // static table readは単純でも、全RHSを同時評価する巨大local文を生成しない。
@@ -58,22 +67,36 @@ export function planTableReadMerges(
       reason: OptimizationDiagnosticReason,
       candidateSize: number,
       estimatedByteSavings?: number,
+      estimatedOpportunityBytes?: number,
+      sourceRange?: readonly [number, number],
     ) =>
       options.diagnostics?.record({
         pass: "effect-aware-table-reads",
         moduleName: options.moduleName,
+        runtimeProfile: options.runtimeProfile,
         decision,
         reason,
         candidateSize,
         estimatedByteSavings,
+        estimatedOpportunityBytes,
+        sourceRange,
       });
     const flush = (
       rejectionReason: OptimizationDiagnosticReason = "insufficient-group",
     ) => {
       let accepted = 0;
-      const maxMergeArity = options.maxMergeArity ?? DEFAULT_MAX_MERGE_ARITY;
-      for (let start = 0; start < run.length; start += maxMergeArity) {
+      const policyLimit = options.maxMergeArity ?? DEFAULT_MAX_MERGE_ARITY;
+      for (let start = 0; start < run.length;) {
+        const maxMergeArity = Math.min(
+          policyLimit,
+          options.maxMergeArityAt?.(run[start].statement) ?? policyLimit,
+        );
+        if (maxMergeArity < 2) {
+          start++;
+          continue;
+        }
         const part = run.slice(start, start + maxMergeArity);
+        start += part.length;
         if (part.length < 2) continue;
         if (
           !part.some(
@@ -99,40 +122,74 @@ export function planTableReadMerges(
           "profitable-group",
           part.length,
           estimatedByteSavings,
+          undefined,
+          rangeOf(part[0].statement),
         );
       }
       if (run.length > accepted) {
-        record("rejected", rejectionReason, run.length - accepted);
+        const rejected = run.length - accepted;
+        record(
+          "rejected",
+          run.length > policyLimit && rejected === 1
+            ? "resource-budget"
+            : rejectionReason,
+          rejected,
+          undefined,
+          Math.max(0, 5 * (rejected - 1)),
+          rangeOf(run[accepted]?.statement),
+        );
       }
       run = [];
     };
 
     body.forEach((statement, index) => {
       if (isIntervening(statement)) return;
-      const candidate = candidateOf(statement, index, tableEffects, options);
-      if (!candidate) {
-        flush("noncandidate-boundary");
+      const decision = candidateOf(statement, index, tableEffects, options);
+      if (!decision) {
+        flush("control-flow-barrier");
         return;
       }
+      if ("reason" in decision) {
+        flush("control-flow-barrier");
+        record(
+          "rejected",
+          decision.reason,
+          1,
+          undefined,
+          0,
+          rangeOf(statement),
+        );
+        return;
+      }
+      const candidate = decision.candidate;
 
-      if (
-        shadowsInterveningReference(body, run[0]?.index ?? index, candidate) ||
-        !tableEffects.stableBetween(
-          candidate.read.table,
-          candidate.read.baseSymbol,
-          run[0]?.statement ?? statement,
-          statement,
-        ) ||
-        tableIsDirtyBetween(
-          candidate.read,
-          run[0]?.index ?? index,
-          index,
-          indexOf,
-          tableEffects,
-          options.dirtyGranularity,
-        )
-      ) {
-        flush("effect-or-binding-barrier");
+      const shadowed = shadowsInterveningReference(
+        body,
+        run[0]?.index ?? index,
+        candidate,
+      );
+      const stability = tableEffects.stabilityBetween(
+        candidate.read.table,
+        candidate.read.baseSymbol,
+        run[0]?.statement ?? statement,
+        statement,
+      );
+      const dirtyReason = tableDirtyReasonBetween(
+        candidate.read,
+        run[0]?.index ?? index,
+        index,
+        indexOf,
+        tableEffects,
+        options.dirtyGranularity,
+      );
+      if (shadowed || !stability.stable || dirtyReason) {
+        flush(
+          shadowed
+            ? "binding-shadow-hazard"
+            : !stability.stable
+              ? stability.reason
+              : dirtyReason,
+        );
       }
       run.push(candidate);
     });
@@ -176,25 +233,35 @@ function candidateOf(
   index: number,
   analysis: TableEffectAnalysis,
   options: TableReadMergeOptions,
-): Candidate | undefined {
-  if (
-    statement.type !== "LocalStatement" ||
-    statement.variables.length !== 1 ||
-    statement.init.length !== 1 ||
-    (statement.init[0].type !== "MemberExpression" &&
-      statement.init[0].type !== "IndexExpression")
-  ) {
+): CandidateDecision {
+  if (statement.type !== "LocalStatement") return undefined;
+  const init = statement.init[0];
+  if (init?.type !== "MemberExpression" && init?.type !== "IndexExpression") {
     return undefined;
   }
-  if (options.canMoveStatement?.(statement) === false) return undefined;
+  if (statement.variables.length !== 1 || statement.init.length !== 1) {
+    return { reason: "unsupported-shape" };
+  }
+  if (options.canMoveStatement?.(statement) === false) {
+    return { reason: "metadata-preserved" };
+  }
   const read = analysis.effects.find(
-    (effect) =>
-      effect.access === "read" &&
-      effect.expression === statement.init[0] &&
-      effect.staticKey !== undefined &&
-      analysis.isNonescaping(effect.table),
+    (effect) => effect.access === "read" && effect.expression === init,
   );
-  return read ? { statement, index, read } : undefined;
+  if (!read) return { reason: "allocation-unknown" };
+  if (read.staticKey === undefined) {
+    if (
+      init.type === "IndexExpression" &&
+      init.index.type === "StringLiteral" &&
+      !decodeLuaStringLiteral(init.index).ok
+    ) {
+      return { reason: "unsupported-string-key" };
+    }
+    return { reason: "dynamic-key" };
+  }
+  const escape = analysis.escapeReasonsOf(read.table)[0];
+  if (escape) return { reason: escapeReasonOf(escape) };
+  return { candidate: { statement, index, read } };
 }
 
 function isIntervening(statement: Parser.Statement): boolean {
@@ -204,19 +271,19 @@ function isIntervening(statement: Parser.Statement): boolean {
   );
 }
 
-function tableIsDirtyBetween(
+function tableDirtyReasonBetween(
   read: TableEffect,
   start: number,
   end: number,
   indexOf: ReadonlyMap<Parser.Statement, number>,
   tableEffects: TableEffectAnalysis,
   dirtyGranularity: TableReadMergeOptions["dirtyGranularity"],
-): boolean {
+): OptimizationDiagnosticReason | undefined {
   const inOpenInterval = (owner: Parser.Node): boolean => {
     const index = indexOf.get(owner as Parser.Statement);
     return index !== undefined && start < index && index < end;
   };
-  return tableEffects.effectsOf(read.table).some((effect) => {
+  const dirty = tableEffects.effectsOf(read.table).find((effect) => {
     if (effect.access !== "write" || !inOpenInterval(effect.owner))
       return false;
     if (dirtyGranularity === "table") return true;
@@ -224,6 +291,35 @@ function tableIsDirtyBetween(
       effect.staticKey === undefined || effect.staticKey === read.staticKey
     );
   });
+  if (!dirty) return undefined;
+  return dirtyGranularity === "static-key" && dirty.staticKey !== undefined
+    ? "dirty-static-key"
+    : "dirty-table";
+}
+
+function escapeReasonOf(
+  reason: ReturnType<TableEffectAnalysis["escapeReasonsOf"]>[number],
+): OptimizationDiagnosticReason {
+  switch (reason) {
+    case "alias":
+      return "alias-escape";
+    case "call":
+      return "call-escape";
+    case "return":
+      return "return-escape";
+    case "store":
+      return "store-escape";
+    case "capture":
+      return "capture-escape";
+    case "value-use":
+      return "value-use-escape";
+  }
+}
+
+function rangeOf(
+  statement: Parser.Statement,
+): readonly [number, number] | undefined {
+  return (statement as { range?: [number, number] }).range;
 }
 
 function shadowsInterveningReference(

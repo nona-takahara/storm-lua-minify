@@ -66,6 +66,20 @@ export class PassOrchestrator {
     });
     return result;
   }
+
+  runUntilStable(
+    name: string,
+    transform: (resolved: ResolveResult, iteration: number) => TransformResult,
+  ): readonly TransformResult[] {
+    const results: TransformResult[] = [];
+    for (let iteration = 0; ; iteration++) {
+      const result = this.run(`${name}:${String(iteration)}`, (resolved) =>
+        transform(resolved, iteration),
+      );
+      results.push(result);
+      if (!result.changed) return results;
+    }
+  }
 }
 
 export const UNCHANGED: TransformResult = {

@@ -30,8 +30,8 @@ export function mergeLocalDeclarations(
   resolveResult: ResolveResult,
   options: MergeLocalsOptions,
   metadata?: SourceMetadata,
-): void {
-  processBlock(chunk.body, resolveResult, options, metadata);
+): boolean {
+  return processBlock(chunk.body, resolveResult, options, metadata);
 }
 
 // #8b: リネームできない外部グローバル識別子（screen等）をチャンク先頭で
@@ -79,7 +79,7 @@ export function insertGlobalAliases(
   chunk: Parser.Chunk,
   resolveResult: ResolveResult,
   options: InsertGlobalAliasesOptions,
-): void {
+): boolean {
   const newLocals: Parser.LocalStatement[] = [];
   let aliasCounter = 0;
 
@@ -116,6 +116,7 @@ export function insertGlobalAliases(
   if (newLocals.length > 0) {
     chunk.body.unshift(...newLocals);
   }
+  return newLocals.length > 0;
 }
 
 // ============================================================
@@ -127,17 +128,19 @@ function processBlock(
   resolveResult: ResolveResult,
   options: MergeLocalsOptions,
   metadata?: SourceMetadata,
-): void {
+): boolean {
   // 先に子ブロック（ネストしたスコープ）を処理する。子ブロックは別配列なので
   // このレベルでのまとめ上げには影響しない。
+  let changed = false;
   body.forEach((statement) => {
     walkStatement(statement, {
       onBlock: (nested) => {
-        processBlock(nested, resolveResult, options, metadata);
+        changed =
+          processBlock(nested, resolveResult, options, metadata) || changed;
       },
     });
   });
-  mergeRunsInPlace(body, resolveResult, options, metadata);
+  return mergeRunsInPlace(body, resolveResult, options, metadata) || changed;
 }
 
 // あるexpr（候補文のinit式）の中に現れる識別子参照をすべて収集する。
@@ -357,7 +360,7 @@ function mergeRunsInPlace(
   resolveResult: ResolveResult,
   options: MergeLocalsOptions,
   metadata?: SourceMetadata,
-): void {
+): boolean {
   const result: Parser.Statement[] = [];
   let i = 0;
   while (i < body.length) {
@@ -376,5 +379,9 @@ function mergeRunsInPlace(
     result.push(...mergeRun(run, resolveResult, options, metadata));
     i = j;
   }
-  body.splice(0, body.length, ...result);
+  const changed =
+    result.length !== body.length ||
+    result.some((statement, index) => statement !== body[index]);
+  if (changed) body.splice(0, body.length, ...result);
+  return changed;
 }

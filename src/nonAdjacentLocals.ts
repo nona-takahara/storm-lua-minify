@@ -9,6 +9,7 @@ import {
   OptimizationDiagnosticReason,
   OptimizationDiagnosticSink,
 } from "./optimizerDiagnostics";
+import { RuntimeProfile } from "./runtimeEnvironment";
 
 export interface NonAdjacentLocalGroup {
   readonly body: Parser.Statement[];
@@ -28,6 +29,7 @@ export interface NonAdjacentLocalPlannerOptions {
   readonly preserveRequireSplice: boolean;
   readonly diagnostics?: OptimizationDiagnosticSink;
   readonly moduleName?: string;
+  readonly runtimeProfile?: RuntimeProfile;
 }
 
 interface Candidate {
@@ -35,6 +37,10 @@ interface Candidate {
   readonly index: number;
   readonly symbol: Symbol;
 }
+
+type CandidateDecision =
+  | { readonly candidate: Candidate }
+  | { readonly reason: OptimizationDiagnosticReason };
 
 /**
  * 非連続localの宣言hoist候補を選ぶ。ASTは変更しない。
@@ -58,14 +64,19 @@ export function planNonAdjacentLocals(
       reason: OptimizationDiagnosticReason,
       candidateSize: number,
       estimatedByteSavings?: number,
+      estimatedOpportunityBytes?: number,
+      sourceRange?: readonly [number, number],
     ) =>
       options.diagnostics?.record({
         pass: "effect-aware-local-hoist",
         moduleName: options.moduleName,
+        runtimeProfile: options.runtimeProfile,
         decision,
         reason,
         candidateSize,
         estimatedByteSavings,
+        estimatedOpportunityBytes,
+        sourceRange,
       });
     const flush = (
       rejectionReason: OptimizationDiagnosticReason = "insufficient-group",
@@ -89,16 +100,44 @@ export function planNonAdjacentLocals(
               symbols: run.map((candidate) => candidate.symbol),
               estimatedByteSavings: savings,
             });
-            record("accepted", "profitable-group", run.length, savings);
+            record(
+              "accepted",
+              "profitable-group",
+              run.length,
+              savings,
+              undefined,
+              rangeOf(run[0].statement),
+            );
             run = [];
             return;
           }
-          record("rejected", "nonpositive-cost", run.length);
+          record(
+            "rejected",
+            "nonpositive-cost",
+            run.length,
+            undefined,
+            Math.max(0, 4 * run.length - 6),
+            rangeOf(run[0].statement),
+          );
         } else {
-          record("rejected", "output-name-unknown", run.length);
+          record(
+            "rejected",
+            "output-name-unknown",
+            run.length,
+            undefined,
+            Math.max(0, 4 * run.length - 6),
+            rangeOf(run[0].statement),
+          );
         }
       } else if (run.length > 0) {
-        record("rejected", rejectionReason, run.length);
+        record(
+          "rejected",
+          rejectionReason,
+          run.length,
+          undefined,
+          0,
+          rangeOf(run[0].statement),
+        );
       }
       run = [];
     };
@@ -115,17 +154,46 @@ export function planNonAdjacentLocals(
           body[index + 1]?.type === "LocalStatement")
       ) {
         flush("adjacent-local-owned-by-merge");
+        record(
+          "rejected",
+          "adjacent-local-owned-by-merge",
+          1,
+          undefined,
+          0,
+          rangeOf(statement),
+        );
         return;
       }
 
-      const candidate = candidateOf(statement, index, resolved, options);
-      if (!candidate) {
-        flush("noncandidate-boundary");
+      if (statement.type !== "LocalStatement") {
+        flush("control-flow-barrier");
         return;
       }
+      const decision = candidateOf(statement, index, resolved, options);
+      if ("reason" in decision) {
+        flush("control-flow-barrier");
+        record(
+          "rejected",
+          decision.reason,
+          1,
+          undefined,
+          0,
+          rangeOf(statement),
+        );
+        return;
+      }
+      const candidate = decision.candidate;
 
       if (wouldChangeBinding(body, index, candidate)) {
         flush("binding-shadow-hazard");
+        record(
+          "rejected",
+          "binding-shadow-hazard",
+          1,
+          undefined,
+          0,
+          rangeOf(statement),
+        );
         return;
       }
 
@@ -187,22 +255,22 @@ export function applyNonAdjacentLocalPlan(
 }
 
 function candidateOf(
-  statement: Parser.Statement,
+  statement: Parser.LocalStatement,
   index: number,
   resolved: ResolveResult,
   options: NonAdjacentLocalPlannerOptions,
-): Candidate | undefined {
-  if (
-    statement.type !== "LocalStatement" ||
-    statement.variables.length !== 1 ||
-    statement.init.length !== 1 ||
-    (options.preserveRequireSplice && isRequireCall(statement.init[0]))
-  ) {
-    return undefined;
+): CandidateDecision {
+  if (statement.variables.length !== 1 || statement.init.length !== 1) {
+    return { reason: "unsupported-shape" };
+  }
+  if (options.preserveRequireSplice && isRequireCall(statement.init[0])) {
+    return { reason: "require-splice" };
   }
   const symbol = resolved.symbolOf(statement.variables[0]);
-  if (!symbol || symbol.kind !== "local") return undefined;
-  return { statement, index, symbol };
+  if (!symbol || symbol.kind !== "local") {
+    return { reason: "unsupported-shape" };
+  }
+  return { candidate: { statement, index, symbol } };
 }
 
 function isLinearInterveningStatement(statement: Parser.Statement): boolean {
@@ -246,4 +314,10 @@ function isRequireCall(expression: Parser.Expression): boolean {
     expression.base.type === "Identifier" &&
     expression.base.name === "require"
   );
+}
+
+function rangeOf(
+  statement: Parser.Statement,
+): readonly [number, number] | undefined {
+  return (statement as { range?: [number, number] }).range;
 }

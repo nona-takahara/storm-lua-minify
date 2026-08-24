@@ -41,12 +41,19 @@ export interface TableEffectAnalysis {
   readonly escapes: readonly TableEscape[];
   isNonescaping(table: FreshTable): boolean;
   effectsOf(table: FreshTable): readonly TableEffect[];
-  stableBetween(
+  escapeReasonsOf(table: FreshTable): readonly TableEscapeReason[];
+  stabilityBetween(
     table: FreshTable,
     baseSymbol: Symbol,
     first: Parser.Statement,
     last: Parser.Statement,
-  ): boolean;
+  ):
+    | { readonly stable: true }
+    | {
+        readonly stable: false;
+        readonly reason:
+          "control-flow-barrier" | "unstable-reaching-definition";
+      };
 }
 
 type ValueUse = "value-use" | "alias" | "call" | "return" | "store";
@@ -410,13 +417,23 @@ export function analyzeTableEffects(
     escapes,
     isNonescaping: (table) => !escapes.some((escape) => escape.table === table),
     effectsOf: (table) => effects.filter((effect) => effect.table === table),
-    stableBetween: (table, baseSymbol, first, last) =>
-      valueFlow.stableAllocationBetween(
+    escapeReasonsOf: (table) =>
+      escapes
+        .filter((escape) => escape.table === table)
+        .map((escape) => escape.reason),
+    stabilityBetween: (table, baseSymbol, first, last) => {
+      if (!valueFlow.controlFlow.pointsBetween(first, last)) {
+        return { stable: false, reason: "control-flow-barrier" };
+      }
+      return valueFlow.stableAllocationBetween(
         first,
         last,
         baseSymbol,
         table.allocation,
-      ),
+      )
+        ? { stable: true }
+        : { stable: false, reason: "unstable-reaching-definition" };
+    },
   };
 
   function bindingOfAllocation(allocation: Allocation):

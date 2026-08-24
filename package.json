@@ -34,6 +34,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "verify:lua-budget": "node scripts/verify-lua-resource-budget.cjs",
     "prepack": "pnpm run build"
   },
   "author": "Nona Takahara <nona_t_2612@yahoo.co.jp>",

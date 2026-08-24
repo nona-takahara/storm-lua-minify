@@ -2,20 +2,38 @@ export type OptimizationDecision = "accepted" | "rejected";
 export type OptimizationDiagnosticReason =
   | "profitable-group"
   | "insufficient-group"
-  | "noncandidate-boundary"
-  | "effect-or-binding-barrier"
+  | "unsupported-shape"
+  | "require-splice"
+  | "control-flow-barrier"
+  | "metadata-preserved"
+  | "dynamic-key"
+  | "unsupported-string-key"
+  | "allocation-unknown"
+  | "unstable-reaching-definition"
+  | "dirty-static-key"
+  | "dirty-table"
+  | "alias-escape"
+  | "call-escape"
+  | "return-escape"
+  | "store-escape"
+  | "capture-escape"
+  | "value-use-escape"
   | "adjacent-local-owned-by-merge"
   | "binding-shadow-hazard"
   | "output-name-unknown"
-  | "nonpositive-cost";
+  | "nonpositive-cost"
+  | "resource-budget";
 
 export interface OptimizationDiagnostic {
   readonly pass: string;
   readonly moduleName?: string;
+  readonly runtimeProfile?: "lua53" | "stormworks";
   readonly decision: OptimizationDecision;
   readonly reason: OptimizationDiagnosticReason;
   readonly candidateSize?: number;
   readonly estimatedByteSavings?: number;
+  readonly estimatedOpportunityBytes?: number;
+  readonly sourceRange?: readonly [number, number];
 }
 
 /**
@@ -42,19 +60,39 @@ export interface OptimizationDiagnosticSummary {
   readonly acceptedCandidates: number;
   readonly rejectedCandidates: number;
   readonly estimatedByteSavings: number;
-  readonly byReason: readonly {
-    readonly key: string;
+  readonly estimatedOpportunityBytes: number;
+  readonly buckets: readonly {
+    readonly runtimeProfile: string;
+    readonly moduleName: string;
+    readonly pass: string;
+    readonly decision: OptimizationDecision;
+    readonly reason: OptimizationDiagnosticReason;
     readonly candidateCount: number;
+    readonly estimatedByteSavings: number;
+    readonly estimatedOpportunityBytes: number;
   }[];
 }
 
 export function summarizeOptimizationDiagnostics(
   diagnostics: readonly OptimizationDiagnostic[],
 ): OptimizationDiagnosticSummary {
-  const byReason = new Map<string, number>();
+  const buckets = new Map<
+    string,
+    {
+      runtimeProfile: string;
+      moduleName: string;
+      pass: string;
+      decision: OptimizationDecision;
+      reason: OptimizationDiagnosticReason;
+      candidateCount: number;
+      estimatedByteSavings: number;
+      estimatedOpportunityBytes: number;
+    }
+  >();
   let acceptedCandidates = 0;
   let rejectedCandidates = 0;
   let estimatedByteSavings = 0;
+  let estimatedOpportunityBytes = 0;
   diagnostics.forEach((diagnostic) => {
     const count = diagnostic.candidateSize ?? 1;
     if (diagnostic.decision === "accepted") {
@@ -62,16 +100,40 @@ export function summarizeOptimizationDiagnostics(
       estimatedByteSavings += diagnostic.estimatedByteSavings ?? 0;
     } else {
       rejectedCandidates += count;
+      estimatedOpportunityBytes += diagnostic.estimatedOpportunityBytes ?? 0;
     }
-    const key = `${diagnostic.pass}:${diagnostic.reason}`;
-    byReason.set(key, (byReason.get(key) ?? 0) + count);
+    const runtimeProfile = diagnostic.runtimeProfile ?? "unknown";
+    const moduleName = diagnostic.moduleName ?? "unknown";
+    const key = [
+      runtimeProfile,
+      moduleName,
+      diagnostic.pass,
+      diagnostic.decision,
+      diagnostic.reason,
+    ].join("\u0000");
+    const current = buckets.get(key) ?? {
+      runtimeProfile,
+      moduleName,
+      pass: diagnostic.pass,
+      decision: diagnostic.decision,
+      reason: diagnostic.reason,
+      candidateCount: 0,
+      estimatedByteSavings: 0,
+      estimatedOpportunityBytes: 0,
+    };
+    current.candidateCount += count;
+    current.estimatedByteSavings += diagnostic.estimatedByteSavings ?? 0;
+    current.estimatedOpportunityBytes +=
+      diagnostic.estimatedOpportunityBytes ?? 0;
+    buckets.set(key, current);
   });
   return {
     acceptedCandidates,
     rejectedCandidates,
     estimatedByteSavings,
-    byReason: [...byReason]
+    estimatedOpportunityBytes,
+    buckets: [...buckets]
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, candidateCount]) => ({ key, candidateCount })),
+      .map(([, bucket]) => ({ ...bucket })),
   };
 }

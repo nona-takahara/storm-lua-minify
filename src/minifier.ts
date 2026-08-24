@@ -19,7 +19,12 @@ import {
 import { analyzeTableEffects } from "./tableEffects";
 import { applyTableReadMergePlan, planTableReadMerges } from "./tableReadMerge";
 import { PassOrchestrator } from "./optimizerPass";
-import { RuntimeProfile, runtimeEnvironmentOf } from "./runtimeEnvironment";
+import {
+  analyzeLocalResourceUsage,
+  checkParallelEvaluation,
+  RuntimeProfile,
+  runtimeEnvironmentOf,
+} from "./runtimeEnvironment";
 import {
   OptimizationDiagnostic,
   OptimizationDiagnosticCollector,
@@ -279,18 +284,22 @@ export class Minifier {
         throw new Error(moduleName + " is not found");
       }
 
-      if (this.mode.rename !== false && this.mode.globalAlias !== false) {
-        insertGlobalAliases(ast, resolved, {
-          excludeNames: excludeGlobalNames,
-        });
-        resolved = resolveScopes(ast);
-      }
-
       const passes = new PassOrchestrator(ast, resolved);
+      if (this.mode.rename !== false && this.mode.globalAlias !== false) {
+        passes.run("global-alias", (currentResolve) => {
+          const changed = insertGlobalAliases(ast, currentResolve, {
+            excludeNames: excludeGlobalNames,
+          });
+          return { changed, invalidatesResolve: changed };
+        });
+      }
+      resolved = passes.resolved;
+      const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53");
+      const localResources = analyzeLocalResourceUsage(ast);
 
       const effectAwareLocalsEnabled =
         this.mode.effectAwareTransforms !== false &&
-        (this.mode.runtimeProfile === "stormworks" ||
+        (!runtime.semantics.debugLocalIntrospection ||
           this.mode.allowLocalLifetimeChanges === true);
       if (
         effectAwareLocalsEnabled &&
@@ -316,11 +325,18 @@ export class Minifier {
                   !annotations.exported
                 );
               },
-              maxMergeArity: runtimeEnvironmentOf(
-                this.mode.runtimeProfile ?? "lua53",
-              ).resources.conservativeParallelValueLimit,
+              maxMergeArity: runtime.resources.conservativeParallelValueLimit,
+              maxMergeArityAt: (statement) =>
+                checkParallelEvaluation(runtime, {
+                  activeLocalsBefore:
+                    localResources.activeLocalsBefore(statement) ??
+                    runtime.resources.maxActiveLocalsPerFunction,
+                  parallelValueCount:
+                    runtime.resources.conservativeParallelValueLimit,
+                }).limit,
               diagnostics: this.diagnosticCollector,
               moduleName,
+              runtimeProfile: runtime.profile,
             },
           );
           return applyTableReadMergePlan(
@@ -360,6 +376,7 @@ export class Minifier {
             preserveRequireSplice: !this.mode.moduleLikeLua,
             diagnostics: this.diagnosticCollector,
             moduleName,
+            runtimeProfile: runtime.profile,
           });
           return applyNonAdjacentLocalPlan(
             plan,
@@ -370,16 +387,20 @@ export class Minifier {
 
       resolved = passes.resolved;
       if (this.mode.mergeLocals !== false) {
-        mergeLocalDeclarations(
-          ast,
-          resolved,
-          {
-            preserveRequireSplice: !this.mode.moduleLikeLua,
-          },
-          this.getSourceMetadata(moduleName),
-        );
+        passes.run("merge-local-declarations", (currentResolve) => ({
+          changed: mergeLocalDeclarations(
+            ast,
+            currentResolve,
+            {
+              preserveRequireSplice: !this.mode.moduleLikeLua,
+            },
+            this.getSourceMetadata(moduleName),
+          ),
+          invalidatesResolve: false,
+        }));
       }
 
+      resolved = passes.resolved;
       this.moduleResolve.set(moduleName, resolved);
       if (this.mode.rename !== false) {
         const finalKeepNames = new Set(
@@ -466,12 +487,18 @@ export class Minifier {
     if (this.mode.foldConstants !== true) return;
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
-      let resolved = this.moduleResolve.get(moduleName);
+      const resolved = this.moduleResolve.get(moduleName);
       if (!ast || !resolved) throw new Error(moduleName + " is not found");
-      while (foldConstants(ast, resolved, this.getSourceMetadata(moduleName))) {
-        resolved = resolveScopes(ast);
-      }
-      this.moduleResolve.set(moduleName, resolved);
+      const passes = new PassOrchestrator(ast, resolved);
+      passes.runUntilStable("fold-constants", (currentResolve) => {
+        const changed = foldConstants(
+          ast,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+        );
+        return { changed, invalidatesResolve: changed };
+      });
+      this.moduleResolve.set(moduleName, passes.resolved);
     });
   }
 
@@ -480,12 +507,14 @@ export class Minifier {
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
       const metadata = this.getSourceMetadata(moduleName);
-      let resolved = this.moduleResolve.get(moduleName);
+      const resolved = this.moduleResolve.get(moduleName);
       if (!ast || !resolved) throw new Error(moduleName + " is not found");
-      while (removeUnusedLocals(ast, resolved, metadata)) {
-        resolved = resolveScopes(ast);
-      }
-      this.moduleResolve.set(moduleName, resolved);
+      const passes = new PassOrchestrator(ast, resolved);
+      passes.runUntilStable("remove-unused", (currentResolve) => {
+        const changed = removeUnusedLocals(ast, currentResolve, metadata);
+        return { changed, invalidatesResolve: changed };
+      });
+      this.moduleResolve.set(moduleName, passes.resolved);
     });
   }
 
