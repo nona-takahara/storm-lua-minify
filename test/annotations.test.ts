@@ -9,11 +9,11 @@ test("annotations protect declarations and preserved comments stay near their st
     fixture: "annotations",
     mode: { moduleLikeLua: false, mergeLocals: false, globalAlias: false },
   });
-  assert.match(code, /--# file header\nfunction onTick/);
-  assert.match(code, /local descriptive=2/);
+  assert.match(code, /--# file header\nfunction\nonTick/);
+  assert.match(code, /local\ndescriptive=2/);
   assert.doesNotMatch(code, /retained/);
   assert.match(code, /--# before call\nprint\([a-zA-Z_]\)/);
-  assert.match(code, /print\([a-zA-Z_]\) --# after call/);
+  assert.match(code, /print\([a-zA-Z_]\)\n--# after call/);
   assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
   assert.doesNotMatch(code, /unused/);
 });
@@ -29,7 +29,7 @@ test("annotation and configured global-name protection are combined", () => {
       neverRenameGlobals: new Set(["configuredGlobal"]),
     },
   });
-  assert.match(code, /function onTick/);
+  assert.match(code, /function\nonTick/);
   assert.match(code, /configuredGlobal=4/);
 });
 
@@ -65,7 +65,7 @@ test("removeUnused false preserves otherwise removable locals", () => {
       globalAlias: false,
     },
   });
-  assert.match(code, /local [a-zA-Z_]=3/);
+  assert.match(code, /local\n[a-zA-Z_]=3/);
 });
 
 test("disabling future global removal does not disable local removal", () => {

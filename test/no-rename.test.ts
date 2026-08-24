@@ -12,8 +12,8 @@ test("mode.rename = false disables identifier shortening", () => {
     mode: { moduleLikeLua: false, rename: false },
   });
 
-  assert.match(code, /local function add\(first,second\)/);
-  assert.match(code, /local total=0/);
-  assert.match(code, /for index=1,10 do total=add\(total,index\)end/);
+  assert.match(code, /local\nfunction\nadd\(first,second\)/);
+  assert.match(code, /local\ntotal=0/);
+  assert.match(code, /for\nindex=1,10\ndo\ntotal=add\(total,index\)end/);
   assert.match(code, /print\(total,i\)/);
 });
