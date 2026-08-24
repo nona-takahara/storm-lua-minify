@@ -8,7 +8,10 @@ import {
   planTableReadMerges,
 } from "../src/tableReadMerge";
 
-function plan(source: string, fieldSensitive = false) {
+function plan(
+  source: string,
+  dirtyGranularity: "table" | "static-key" = "table",
+) {
   const chunk = Parser.parse(source, { luaVersion: "5.3" });
   const resolved = resolveScopes(chunk);
   return {
@@ -17,7 +20,7 @@ function plan(source: string, fieldSensitive = false) {
       chunk,
       analyzeBindingEffects(chunk, resolved),
       analyzeTableEffects(chunk, resolved),
-      { fieldSensitive },
+      { dirtyGranularity },
     ),
   };
 }
@@ -41,6 +44,31 @@ describe("fresh table read merge planner", () => {
 
   test("treats every write as dirty in whole-table mode", () => {
     const result = plan("local t={x=1} local first=t.x t.y=2 local second=t.x");
+    expect(result.plan.groups).toEqual([]);
+  });
+
+  test("crosses a write to a different key in static-key mode", () => {
+    const result = plan(
+      "local t={x=1} local first=t.x t.y=2 local second=t.x",
+      "static-key",
+    );
+    expect(result.plan.groups).toHaveLength(1);
+    expect(result.plan.groups[0].indexes).toEqual([1, 3]);
+  });
+
+  test("does not cross a write to the same canonical static key", () => {
+    const result = plan(
+      'local t={x=1} local first=t.x t["x"]=2 local second=t.x',
+      "static-key",
+    );
+    expect(result.plan.groups).toEqual([]);
+  });
+
+  test("treats a dynamic-key write as dirty for every static key", () => {
+    const result = plan(
+      "local t={x=1} local first=t.x t[key]=2 local second=t.x",
+      "static-key",
+    );
     expect(result.plan.groups).toEqual([]);
   });
 

@@ -18,8 +18,7 @@ export interface TableReadMergePlan {
 }
 
 export interface TableReadMergeOptions {
-  // falseはtable全体dirty、trueは(table,key)単位のdirty判定。
-  readonly fieldSensitive: boolean;
+  readonly dirtyGranularity: "table" | "static-key";
 }
 
 interface Candidate {
@@ -74,7 +73,7 @@ export function planTableReadMerges(
           indexOf,
           bindingEffects,
           tableEffects,
-          options.fieldSensitive,
+          options.dirtyGranularity,
         )
       ) {
         flush();
@@ -154,7 +153,7 @@ function tableIsDirtyBetween(
   indexOf: ReadonlyMap<Parser.Statement, number>,
   bindingEffects: EffectAnalysis,
   tableEffects: TableEffectAnalysis,
-  fieldSensitive: boolean,
+  dirtyGranularity: TableReadMergeOptions["dirtyGranularity"],
 ): boolean {
   const inOpenInterval = (owner: Parser.Node): boolean => {
     const index = indexOf.get(owner as Parser.Statement);
@@ -170,7 +169,7 @@ function tableIsDirtyBetween(
   return tableEffects.effectsOf(read.table).some((effect) => {
     if (effect.access !== "write" || !inOpenInterval(effect.owner))
       return false;
-    if (!fieldSensitive) return true;
+    if (dirtyGranularity === "table") return true;
     return (
       effect.staticKey === undefined || effect.staticKey === read.staticKey
     );
