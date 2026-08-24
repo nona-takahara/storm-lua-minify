@@ -118,6 +118,11 @@ describe("fresh table read merge planner", () => {
     expect(() => resolveScopes(result.chunk)).not.toThrow();
   });
 
+  test("leaves adjacent reads to the existing local merge", () => {
+    const result = plan("local t={x=1,y=2} local first=t.x local second=t.y");
+    expect(result.plan.groups).toEqual([]);
+  });
+
   test("splits large groups to preserve Lua register headroom", () => {
     const reads = Array.from(
       { length: 120 },

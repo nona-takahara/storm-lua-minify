@@ -19,6 +19,7 @@ export interface TableReadMergePlan {
 
 export interface TableReadMergeOptions {
   readonly dirtyGranularity: "table" | "static-key";
+  readonly canMoveStatement?: (statement: Parser.LocalStatement) => boolean;
 }
 
 interface Candidate {
@@ -49,6 +50,14 @@ export function planTableReadMerges(
       for (let start = 0; start < run.length; start += MAX_MERGE_ARITY) {
         const part = run.slice(start, start + MAX_MERGE_ARITY);
         if (part.length < 2) continue;
+        if (
+          !part.some(
+            (candidate, offset) =>
+              offset > 0 && candidate.index > part[offset - 1].index + 1,
+          )
+        ) {
+          continue;
+        }
         groups.push({
           body,
           statements: part.map((candidate) => candidate.statement),
@@ -69,6 +78,7 @@ export function planTableReadMerges(
         index,
         bindingEffects,
         tableEffects,
+        options,
       );
       if (!candidate) {
         flush();
@@ -131,6 +141,7 @@ function candidateOf(
   index: number,
   bindingEffects: EffectAnalysis,
   analysis: TableEffectAnalysis,
+  options: TableReadMergeOptions,
 ): Candidate | undefined {
   if (
     statement.type !== "LocalStatement" ||
@@ -141,6 +152,7 @@ function candidateOf(
   ) {
     return undefined;
   }
+  if (options.canMoveStatement?.(statement) === false) return undefined;
   const read = analysis.effects.find(
     (effect) =>
       effect.access === "read" &&

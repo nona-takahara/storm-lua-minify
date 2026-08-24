@@ -288,6 +288,17 @@ export class Minifier {
               this.mode.fieldSensitiveTableEffects === false
                 ? "table"
                 : "static-key",
+            canMoveStatement: (statement) => {
+              const metadata = this.getSourceMetadata(moduleName);
+              const annotations = metadata.annotationsOf(statement);
+              return (
+                metadata.beforeOf(statement).length === 0 &&
+                metadata.trailingOf(statement).length === 0 &&
+                !annotations.keep &&
+                !annotations.keepName &&
+                !annotations.exported
+              );
+            },
           },
         );
         const transformed = applyTableReadMergePlan(

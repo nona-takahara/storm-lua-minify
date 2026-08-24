@@ -135,4 +135,23 @@ use(first,second)
       Buffer.byteLength(apiDefault),
     );
   });
+
+  test("does not move a preserved comment across an intervening call", () => {
+    const source = `
+local tableValue={x=1,y=2}
+local first=tableValue.x
+tick()
+--# second stays after tick
+local second=tableValue.y
+use(first,second)
+`;
+    const enabled = minify(source, { effectAwareLocalHoist: false });
+    const disabled = minify(source, {
+      effectAwareTableReads: false,
+      effectAwareLocalHoist: false,
+    });
+
+    expect(enabled).toBe(disabled);
+    expect(enabled.indexOf("tick()")).toBeLessThan(enabled.indexOf("--#"));
+  });
 });
