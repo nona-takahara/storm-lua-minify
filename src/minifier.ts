@@ -16,6 +16,9 @@ import {
   applyNonAdjacentLocalPlan,
   planNonAdjacentLocals,
 } from "./nonAdjacentLocals";
+import { analyzeBindingEffects } from "./effectAnalysis";
+import { analyzeTableEffects } from "./tableEffects";
+import { applyTableReadMergePlan, planTableReadMerges } from "./tableReadMerge";
 
 export type RuntimeProfile = "lua53" | "stormworks";
 
@@ -27,6 +30,12 @@ export interface MinifierMode {
   // 選択環境で意味を保存する効果解析Transformのmaster opt-out。
   // Stormworks profileでは省略時に有効。
   effectAwareTransforms?: boolean;
+  // RHSを元位置に残す非連続local宣言hoistの個別opt-out。
+  effectAwareLocalHoist?: boolean;
+  // fresh・nonescape tableの安定したreadを含むlocal mergeの個別opt-out。
+  effectAwareTableReads?: boolean;
+  // table全体ではなくstatic key単位でdirtyを追跡する精密化の個別opt-out。
+  fieldSensitiveTableEffects?: boolean;
   // 純Luaでdebug APIから観測できるlocal lifetimeの変更を許可するopt-in。
   // Stormworksではdebug introspectionを前提にしないため指定不要。
   allowLocalLifetimeChanges?: boolean;
@@ -262,6 +271,34 @@ export class Minifier {
         resolved = resolveScopes(ast);
       }
 
+      const effectAwareLocalsEnabled =
+        this.mode.effectAwareTransforms !== false &&
+        (this.mode.runtimeProfile === "stormworks" ||
+          this.mode.allowLocalLifetimeChanges === true);
+      if (
+        effectAwareLocalsEnabled &&
+        this.mode.effectAwareTableReads !== false
+      ) {
+        const tablePlan = planTableReadMerges(
+          ast,
+          analyzeBindingEffects(ast, resolved),
+          analyzeTableEffects(ast, resolved),
+          {
+            dirtyGranularity:
+              this.mode.fieldSensitiveTableEffects === false
+                ? "table"
+                : "static-key",
+          },
+        );
+        const transformed = applyTableReadMergePlan(
+          tablePlan,
+          this.getSourceMetadata(moduleName),
+        );
+        if (transformed.invalidatesResolve) {
+          resolved = resolveScopes(ast);
+        }
+      }
+
       const keepNames = new Set(
         resolved.symbols.filter(
           (symbol) =>
@@ -270,11 +307,10 @@ export class Minifier {
             ).keepName,
         ),
       );
-      const effectAwareLocalsEnabled =
-        this.mode.effectAwareTransforms !== false &&
-        (this.mode.runtimeProfile === "stormworks" ||
-          this.mode.allowLocalLifetimeChanges === true);
-      if (effectAwareLocalsEnabled) {
+      if (
+        effectAwareLocalsEnabled &&
+        this.mode.effectAwareLocalHoist !== false
+      ) {
         const provisionalRenames =
           this.mode.rename === false
             ? NO_RENAME
