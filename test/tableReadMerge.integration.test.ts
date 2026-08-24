@@ -127,6 +127,24 @@ use(first,second)
     );
   });
 
+  test("does not move reads for a fresh table assigned to an upvalue", () => {
+    const source = `
+local tableValue
+local function evil() tableValue.y=9 end
+local function make()
+  tableValue={x=1,y=2}
+  local first=tableValue.x
+  evil()
+  local second=tableValue.y
+  use(first,second)
+end
+make()
+`;
+    expect(minify(source)).toBe(
+      minify(source, { effectAwareTableReads: false }),
+    );
+  });
+
   test("master safe opt-out disables table read movement", () => {
     const source = `
 local tableValue={x=1,y=2}

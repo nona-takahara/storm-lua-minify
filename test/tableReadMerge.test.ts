@@ -52,6 +52,22 @@ local second=t.y
     expect(result.plan.groups).toEqual([]);
   });
 
+  test("rejects movement for a fresh table assigned to an upvalue", () => {
+    const result = plan(`
+local t
+local function evil() t.y=9 end
+local function make()
+  t={x=1,y=2}
+  local a=t.x
+  evil()
+  local b=t.y
+  use(a,b)
+end
+make()
+`);
+    expect(result.plan.groups).toEqual([]);
+  });
+
   test("treats every write as dirty in whole-table mode", () => {
     const result = plan("local t={x=1} local first=t.x t.y=2 local second=t.x");
     expect(result.plan.groups).toEqual([]);

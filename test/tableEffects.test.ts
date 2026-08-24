@@ -84,6 +84,20 @@ local second=t.y
     );
   });
 
+  test("does not classify a table assigned to an upvalue as fresh local", () => {
+    const analysis = analyze(`
+local t
+local function evil() t.y=9 end
+local function make()
+  t={x=1,y=2}
+  local a=t.x
+  evil()
+  local b=t.y
+end
+`);
+    expect(analysis.freshTables).toEqual([]);
+  });
+
   test("keeps writes to different static keys distinct", () => {
     const analysis = analyze("local t={} t.x=1 t.y=2");
     expect(

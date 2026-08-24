@@ -438,7 +438,22 @@ export function analyzeTableEffects(
     const target = owner.variables[index];
     if (target.type !== "Identifier") return undefined;
     const symbol = resolved.symbolOf(target);
-    return symbol ? { symbol, declaration: owner } : undefined;
+    if (
+      !symbol ||
+      (owner.type === "AssignmentStatement" &&
+        !valueFlow.controlFlow.regions.some(
+          (region) =>
+            region.unit === allocation.unit &&
+            region.points.some(
+              (point) =>
+                point.statement.type === "LocalStatement" &&
+                point.statement.variables.includes(symbol.declaration),
+            ),
+        ))
+    ) {
+      return undefined;
+    }
+    return { symbol, declaration: owner };
   }
 
   function depthOf(unit: Allocation["unit"]): number {
