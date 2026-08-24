@@ -19,6 +19,7 @@ import {
 import { analyzeBindingEffects } from "./effectAnalysis";
 import { analyzeTableEffects } from "./tableEffects";
 import { applyTableReadMergePlan, planTableReadMerges } from "./tableReadMerge";
+import { PassOrchestrator } from "./optimizerPass";
 
 export type RuntimeProfile = "lua53" | "stormworks";
 
@@ -271,6 +272,8 @@ export class Minifier {
         resolved = resolveScopes(ast);
       }
 
+      const passes = new PassOrchestrator(ast, resolved);
+
       const effectAwareLocalsEnabled =
         this.mode.effectAwareTransforms !== false &&
         (this.mode.runtimeProfile === "stormworks" ||
@@ -279,37 +282,37 @@ export class Minifier {
         effectAwareLocalsEnabled &&
         this.mode.effectAwareTableReads !== false
       ) {
-        const tablePlan = planTableReadMerges(
-          ast,
-          analyzeBindingEffects(ast, resolved),
-          analyzeTableEffects(ast, resolved),
-          {
-            dirtyGranularity:
-              this.mode.fieldSensitiveTableEffects === false
-                ? "table"
-                : "static-key",
-            canMoveStatement: (statement) => {
-              const metadata = this.getSourceMetadata(moduleName);
-              const annotations = metadata.annotationsOf(statement);
-              return (
-                metadata.beforeOf(statement).length === 0 &&
-                metadata.trailingOf(statement).length === 0 &&
-                !annotations.keep &&
-                !annotations.keepName &&
-                !annotations.exported
-              );
+        passes.run("effect-aware-table-reads", (currentResolve) => {
+          const tablePlan = planTableReadMerges(
+            ast,
+            analyzeBindingEffects(ast, currentResolve),
+            analyzeTableEffects(ast, currentResolve),
+            {
+              dirtyGranularity:
+                this.mode.fieldSensitiveTableEffects === false
+                  ? "table"
+                  : "static-key",
+              canMoveStatement: (statement) => {
+                const metadata = this.getSourceMetadata(moduleName);
+                const annotations = metadata.annotationsOf(statement);
+                return (
+                  metadata.beforeOf(statement).length === 0 &&
+                  metadata.trailingOf(statement).length === 0 &&
+                  !annotations.keep &&
+                  !annotations.keepName &&
+                  !annotations.exported
+                );
+              },
             },
-          },
-        );
-        const transformed = applyTableReadMergePlan(
-          tablePlan,
-          this.getSourceMetadata(moduleName),
-        );
-        if (transformed.invalidatesResolve) {
-          resolved = resolveScopes(ast);
-        }
+          );
+          return applyTableReadMergePlan(
+            tablePlan,
+            this.getSourceMetadata(moduleName),
+          );
+        });
       }
 
+      resolved = passes.resolved;
       const keepNames = new Set(
         resolved.symbols.filter(
           (symbol) =>
@@ -331,21 +334,21 @@ export class Minifier {
                 this.globalRenames,
                 keepNames,
               );
-        const plan = planNonAdjacentLocals(ast, resolved, {
-          outputNameLengthOf: (symbol) =>
-            (provisionalRenames.nameOf(symbol.declaration) ?? symbol.name)
-              .length,
-          preserveRequireSplice: !this.mode.moduleLikeLua,
+        passes.run("effect-aware-local-hoist", (currentResolve) => {
+          const plan = planNonAdjacentLocals(ast, currentResolve, {
+            outputNameLengthOf: (symbol) =>
+              (provisionalRenames.nameOf(symbol.declaration) ?? symbol.name)
+                .length,
+            preserveRequireSplice: !this.mode.moduleLikeLua,
+          });
+          return applyNonAdjacentLocalPlan(
+            plan,
+            this.getSourceMetadata(moduleName),
+          );
         });
-        const transformed = applyNonAdjacentLocalPlan(
-          plan,
-          this.getSourceMetadata(moduleName),
-        );
-        if (transformed.invalidatesResolve) {
-          resolved = resolveScopes(ast);
-        }
       }
 
+      resolved = passes.resolved;
       if (this.mode.mergeLocals !== false) {
         mergeLocalDeclarations(
           ast,

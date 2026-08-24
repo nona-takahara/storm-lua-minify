@@ -3,6 +3,7 @@ import { AstWalkVisitor, walkStatement } from "./astWalk";
 import { EffectAnalysis } from "./effectAnalysis";
 import { copyNodeOrigin } from "./generatedNode";
 import { SourceMetadata } from "./sourceMetadata";
+import { TransformResult } from "./optimizerPass";
 import { TableEffect, TableEffectAnalysis } from "./tableEffects";
 
 export interface TableReadMergeGroup {
@@ -111,7 +112,7 @@ export function planTableReadMerges(
 export function applyTableReadMergePlan(
   plan: TableReadMergePlan,
   metadata?: SourceMetadata,
-): { readonly changed: boolean; readonly invalidatesResolve: boolean } {
+): TransformResult {
   [...plan.groups].reverse().forEach((group) => {
     const combined: Parser.LocalStatement = {
       type: "LocalStatement",

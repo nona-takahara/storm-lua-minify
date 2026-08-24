@@ -3,6 +3,7 @@ import { AstWalkVisitor, walkStatement } from "./astWalk";
 import { ResolveResult, Symbol } from "./resolver";
 import { copyNodeOrigin, identifierWithOrigin } from "./generatedNode";
 import { SourceMetadata } from "./sourceMetadata";
+import { TransformResult } from "./optimizerPass";
 
 export interface NonAdjacentLocalGroup {
   readonly body: Parser.Statement[];
@@ -14,11 +15,6 @@ export interface NonAdjacentLocalGroup {
 
 export interface NonAdjacentLocalPlan {
   readonly groups: readonly NonAdjacentLocalGroup[];
-}
-
-export interface TransformResult {
-  readonly changed: boolean;
-  readonly invalidatesResolve: boolean;
 }
 
 export interface NonAdjacentLocalPlannerOptions {
