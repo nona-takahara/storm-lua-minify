@@ -4,6 +4,7 @@ import { EffectAnalysis } from "./effectAnalysis";
 import { copyNodeOrigin } from "./generatedNode";
 import { SourceMetadata } from "./sourceMetadata";
 import { TransformResult } from "./optimizerPass";
+import { childStatementBodies } from "./controlFlow";
 import { TableEffect, TableEffectAnalysis } from "./tableEffects";
 
 export interface TableReadMergeGroup {
@@ -231,11 +232,5 @@ function shadowsInterveningReference(
 }
 
 function childBlocksOf(body: Parser.Statement[]): Parser.Statement[][] {
-  const children: Parser.Statement[][] = [];
-  body.forEach((statement) => {
-    walkStatement(statement, {
-      onBlock: (nested) => children.push(nested),
-    });
-  });
-  return children;
+  return childStatementBodies(body);
 }

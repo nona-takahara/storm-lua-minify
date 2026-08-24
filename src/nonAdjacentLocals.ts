@@ -4,6 +4,7 @@ import { ResolveResult, Symbol } from "./resolver";
 import { copyNodeOrigin, identifierWithOrigin } from "./generatedNode";
 import { SourceMetadata } from "./sourceMetadata";
 import { TransformResult } from "./optimizerPass";
+import { childStatementBodies } from "./controlFlow";
 
 export interface NonAdjacentLocalGroup {
   readonly body: Parser.Statement[];
@@ -205,13 +206,7 @@ function wouldChangeBinding(
 }
 
 function childBlocksOf(body: Parser.Statement[]): Parser.Statement[][] {
-  const children: Parser.Statement[][] = [];
-  body.forEach((statement) => {
-    walkStatement(statement, {
-      onBlock: (nested) => children.push(nested),
-    });
-  });
-  return children;
+  return childStatementBodies(body);
 }
 
 function isRequireCall(expression: Parser.Expression): boolean {
