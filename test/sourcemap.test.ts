@@ -122,6 +122,27 @@ test("sourcemap: #8bでエイリアス化された参照は、位置は元のま
   });
 });
 
+test("sourcemap: 非連続localの合成代入左辺が元の宣言位置と名前へマップされる", async () => {
+  const { code, map } = runMinifier({
+    label: "sourcemap: effect-aware local hoist",
+    fixture: "effect-aware",
+    mode: { moduleLikeLua: false, runtimeProfile: "stormworks" },
+  });
+
+  await SourceMapConsumer.with(map, null, (consumer) => {
+    const rhs = locateInGenerated(code, "makeSecond");
+    // 合成代入は`<renamed>=makeSecond()`。`=`の1 byteを戻った位置がlhs。
+    const lhs = consumer.originalPositionFor({
+      line: rhs.line,
+      column: rhs.column - 2,
+    });
+    assert.equal(lhs.source, "main.lua");
+    assert.equal(lhs.line, 3);
+    assert.equal(lhs.column, 6);
+    assert.equal(lhs.name, "second");
+  });
+});
+
 test("sourcemap: ドット区切りモジュール名のsourcesはOSに依存せず'/'区切りになる", () => {
   const { map } = runMinifier({
     label:
