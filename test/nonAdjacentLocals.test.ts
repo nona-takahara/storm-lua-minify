@@ -28,11 +28,13 @@ describe("non-adjacent local planner", () => {
 
     expect(result.groups).toHaveLength(1);
     expect(result.groups[0].indexes).toEqual([0, 2, 4]);
-    expect(result.groups[0].estimatedByteSavings).toBe(3);
+    expect(result.groups[0].estimatedByteSavings).toBe(6);
   });
 
-  test("rejects a two-local group whose separator-aware cost is not smaller", () => {
-    expect(plan("local first=f() tick() local second=g()").groups).toEqual([]);
+  test("keeps the first initializer in a profitable two-local group", () => {
+    expect(plan("local first=f() tick() local second=g()").groups).toHaveLength(
+      1,
+    );
   });
 
   test("rejects hoisting when it would shadow an intervening reference", () => {
@@ -40,7 +42,8 @@ describe("non-adjacent local planner", () => {
       "local first=f() print(third) local second=g() local third=h() local fourth=i()",
     );
 
-    expect(result.groups).toEqual([]);
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0].indexes).toEqual([0, 2]);
   });
 
   test("excludes a self-shadowing initializer without losing the next group", () => {
@@ -104,7 +107,6 @@ describe("non-adjacent local planner", () => {
     expect(result).toEqual({ changed: true, invalidatesResolve: true });
     expect(chunk.body.map((statement) => statement.type)).toEqual([
       "LocalStatement",
-      "AssignmentStatement",
       "CallStatement",
       "AssignmentStatement",
       "AssignmentStatement",
@@ -116,7 +118,7 @@ describe("non-adjacent local planner", () => {
       "second",
       "third",
     ]);
-    expect(declaration.init).toEqual([]);
+    expect(declaration.init).toHaveLength(1);
 
     const after = resolveScopes(chunk);
     const writes = chunk.body
@@ -129,7 +131,7 @@ describe("non-adjacent local planner", () => {
         (statement) =>
           after.symbolOf(statement.variables[0] as Parser.Identifier)?.name,
       );
-    expect(writes).toEqual(["first", "second", undefined, "third"]);
+    expect(writes).toEqual(["second", undefined, "third"]);
   });
 
   test("preserves statement comments at the replacement boundaries", () => {
@@ -161,10 +163,10 @@ local third=h() --# trailing`;
       metadata.beforeOf(chunk.body[0]).map((comment) => comment.raw),
     ).toEqual(["--# first"]);
     expect(
-      metadata.beforeOf(chunk.body[3]).map((comment) => comment.raw),
+      metadata.beforeOf(chunk.body[2]).map((comment) => comment.raw),
     ).toEqual(["--# second"]);
     expect(
-      metadata.trailingOf(chunk.body[5]).map((comment) => comment.raw),
+      metadata.trailingOf(chunk.body[4]).map((comment) => comment.raw),
     ).toEqual(["--# trailing"]);
   });
 });

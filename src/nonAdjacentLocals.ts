@@ -1,5 +1,5 @@
 import Parser from "luaparse";
-import { AstWalkVisitor, walkStatement } from "./astWalk";
+import { AstWalkVisitor, walkExpression, walkStatement } from "./astWalk";
 import { ResolveResult, Symbol } from "./resolver";
 import { copyNodeOrigin, identifierWithOrigin } from "./generatedNode";
 import { SourceMetadata } from "./sourceMetadata";
@@ -82,16 +82,55 @@ export function planNonAdjacentLocals(
       rejectionReason: OptimizationDiagnosticReason = "insufficient-group",
     ) => {
       if (run.length >= 2) {
+        const hasSeparatedStatements = run.some(
+          (candidate, index) =>
+            index > 0 && candidate.index > run[index - 1].index + 1,
+        );
+        const priorSymbols = new Set<Symbol>();
+        const hasInitializerDependency = run.some((candidate) => {
+          const depends = candidate.statement.init.some((expression) => {
+            let depends = false;
+            const visitor: AstWalkVisitor = {
+              onIdentifierReference: (identifier) => {
+                const symbol = resolved.symbolOf(identifier);
+                if (symbol && priorSymbols.has(symbol)) depends = true;
+              },
+              onBlock: (nested) => {
+                nested.forEach((statement) => {
+                  walkStatement(statement, visitor);
+                });
+              },
+            };
+            walkExpression(expression, visitor);
+            return depends;
+          });
+          priorSymbols.add(candidate.symbol);
+          return depends;
+        });
+        if (!hasSeparatedStatements && !hasInitializerDependency) {
+          record(
+            "rejected",
+            "adjacent-local-owned-by-merge",
+            run.length,
+            undefined,
+            0,
+            rangeOf(run[0].statement),
+          );
+          run = [];
+          return;
+        }
         const lengths = run.map((candidate) =>
           options.outputNameLengthOf(candidate.symbol),
         );
         if (lengths.every((length): length is number => length !== undefined)) {
-          // N個の`local v=e`を`local v,...` + N個の`v=e`へ変える。
-          // token差に加え、新しい宣言と最初の代入間に必要な1 byte separatorも引く。
+          // 先頭initializerは結合後のlocal文に残し、2個目以降だけを元位置の
+          // assignmentへ分離する。これにより依存付きの隣接runも短くできる。
           const savings =
             4 * run.length -
             6 -
-            lengths.reduce((sum, length) => sum + length, 0);
+            lengths.reduce((sum, length) => sum + length, 0) +
+            lengths[0] +
+            2;
           if (savings > 0) {
             groups.push({
               body,
@@ -144,26 +183,6 @@ export function planNonAdjacentLocals(
 
     body.forEach((statement, index) => {
       if (isLinearInterveningStatement(statement)) return;
-
-      // 後続の既存local merge (#9) と候補選択を競合させない。隣接localを
-      // hoistすると、#47単体では短くても#9適用後を基準に出力が長くなり得る。
-      // #42で両案を同じplannerへ統合するまでは、孤立したlocalだけを扱う。
-      if (
-        statement.type === "LocalStatement" &&
-        (body[index - 1]?.type === "LocalStatement" ||
-          body[index + 1]?.type === "LocalStatement")
-      ) {
-        flush("adjacent-local-owned-by-merge");
-        record(
-          "rejected",
-          "adjacent-local-owned-by-merge",
-          1,
-          undefined,
-          0,
-          rangeOf(statement),
-        );
-        return;
-      }
 
       if (statement.type !== "LocalStatement") {
         flush("control-flow-barrier");
@@ -223,11 +242,11 @@ export function applyNonAdjacentLocalPlan(
     const declaration: Parser.LocalStatement = {
       type: "LocalStatement",
       variables: group.statements.map((statement) => statement.variables[0]),
-      init: [],
+      init: [group.statements[0].init[0]],
     };
     copyNodeOrigin(declaration, group.statements[0]);
 
-    const assignments = group.statements.map((statement) => {
+    const assignments = group.statements.slice(1).map((statement) => {
       const assignment: Parser.AssignmentStatement = {
         type: "AssignmentStatement",
         variables: [identifierWithOrigin(statement.variables[0])],
@@ -241,9 +260,7 @@ export function applyNonAdjacentLocalPlan(
       const index = group.indexes[offset];
       const source = group.statements[offset];
       const replacements =
-        offset === 0
-          ? [declaration, assignments[offset]]
-          : [assignments[offset]];
+        offset === 0 ? [declaration] : [assignments[offset - 1]];
       metadata?.replaceStatement(source, replacements);
       group.body.splice(index, 1, ...replacements);
     }

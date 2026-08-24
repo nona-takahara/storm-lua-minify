@@ -32,8 +32,19 @@ CLIはStormworks向けツールとして、`--runtime-profile stormworks`を既�
 - `--no-effect-aware-table-reads`: fresh・nonescape tableの安定したreadのまとめ上げだけを無効にします
 - `--no-field-sensitive-table-effects`: tableの変更追跡をstatic key単位からtable全体へ戻します
 - `--allow-local-lifetime-changes`: Lua 5.3 profileで、debug APIから観測可能な`local`生存期間の変更を許可します
+- `--aggressive-table-read-merges`: tableへの変更を越えるreadも積極的なまとめ上げの対象にします（既定は無効）
 
-`-m` / `--module-like-lua`は`require`・`dofile`の出力方式を選ぶオプションであり、runtime profileとは独立です。また、現時点では未知の副作用を無視するような意味変更オプションは実装していません。将来追加する場合も、上記の意味保存オプションとは分けてopt-inにします。
+`-m` / `--module-like-lua`は`require`・`dofile`の出力方式を選ぶオプションであり、runtime profileとは独立です。
+
+### local宣言まとめ上げの安全性境界
+
+| 分類                   | API / CLIオプション                                            | 既定                                | 変換例                                  |
+| ---------------------- | -------------------------------------------------------------- | ----------------------------------- | --------------------------------------- |
+| 純Luaで意味保存        | `mergeLocals` / `--no-merge-locals`                            | 有効（opt-out）                     | 独立した連続localを1文へ結合            |
+| Stormworksで意味保存   | `effectAwareLocalHoist` / `--no-effect-aware-local-hoist`      | Stormworks profileで有効（opt-out） | 依存するinitializerを元位置の代入へ分離 |
+| Stormworksでも意味変更 | `aggressiveTableReadMerges` / `--aggressive-table-read-merges` | 無効（opt-in）                      | dirtyなtable readを変更より前へ移動     |
+
+2段目はlocalの生存期間を早めるため、`debug.getlocal`等を持つ純Luaでは既定で無効です。3段目は実際に読む値が変わり得ます。出力サイズを優先し、その違いを受け入れられるコードでだけ指定してください。
 
 # Source Map
 

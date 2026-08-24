@@ -32,6 +32,9 @@ export interface TableReadMergeOptions {
   readonly diagnostics?: OptimizationDiagnosticSink;
   readonly moduleName?: string;
   readonly runtimeProfile?: RuntimeProfile;
+  // 明示的な意味変更opt-in。tableへのwriteやbinding変更を越えてreadを前へ
+  // 移動し得るため、Stormworks profileでも安全とはみなさない。
+  readonly allowObservableValueChanges?: boolean;
 }
 
 interface Candidate {
@@ -182,7 +185,11 @@ export function planTableReadMerges(
         tableEffects,
         options.dirtyGranularity,
       );
-      if (shadowed || !stability.stable || dirtyReason) {
+      if (
+        shadowed ||
+        (!options.allowObservableValueChanges &&
+          (!stability.stable || dirtyReason))
+      ) {
         flush(
           shadowed
             ? "binding-shadow-hazard"

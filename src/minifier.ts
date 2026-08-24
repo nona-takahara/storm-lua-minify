@@ -44,6 +44,8 @@ export interface MinifierMode {
   effectAwareLocalHoist?: boolean;
   // fresh・nonescape tableの安定したreadを含むlocal mergeの個別opt-out。
   effectAwareTableReads?: boolean;
+  // dirtyなtable readも対象に含める積極的なopt-in。
+  aggressiveTableReadMerges?: boolean;
   // table全体ではなくstatic key単位でdirtyを追跡する精密化の個別opt-out。
   fieldSensitiveTableEffects?: boolean;
   // 純Luaでdebug APIから観測できるlocal lifetimeの変更を許可するopt-in。
@@ -337,6 +339,8 @@ export class Minifier {
               diagnostics: this.diagnosticCollector,
               moduleName,
               runtimeProfile: runtime.profile,
+              allowObservableValueChanges:
+                this.mode.aggressiveTableReadMerges === true,
             },
           );
           return applyTableReadMergePlan(

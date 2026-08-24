@@ -39,6 +39,19 @@ describe("optimization diagnostics", () => {
       diagnostics: collector,
       moduleName: "main",
     });
+    const rejectedChunk = Parser.parse("local u={} local bad=u[key]", {
+      luaVersion: "5.3",
+    });
+    const rejectedResolved = resolveScopes(rejectedChunk);
+    planTableReadMerges(
+      rejectedChunk,
+      analyzeTableEffects(rejectedChunk, rejectedResolved),
+      {
+        dirtyGranularity: "static-key",
+        diagnostics: collector,
+        moduleName: "main",
+      },
+    );
 
     const summary = summarizeOptimizationDiagnostics(collector.diagnostics);
     expect(summary.acceptedCandidates).toBeGreaterThanOrEqual(2);
@@ -104,7 +117,6 @@ describe("optimization diagnostics", () => {
         "dynamic-key",
         "call-escape",
         "control-flow-barrier",
-        "nonpositive-cost",
       ] as const
     ).forEach((reason) => {
       expect(reasons.has(reason)).toBe(true);
