@@ -14,6 +14,7 @@ import Parser from "luaparse";
 import { ResolveResult, Symbol } from "./resolver";
 import { staticStringArgument, RESERVED_MODULE_FUNCTION_NAMES } from "./linker";
 import { SourceMetadata } from "./sourceMetadata";
+import { AstWalkVisitor, walkExpression, walkStatement } from "./astWalk";
 
 export interface MergeLocalsOptions {
   // SLモード（moduleLikeLua:false）では`local x = require("m")`形式の文を
@@ -121,169 +122,6 @@ export function insertGlobalAliases(
 // ブロックの再帰走査
 // ============================================================
 
-interface WalkVisitor {
-  onIdentifierReference?: (id: Parser.Identifier) => void;
-  onBlock?: (body: Parser.Statement[]) => void;
-}
-
-// resolver.tsのresolveStatement/resolveExpressionの分岐を鏡写しにした
-// 汎用ウォーカー。「参照として現れる識別子」と「ネストしたブロック本体」を
-// どちらも一度の走査で収集できるようにし、resolver.tsの走査ロジックの
-// 重複を避ける。
-function walkStatement(
-  statement: Parser.Statement,
-  visitor: WalkVisitor,
-): void {
-  switch (statement.type) {
-    case "LocalStatement":
-      // 宣言される変数自体は参照ではないため辿らない
-      statement.init.forEach((expr) => {
-        walkExpression(expr, visitor);
-      });
-      return;
-    case "AssignmentStatement":
-      statement.variables.forEach((v) => {
-        if (v.type === "Identifier") {
-          visitor.onIdentifierReference?.(v);
-        } else {
-          walkExpression(v, visitor);
-        }
-      });
-      statement.init.forEach((expr) => {
-        walkExpression(expr, visitor);
-      });
-      return;
-    case "CallStatement":
-      walkExpression(statement.expression, visitor);
-      return;
-    case "DoStatement":
-      visitor.onBlock?.(statement.body);
-      return;
-    case "WhileStatement":
-      walkExpression(statement.condition, visitor);
-      visitor.onBlock?.(statement.body);
-      return;
-    case "RepeatStatement":
-      visitor.onBlock?.(statement.body);
-      walkExpression(statement.condition, visitor);
-      return;
-    case "IfStatement":
-      statement.clauses.forEach((clause) => {
-        if (clause.type !== "ElseClause") {
-          walkExpression(clause.condition, visitor);
-        }
-        visitor.onBlock?.(clause.body);
-      });
-      return;
-    case "ForNumericStatement":
-      walkExpression(statement.start, visitor);
-      walkExpression(statement.end, visitor);
-      if (statement.step) {
-        walkExpression(statement.step, visitor);
-      }
-      visitor.onBlock?.(statement.body);
-      return;
-    case "ForGenericStatement":
-      statement.iterators.forEach((iterator) => {
-        walkExpression(iterator, visitor);
-      });
-      visitor.onBlock?.(statement.body);
-      return;
-    case "FunctionDeclaration":
-      if (statement.identifier) {
-        if (statement.identifier.type === "Identifier") {
-          if (!statement.isLocal) {
-            // 非local: 既存のローカル/グローバルへの代入（参照扱い）
-            visitor.onIdentifierReference?.(statement.identifier);
-          }
-          // isLocalの場合は宣言自体であり参照ではないため辿らない
-        } else {
-          walkExpression(statement.identifier, visitor);
-        }
-      }
-      visitor.onBlock?.(statement.body);
-      return;
-    case "ReturnStatement":
-      statement.arguments.forEach((argument) => {
-        walkExpression(argument, visitor);
-      });
-      return;
-    case "BreakStatement":
-    case "LabelStatement":
-    case "GotoStatement":
-      return;
-    default: {
-      const exhaustive: never = statement;
-      throw new TypeError(
-        "Unknown statement type: `" + JSON.stringify(exhaustive) + "`",
-      );
-    }
-  }
-}
-
-function walkExpression(expr: Parser.Expression, visitor: WalkVisitor): void {
-  switch (expr.type) {
-    case "Identifier":
-      visitor.onIdentifierReference?.(expr);
-      return;
-    case "StringLiteral":
-    case "NumericLiteral":
-    case "BooleanLiteral":
-    case "NilLiteral":
-    case "VarargLiteral":
-      return;
-    case "LogicalExpression":
-    case "BinaryExpression":
-      walkExpression(expr.left, visitor);
-      walkExpression(expr.right, visitor);
-      return;
-    case "UnaryExpression":
-      walkExpression(expr.argument, visitor);
-      return;
-    case "CallExpression":
-      walkExpression(expr.base, visitor);
-      expr.arguments.forEach((argument) => {
-        walkExpression(argument, visitor);
-      });
-      return;
-    case "TableCallExpression":
-      walkExpression(expr.base, visitor);
-      walkExpression(expr.arguments, visitor);
-      return;
-    case "StringCallExpression":
-      walkExpression(expr.base, visitor);
-      walkExpression(expr.argument, visitor);
-      return;
-    case "IndexExpression":
-      walkExpression(expr.base, visitor);
-      walkExpression(expr.index, visitor);
-      return;
-    case "MemberExpression":
-      walkExpression(expr.base, visitor);
-      // フィールド名（`.identifier`）は変数参照ではないため辿らない
-      return;
-    case "FunctionDeclaration":
-      visitor.onBlock?.(expr.body);
-      return;
-    case "TableConstructorExpression":
-      expr.fields.forEach((field) => {
-        if (field.type === "TableKey") {
-          walkExpression(field.key, visitor);
-          walkExpression(field.value, visitor);
-        } else {
-          walkExpression(field.value, visitor);
-        }
-      });
-      return;
-    default: {
-      const exhaustive: never = expr;
-      throw new TypeError(
-        "Unknown expression type: `" + JSON.stringify(exhaustive) + "`",
-      );
-    }
-  }
-}
-
 function processBlock(
   body: Parser.Statement[],
   resolveResult: ResolveResult,
@@ -309,7 +147,7 @@ function collectIdentifierReferences(
   expr: Parser.Expression,
 ): Parser.Identifier[] {
   const found: Parser.Identifier[] = [];
-  const visitor: WalkVisitor = {
+  const visitor: AstWalkVisitor = {
     onIdentifierReference: (id) => found.push(id),
     onBlock: (body) => {
       body.forEach((s) => {
