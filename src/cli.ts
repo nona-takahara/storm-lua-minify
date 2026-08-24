@@ -2,57 +2,12 @@
 
 import fs from "fs";
 import path from "path";
-import { Command } from "commander";
 import { Options } from "luaparse";
 import { Minifier, MinifierMode } from "./minifier";
 import { buildMinifiedOutput, SourceMappingUrlStyle } from "./output";
+import { createCliProgram } from "./cliOptions";
 
-const program = new Command();
-
-program
-  .version("0.3.0")
-  .description("A Lua minifier also outputs source map")
-  .option(
-    "-m, --module-like-lua",
-    "require・dofileの動作を実際のLuaに近づけます",
-  )
-  .option("--no-rename", "識別子の短縮(リネーム)を無効にします（デバッグ用途）")
-  .option(
-    "--global-rename",
-    "代入されているグローバル識別子を内部用とみなして短縮します（外部から名前で参照されるグローバルがある場合は使用しないでください）",
-  )
-  .option(
-    "--no-merge-locals",
-    "連続するローカル変数宣言のまとめ上げを無効にします（デバッグ用途）",
-  )
-  .option(
-    "--no-global-alias",
-    "外部グローバル識別子（リネームできないもの）のローカル代入短縮を無効にします（デバッグ用途）",
-  )
-  .option(
-    "--no-remove-unused",
-    "未使用ローカル宣言の安全な範囲での削除を無効にします",
-  )
-  .option(
-    "--no-remove-unused-globals",
-    "未使用グローバル削除を無効にします（グローバル削除は今後実装予定）",
-  )
-  .option(
-    "--fold-constants",
-    "定数式の事前計算と、定数ローカル変数の伝搬を有効にします（既定では無効）",
-  )
-  .option(
-    "--reserved-globals-config <path>",
-    '代入されていても短縮しないグローバル名を列挙したJSON設定ファイルのパス（{"neverRenameGlobals":["onTick",...]}形式）。エンジン側のコールバック規約名など、常に元の名前のまま残す必要がある識別子を指定します',
-  )
-  .option(
-    "--single-line-source-mapping-url",
-    "sourceMappingURLアノテーションを単一行の--コメントで出力します（Source Map仕様の「最終行」ルールに従いますが、既定の複数行ブロックコメント形式を前提とするツールとは組み合わせられません）",
-  )
-  .option(
-    "--strict-source-mapping-url",
-    "sourceMappingURLアノテーションをLuaコメントで一切包まず、Source Map仕様のマーカー文字列(//# sourceMappingURL=...)そのままを出力します。Luaの文法上この形式と有効なLuaコードは両立できないため、出力ファイルの最終行は有効なLua文ではなくなります",
-  );
+const program = createCliProgram();
 
 program.parse(process.argv);
 
