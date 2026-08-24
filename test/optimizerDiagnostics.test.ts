@@ -79,6 +79,24 @@ describe("optimization diagnostics", () => {
       minifier.parse();
       return [...minifier.optimizationDiagnostics];
     });
+    const luaDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "storm-diagnostics-corpus-lua53-"),
+    );
+    temporaryDirectories.push(luaDirectory);
+    const luaEntry = path.join(luaDirectory, "main.lua");
+    fs.writeFileSync(luaEntry, fixtures[0]);
+    const luaMinifier = new Minifier(
+      luaEntry,
+      { luaVersion: "5.3" },
+      {
+        moduleLikeLua: false,
+        runtimeProfile: "lua53",
+        allowLocalLifetimeChanges: true,
+        collectOptimizationDiagnostics: true,
+      },
+    );
+    luaMinifier.parse();
+    diagnostics.push(...luaMinifier.optimizationDiagnostics);
     const reasons = new Set(diagnostics.map((item) => item.reason));
     (
       [
@@ -93,14 +111,14 @@ describe("optimization diagnostics", () => {
       diagnostics.every(
         (item) =>
           item.moduleName === "main" &&
-          item.runtimeProfile === "stormworks" &&
+          item.runtimeProfile !== undefined &&
           item.sourceRange !== undefined,
       ),
     ).toBe(true);
     const summary = summarizeOptimizationDiagnostics(diagnostics);
     expect(
-      summary.buckets.every((bucket) => bucket.runtimeProfile === "stormworks"),
-    ).toBe(true);
+      new Set(summary.buckets.map((bucket) => bucket.runtimeProfile)),
+    ).toEqual(new Set(["stormworks", "lua53"]));
     expect(JSON.parse(JSON.stringify(summary))).toEqual(summary);
   });
 

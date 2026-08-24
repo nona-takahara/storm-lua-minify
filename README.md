@@ -79,7 +79,7 @@ Luaコード内で完結し、意味論を変更しない最適化は既定で�
 
 対象は、算術・比較・連結・論理演算（`and`／`or`／`not`）・ビット演算・長さ演算子（`#`）です。畳み込んでもプログラムの意味は変わりません。整数と浮動小数点数の区別も保たれ、`3/1`は`3`ではなく`3.0`になります（Luaの`/`は常に浮動小数点数を返すため）。
 
-定数として扱う文字列は、エスケープを含まない印字可能ASCIIのリテラルに限っています。この形なら1文字が1バイトに対応するので、連結・比較・長さのいずれもLuaでの結果と一致します。エスケープや長括弧（`[[...]]`）を含む文字列は、この保証が崩れるため対象外です。
+文字列はLua 5.3のquoted escape、decimal／hex byte、`\z`、改行escape、Unicode escape、長括弧を共有byte decoderで復元します。連結、比較、`#`はJavaScriptの文字数ではなくLua byte列に対して評価し、生成literalは再decode可能な表記へ戻します。不正または判定不能なliteralは畳み込みません。
 
 次の式は畳み込みません。いずれも、畳み込むとプログラムの意味が変わるためです。
 
@@ -113,7 +113,12 @@ Luaコード内で完結し、意味論を変更しない最適化は既定で�
 pnpm ci
 pnpm run build
 pnpm test
+pnpm run verify:lua-budget       # Windowsのluac53で49/50/51境界を確認
+pnpm run verify:effect-semantics # Windowsのlua53で変換前後を差分実行
+pnpm run report:optimizer        # 候補・拒否理由・最終byte比較をJSON出力
 ```
+
+ライブラリAPIで`collectOptimizationDiagnostics: true`を指定すると、`Minifier.optimizationDiagnostics`からruntime／module／pass別の候補採否を取得できます。既定はoffで、on/offによって生成コードとSource Mapは変化しません。`selectTransactionalMinifierVariant`はbaselineとtrialを別Minifierへ隔離し、最終Rename／Print後に厳密に短いartifactだけを選択する高度な調査・planner統合用APIです。
 
 # Lint / Format
 

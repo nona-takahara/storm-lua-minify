@@ -10,6 +10,7 @@ import {
 function plan(
   source: string,
   dirtyGranularity: "table" | "static-key" = "table",
+  maxMergeArityAt?: (statement: Parser.LocalStatement) => number,
 ) {
   const chunk = Parser.parse(source, { luaVersion: "5.3" });
   const resolved = resolveScopes(chunk);
@@ -17,6 +18,7 @@ function plan(
     chunk,
     plan: planTableReadMerges(chunk, analyzeTableEffects(chunk, resolved), {
       dirtyGranularity,
+      maxMergeArityAt,
     }),
   };
 }
@@ -183,6 +185,17 @@ make()
 
     expect(result.plan.groups.map((group) => group.statements.length)).toEqual([
       50, 50, 20,
+    ]);
+  });
+
+  test("uses the position-specific active-local headroom", () => {
+    const reads = Array.from(
+      { length: 51 },
+      (_, index) => `local value${String(index)}=t.x`,
+    ).join(" tick() ");
+    const result = plan(`local t={x=1} ${reads}`, "table", () => 49);
+    expect(result.plan.groups.map((group) => group.statements.length)).toEqual([
+      49, 2,
     ]);
   });
 });
