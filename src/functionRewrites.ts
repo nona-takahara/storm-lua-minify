@@ -2,7 +2,7 @@ import Parser from "luaparse";
 import { CallGraphAnalysis } from "./callGraph";
 import { walkExpression, walkStatement } from "./astWalk";
 import { InterproceduralAnalysis } from "./interproceduralAnalysis";
-import { ResolveResult, Scope } from "./resolver";
+import { ResolveResult, Scope, Symbol } from "./resolver";
 import { SourceMetadata } from "./sourceMetadata";
 import { copyNodeOrigin } from "./generatedNode";
 
@@ -445,6 +445,74 @@ function ownedLocalCount(
   ).length;
 }
 
+/**
+ * Rename copied callee-owned bindings by resolved symbol identity. This keeps
+ * declarations and references paired even when the call site has same-spelled
+ * locals, and avoids treating field names as lexical bindings.
+ */
+function alphaConvertOwnedCopies(
+  originals: readonly unknown[],
+  copies: readonly unknown[],
+  resolved: ResolveResult,
+  functionScope: Scope,
+): void {
+  const owned = new Set(
+    resolved.symbols.filter((symbol) =>
+      hasFunctionScopeAncestor(symbol.scope, functionScope),
+    ),
+  );
+  const unavailable = new Set([
+    ...resolved.symbols.map((symbol) => symbol.name),
+    ...resolved.globals.keys(),
+  ]);
+  const replacementNames = new Map<Symbol, string>();
+  let nextName = 0;
+
+  const nameOf = (symbol: Symbol): string => {
+    const existing = replacementNames.get(symbol);
+    if (existing !== undefined) return existing;
+    let candidate: string;
+    do {
+      candidate = `__stormInline${String(nextName++)}`;
+    } while (unavailable.has(candidate));
+    unavailable.add(candidate);
+    replacementNames.set(symbol, candidate);
+    return candidate;
+  };
+
+  const visitPair = (original: unknown, copy: unknown): void => {
+    if (
+      !original ||
+      !copy ||
+      typeof original !== "object" ||
+      typeof copy !== "object"
+    )
+      return;
+    if (Array.isArray(original)) {
+      if (!Array.isArray(copy)) return;
+      original.forEach((value, index) => {
+        visitPair(value, copy[index]);
+      });
+      return;
+    }
+    if ((original as Parser.Node).type === "Identifier") {
+      if ((copy as Parser.Node).type !== "Identifier") return;
+      const symbol = resolved.symbolOf(original as Parser.Identifier);
+      if (symbol && owned.has(symbol))
+        (copy as Parser.Identifier).name = nameOf(symbol);
+      return;
+    }
+    Object.keys(original).forEach((key) => {
+      visitPair(
+        (original as Record<string, unknown>)[key],
+        (copy as Record<string, unknown>)[key],
+      );
+    });
+  };
+
+  visitPair(originals, copies);
+}
+
 /** Inline a straight-line, closed function body at a statement call site. */
 export function inlineClosedStatementFunctions(
   chunk: Parser.Chunk,
@@ -577,6 +645,12 @@ export function inlineBoundStatementFunctions(
     const copiedBody = executable.map((statement) =>
       structuredClone(statement),
     );
+    alphaConvertOwnedCopies(
+      [...declaration.parameters, ...executable],
+      [...binding.variables, ...copiedBody],
+      resolved,
+      functionScope,
+    );
     const replacement: Parser.DoStatement = {
       type: "DoStatement",
       body: [binding, ...copiedBody],
@@ -649,12 +723,14 @@ export function inlineTailCallFunctions(
       return;
 
     const body: Parser.Statement[] = [];
+    let copiedParameters: Parser.Identifier[] = [];
     if (declaration.parameters.length > 0) {
+      copiedParameters = declaration.parameters.map((parameter) =>
+        structuredClone(parameter as Parser.Identifier),
+      );
       const binding: Parser.LocalStatement = {
         type: "LocalStatement",
-        variables: declaration.parameters.map((parameter) =>
-          structuredClone(parameter as Parser.Identifier),
-        ),
+        variables: copiedParameters,
         init: site.call.arguments.map((argument) => structuredClone(argument)),
       };
       copyNodeOrigin(binding, site.owner);
@@ -662,6 +738,12 @@ export function inlineTailCallFunctions(
     }
     const copiedBody = declaration.body.map((statement) =>
       structuredClone(statement),
+    );
+    alphaConvertOwnedCopies(
+      [...declaration.parameters, ...declaration.body],
+      [...copiedParameters, ...copiedBody],
+      resolved,
+      functionScope,
     );
     body.push(...copiedBody);
     if (declaration.body.at(-1)?.type !== "ReturnStatement") {
