@@ -110,4 +110,92 @@ describe("CFG allocation value flow", () => {
       reason: "multi-value-tail",
     });
   });
+
+  test("instantiates a distinct fresh allocation for each proven factory call", () => {
+    const { chunk, resolved, flow } = analyze(`
+local function factory() return {} end
+local first=factory()
+local second=factory()
+use(first,second)
+`);
+    const firstDeclaration = chunk.body[1] as Parser.LocalStatement;
+    const secondDeclaration = chunk.body[2] as Parser.LocalStatement;
+    const use = chunk.body[3] as Parser.CallStatement;
+    const first = resolved.symbolOf(firstDeclaration.variables[0]);
+    const second = resolved.symbolOf(secondDeclaration.variables[0]);
+    const point = flow.controlFlow.pointOf(use);
+    if (!first || !second || !point) throw new Error("missing facts");
+
+    const firstValue = flow.valueBefore(point, first);
+    const secondValue = flow.valueBefore(point, second);
+    expect(firstValue.kind).toBe("allocations");
+    expect(secondValue.kind).toBe("allocations");
+    if (firstValue.kind !== "allocations" || secondValue.kind !== "allocations")
+      throw new Error("unexpected values");
+    expect([...firstValue.allocations]).not.toEqual([
+      ...secondValue.allocations,
+    ]);
+  });
+
+  test("keeps branch-joined fresh factory alternatives as one call-instance identity", () => {
+    const { chunk, resolved, flow } = analyze(`
+local function factory(flag)
+  if flag then return {x=1} else return {x=2} end
+end
+local value=factory(condition)
+use(value)
+`);
+    const declaration = chunk.body[1] as Parser.LocalStatement;
+    const use = chunk.body[2] as Parser.CallStatement;
+    const symbol = resolved.symbolOf(declaration.variables[0]);
+    const point = flow.controlFlow.pointOf(use);
+    if (!symbol || !point) throw new Error("missing facts");
+    const value = flow.valueBefore(point, symbol);
+    expect(value.kind).toBe("allocations");
+    if (value.kind !== "allocations") throw new Error("unexpected value");
+    expect(value.allocations.size).toBe(1);
+  });
+
+  test("substitutes a parameter return alias with the caller allocation", () => {
+    const { chunk, resolved, flow } = analyze(`
+local function identity(value) return value end
+local original={}
+local alias=identity(original)
+use(alias)
+`);
+    const originalDeclaration = chunk.body[1] as Parser.LocalStatement;
+    const aliasDeclaration = chunk.body[2] as Parser.LocalStatement;
+    const use = chunk.body[3] as Parser.CallStatement;
+    const original = resolved.symbolOf(originalDeclaration.variables[0]);
+    const alias = resolved.symbolOf(aliasDeclaration.variables[0]);
+    const point = flow.controlFlow.pointOf(use);
+    if (!original || !alias || !point) throw new Error("missing facts");
+    expect(flow.valueBefore(point, alias)).toEqual(
+      flow.valueBefore(point, original),
+    );
+  });
+
+  test("does not instantiate captured shared storage or metatable-dependent values as fresh", () => {
+    for (const source of [
+      `
+local shared={}
+local function factory() return shared end
+local value=factory()
+use(value)
+`,
+      `
+local function factory() return setmetatable({},meta) end
+local value=factory()
+use(value)
+`,
+    ]) {
+      const { chunk, resolved, flow } = analyze(source);
+      const declaration = chunk.body.at(-2) as Parser.LocalStatement;
+      const use = chunk.body.at(-1) as Parser.CallStatement;
+      const symbol = resolved.symbolOf(declaration.variables[0]);
+      const point = flow.controlFlow.pointOf(use);
+      if (!symbol || !point) throw new Error("missing facts");
+      expect(flow.valueBefore(point, symbol).kind).toBe("unknown");
+    }
+  });
 });

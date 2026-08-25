@@ -72,6 +72,41 @@ function minifyWith(code: string, foldConstants: boolean): string {
   }
 }
 
+test("propagates a pure function summary into a direct scalar call", () => {
+  const source = `
+local function answer() return 42 end
+local value=answer()
+print(value)
+`;
+  const enabled = minifyWith(source, true);
+  const disabled = minifyWith(source, false);
+
+  assert.match(enabled, /42/);
+  assert.doesNotMatch(enabled, /function/);
+  assert.ok(Buffer.byteLength(enabled) < Buffer.byteLength(disabled));
+});
+
+test("does not erase an effectful or recursive call from a constant summary", () => {
+  const effectful = `
+local function answer() print('effect') return 1 end
+local value=answer()
+print(value)
+`;
+  const recursive = `
+local function answer() return answer() end
+local value=answer()
+print(value)
+`;
+  const globalWrite = `
+local function answer() output=1 return 1 end
+local value=answer()
+print(value,output)
+`;
+  assert.match(minifyWith(effectful, true), /effect/);
+  assert.match(minifyWith(recursive, true), /function/);
+  assert.match(minifyWith(globalWrite, true), /output=1/);
+});
+
 function runFoldedMinifier(code: string): string {
   return minifyWith(code, true);
 }

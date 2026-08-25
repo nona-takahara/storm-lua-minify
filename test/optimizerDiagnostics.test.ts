@@ -70,6 +70,7 @@ describe("optimization diagnostics", () => {
       "local t={x=1} consume(t) local a=t.x use(a)",
       "local a=1 tick() if ready then use(a) end local b=2 use(b)",
       "local first=1 tick() local second=2 use(first,second)",
+      "local function factory() return {x=1,y=2} end local t=factory() local a=t.x tick() local b=t.y use(a,b)",
     ];
     const diagnostics = fixtures.flatMap((source, index) => {
       const { minifier } = minifyTemporaryLuaSource(
@@ -101,11 +102,17 @@ describe("optimization diagnostics", () => {
     );
     diagnostics.push(...luaMinifier.optimizationDiagnostics);
     const reasons = new Set(diagnostics.map((item) => item.reason));
-    (["profitable-group", "dynamic-key", "call-escape"] as const).forEach(
-      (reason) => {
-        expect(reasons.has(reason)).toBe(true);
-      },
-    );
+    (
+      [
+        "profitable-group",
+        "dynamic-key",
+        "call-escape",
+        "resolved-call-target",
+        "unknown-call-target",
+      ] as const
+    ).forEach((reason) => {
+      expect(reasons.has(reason)).toBe(true);
+    });
     expect(
       diagnostics.every(
         (item) =>

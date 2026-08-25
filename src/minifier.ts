@@ -31,7 +31,12 @@ import {
   analyzeOptimizerFactsAtGeneration,
   OPTIMIZER_FACTS_CACHE_KEY,
 } from "./optimizerFacts";
-import { analyzeOptimizer } from "./optimizerAnalysis";
+import {
+  analyzeOptimizer,
+  analyzeOptimizerAtGeneration,
+  OPTIMIZER_ANALYSIS_CACHE_KEY,
+} from "./optimizerAnalysis";
+import { propagateInterproceduralConstants } from "./interproceduralConstants";
 
 export type { RuntimeProfile } from "./runtimeEnvironment";
 
@@ -413,10 +418,9 @@ export class Minifier {
       }
       resolved = passes.resolved;
       const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53");
-      const optimizerAnalysisKey = {};
       const optimizerAnalysis = () =>
         passes.analysis(
-          optimizerAnalysisKey,
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
           (chunk, currentResolve, generation) =>
             analyzeOptimizer(chunk, currentResolve, {
               generation,
@@ -464,6 +468,20 @@ export class Minifier {
               );
         passes.run("statement-scheduler", (currentResolve) => {
           const analysis = optimizerAnalysis();
+          analysis.interprocedural.diagnostics.forEach((diagnostic) =>
+            this.diagnosticCollector?.record({
+              pass: "interprocedural-summary",
+              moduleName,
+              runtimeProfile: runtime.profile,
+              decision:
+                diagnostic.reason === "unknown-call-target"
+                  ? "rejected"
+                  : "accepted",
+              reason: diagnostic.reason,
+              candidateSize: 1,
+              sourceRange: diagnostic.sourceRange,
+            }),
+          );
           const metadata = this.getSourceMetadata(moduleName);
           const canMoveAnnotatedStatement = (
             statement: Parser.LocalStatement,
@@ -623,6 +641,17 @@ export class Minifier {
       const resolved = this.moduleResolve.get(moduleName);
       if (!ast || !resolved) throw new Error(moduleName + " is not found");
       const passes = new PassOrchestrator(ast, resolved);
+      passes.run("interprocedural-constants", () => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const changed = propagateInterproceduralConstants(
+          ast,
+          analysis.interprocedural,
+        );
+        return { changed, invalidatesResolve: changed };
+      });
       passes.runUntilStable("fold-constants", (currentResolve) => {
         const facts = passes.analysis(
           OPTIMIZER_FACTS_CACHE_KEY,
