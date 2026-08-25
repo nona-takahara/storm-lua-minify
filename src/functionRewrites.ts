@@ -404,6 +404,7 @@ function bodyUsesOnlyOwnedBindings(
   body: readonly Parser.Statement[],
   resolved: ResolveResult,
   functionScope: Scope,
+  allowReturns = false,
 ): boolean {
   let safe = true;
   const visitBlock = (statements: readonly Parser.Statement[]): void => {
@@ -412,7 +413,7 @@ function bodyUsesOnlyOwnedBindings(
         safe = false;
         return;
       }
-      if (statement.type === "ReturnStatement") {
+      if (statement.type === "ReturnStatement" && !allowReturns) {
         safe = false;
         return;
       }
@@ -434,6 +435,17 @@ function bodyUsesOnlyOwnedBindings(
   };
   visitBlock(body);
   return safe;
+}
+
+function ownedLocalCount(
+  resolved: ResolveResult,
+  functionScope: Scope,
+): number {
+  return resolved.symbols.filter(
+    (symbol) =>
+      symbol.kind !== "label" &&
+      hasFunctionScopeAncestor(symbol.scope, functionScope),
+  ).length;
 }
 
 /** Inline a straight-line, closed function body at a statement call site. */
@@ -576,6 +588,98 @@ export function inlineBoundStatementFunctions(
     if (!replaceStatement(chunk.body, site.owner, [replacement])) return;
     metadata.replaceStatement(site.owner, [replacement]);
     executable.forEach((source, index) => {
+      metadata.transferStatements([source], copiedBody[index]);
+    });
+    inlinedFunctions++;
+  });
+
+  return { changed: inlinedFunctions > 0, inlinedFunctions };
+}
+
+/**
+ * Inline a function into `return f(...)`. Every copied callee return now exits
+ * the caller, which is equivalent specifically because the call occupied the
+ * caller's entire return tuple. A synthetic empty return preserves fallthrough.
+ */
+export function inlineTailCallFunctions(
+  chunk: Parser.Chunk,
+  analysis: InterproceduralAnalysis,
+  resolved: ResolveResult,
+  metadata: SourceMetadata,
+  options: BoundStatementInlineOptions,
+): StatementInlineRewriteResult {
+  let inlinedFunctions = 0;
+
+  analysis.callGraph.functions.forEach((callable) => {
+    const declaration = callable.declaration;
+    const symbol = callable.symbol;
+    const functionScope = resolved.scopeOfFunction(declaration);
+    if (
+      !symbol ||
+      !functionScope ||
+      !declaration.isLocal ||
+      declaration.parameters.some(
+        (parameter) => parameter.type !== "Identifier",
+      ) ||
+      declaration.body.length === 0 ||
+      symbol.references.length !== 1 ||
+      metadata.annotationsOf(declaration).keep ||
+      !bodyUsesOnlyOwnedBindings(
+        declaration.body,
+        resolved,
+        functionScope,
+        true,
+      )
+    )
+      return;
+
+    const site = analysis.callGraph.calls.find(
+      (candidate) =>
+        candidate.owner.type === "ReturnStatement" &&
+        candidate.owner.arguments.length === 1 &&
+        candidate.owner.arguments[0] === candidate.call &&
+        !candidate.hasUnknownTarget &&
+        candidate.targets.size === 1 &&
+        candidate.targets.has(callable) &&
+        candidate.call.type === "CallExpression" &&
+        candidate.call.base === symbol.references[0],
+    );
+    if (!site || site.call.type !== "CallExpression") return;
+    if (
+      ownedLocalCount(resolved, functionScope) >
+      options.maxIntroducedLocalsAt(site.owner)
+    )
+      return;
+
+    const body: Parser.Statement[] = [];
+    if (declaration.parameters.length > 0) {
+      const binding: Parser.LocalStatement = {
+        type: "LocalStatement",
+        variables: declaration.parameters.map((parameter) =>
+          structuredClone(parameter as Parser.Identifier),
+        ),
+        init: site.call.arguments.map((argument) => structuredClone(argument)),
+      };
+      copyNodeOrigin(binding, site.owner);
+      body.push(binding);
+    }
+    const copiedBody = declaration.body.map((statement) =>
+      structuredClone(statement),
+    );
+    body.push(...copiedBody);
+    if (declaration.body.at(-1)?.type !== "ReturnStatement") {
+      const fallthrough: Parser.ReturnStatement = {
+        type: "ReturnStatement",
+        arguments: [],
+      };
+      copyNodeOrigin(fallthrough, site.owner);
+      body.push(fallthrough);
+    }
+    const replacement: Parser.DoStatement = { type: "DoStatement", body };
+    copyNodeOrigin(replacement, site.owner);
+    if (!replaceStatement(chunk.body, site.owner, [replacement])) return;
+    metadata.replaceStatement(site.owner, [replacement]);
+    declaration.body.forEach((source, index) => {
       metadata.transferStatements([source], copiedBody[index]);
     });
     inlinedFunctions++;

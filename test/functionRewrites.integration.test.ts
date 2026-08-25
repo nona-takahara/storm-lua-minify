@@ -102,4 +102,18 @@ return first(1,sideEffect())
     expect(optimized).not.toContain("function");
     expect(optimized).toContain("publish");
   });
+
+  test("preserves a multi-statement return tuple in tail position", () => {
+    const source =
+      "local function pair(value)local next=value+1 if flag then return value,next end return next,value end return pair(make())";
+    const optimized = minifyTemporaryLuaSource(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "stormworks",
+      mergeLocals: false,
+    }).code;
+
+    expect(optimized).not.toContain("function");
+    expect(optimized).toContain("return");
+    expect(optimized).toContain("make()");
+  });
 });

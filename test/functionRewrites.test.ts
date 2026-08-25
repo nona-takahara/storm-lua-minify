@@ -6,6 +6,7 @@ import {
   inlineClosedStatementFunctions,
   inlineClosedSingleUseFunctions,
   inlineLiteralArgumentFunctions,
+  inlineTailCallFunctions,
   pruneTrailingUnusedParameters,
 } from "../src/functionRewrites";
 import { analyzeInterprocedural } from "../src/interproceduralAnalysis";
@@ -239,5 +240,40 @@ describe("function rewrites", () => {
     );
 
     expect(result).toEqual({ changed: false, inlinedFunctions: 0 });
+  });
+
+  test("inlines multi-statement and tuple returns into a caller tail", () => {
+    const source =
+      "local function pair(value) local next=value+1 if flag then return value,next end return next,value end return pair(make())";
+    const chunk = Parser.parse(source, {
+      luaVersion: "5.3",
+      comments: true,
+      locations: true,
+      ranges: true,
+    });
+    const resolved = resolveScopes(chunk);
+    const facts = analyzeOptimizerFacts(chunk, resolved);
+    const callGraph = analyzeCallGraph(chunk, resolved, facts);
+    const result = inlineTailCallFunctions(
+      chunk,
+      analyzeInterprocedural(chunk, resolved, callGraph),
+      resolved,
+      new SourceMetadata(chunk, source),
+      { maxIntroducedLocalsAt: () => 10 },
+    );
+
+    expect(result).toEqual({ changed: true, inlinedFunctions: 1 });
+    const replacement = chunk.body[1];
+    expect(replacement.type).toBe("DoStatement");
+    if (replacement.type !== "DoStatement") throw new Error("expected do");
+    expect(replacement.body[0]).toMatchObject({
+      type: "LocalStatement",
+      init: [{ type: "CallExpression", base: { name: "make" } }],
+    });
+    expect(
+      replacement.body.filter(
+        (statement) => statement.type === "ReturnStatement",
+      ),
+    ).toHaveLength(1);
   });
 });

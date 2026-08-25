@@ -42,6 +42,7 @@ import {
   inlineClosedStatementFunctions,
   inlineClosedSingleUseFunctions,
   inlineLiteralArgumentFunctions,
+  inlineTailCallFunctions,
   pruneTrailingUnusedParameters,
 } from "./functionRewrites";
 
@@ -282,6 +283,39 @@ export class Minifier {
           analysis.interprocedural,
           currentResolve,
           this.getSourceMetadata(moduleName),
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+      passes.run("inline-tail-call-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const localResources = analyzeLocalResourceUsage(ast);
+        const runtime = runtimeEnvironmentOf(
+          this.mode.runtimeProfile ?? "lua53",
+        );
+        const result = inlineTailCallFunctions(
+          ast,
+          analysis.interprocedural,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+          {
+            maxIntroducedLocalsAt: (statement) => {
+              const active = localResources.activeLocalsBefore(statement);
+              if (active === undefined) return 0;
+              return Math.max(
+                0,
+                Math.min(
+                  runtime.resources.maxActiveLocalsPerFunction - active,
+                  runtime.resources.maxRegistersPerFunction - active,
+                ),
+              );
+            },
+          },
         );
         return {
           changed: result.changed,
