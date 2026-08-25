@@ -41,6 +41,28 @@ local function values() print("values") return 1,2,3 end
 local a,b=values()
 print(a,b)
 `,
+  `
+local log={}
+local function make(value) log[#log+1]=value return value end
+local function publish(first,second) print(first,second,table.concat(log,",")) end
+publish(make("first"),make("second"))
+`,
+  `
+local function pair(value)
+  local next=value+1
+  if value<0 then return value,next end
+  return next,value
+end
+print(pair(4))
+print(pair(-2))
+`,
+  `
+local function run(first,second)
+  local sum=first+second
+  print(sum)
+end
+run((function() print("first") return 1 end)(),(function() print("second") return 2 end)())
+`,
 ];
 
 const directory = fs.mkdtempSync(

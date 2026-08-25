@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { SourceMapConsumer } from "source-map";
 import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
 
 describe("function rewrites integration", () => {
@@ -162,5 +163,33 @@ return recursive(true),variadic(1)
         "vararg-function",
       ]),
     );
+  });
+
+  test("maps an inlined expression to its function-body origin", async () => {
+    const source = [
+      "local function compute()",
+      "  return external()+1",
+      "end",
+      "return compute()",
+    ].join("\n");
+    const result = minifyTemporaryLuaSource(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "stormworks",
+      mergeLocals: false,
+    });
+    const offset = result.code.indexOf("external");
+    expect(offset).toBeGreaterThanOrEqual(0);
+    const before = result.code.slice(0, offset).split("\n");
+    const generated = {
+      line: before.length,
+      column: before.at(-1)?.length ?? 0,
+    };
+
+    await SourceMapConsumer.with(result.map, null, (consumer) => {
+      const origin = consumer.originalPositionFor(generated);
+      expect(origin.source).toBe("main.lua");
+      expect(origin.line).toBe(2);
+      expect(origin.name).toBe("external");
+    });
   });
 });
