@@ -99,6 +99,10 @@ const NO_RENAME: RenameResult = {
   usedNames: new Set(),
 };
 
+function sourceRangeOf(node: object): [number, number] | undefined {
+  return (node as { range?: [number, number] }).range;
+}
+
 function copyMap<K, V>(source: ReadonlyMap<K, V>, target: Map<K, V>): void {
   target.clear();
   source.forEach((value, key) => target.set(key, value));
@@ -245,6 +249,72 @@ export class Minifier {
       const resolved = this.moduleResolve.get(moduleName);
       if (!ast || !resolved) throw new Error(moduleName + " is not found");
       const passes = new PassOrchestrator(ast, resolved);
+      const runtimeProfile = this.mode.runtimeProfile ?? "lua53";
+      const moduleRange =
+        sourceRangeOf(ast) ??
+        ([0, this.moduleSourceText.get(moduleName)?.length ?? 0] as const);
+      const recordAccepted = (pass: string, count: number) => {
+        if (count === 0) return;
+        this.diagnosticCollector?.record({
+          pass,
+          moduleName,
+          runtimeProfile,
+          decision: "accepted",
+          reason: "function-rewrite-applied",
+          candidateSize: count,
+          sourceRange: moduleRange,
+        });
+      };
+      const initialAnalysis = passes.analysis(
+        OPTIMIZER_ANALYSIS_CACHE_KEY,
+        analyzeOptimizerAtGeneration,
+      );
+      const recursive = new Set(
+        initialAnalysis.callGraph.sccs
+          .filter((scc) => scc.recursive)
+          .flatMap((scc) => scc.functions),
+      );
+      initialAnalysis.interprocedural.diagnostics.forEach((diagnostic) =>
+        this.diagnosticCollector?.record({
+          pass: "interprocedural-summary",
+          moduleName,
+          runtimeProfile,
+          decision:
+            diagnostic.reason === "unknown-call-target"
+              ? "rejected"
+              : "accepted",
+          reason: diagnostic.reason,
+          candidateSize: 1,
+          sourceRange: diagnostic.sourceRange ?? moduleRange,
+        }),
+      );
+      initialAnalysis.callGraph.functions.forEach((callable) => {
+        if (!callable.symbol || !callable.declaration.isLocal) return;
+        const calls = initialAnalysis.callGraph.calls.filter((call) =>
+          call.targets.has(callable),
+        ).length;
+        const reason = recursive.has(callable)
+          ? "recursive-function"
+          : callable.declaration.parameters.some(
+                (parameter) => parameter.type === "VarargLiteral",
+              )
+            ? "vararg-function"
+            : callable.symbol.references.length > calls
+              ? "function-escape"
+              : calls > 1
+                ? "multiple-call-sites"
+                : undefined;
+        if (!reason) return;
+        this.diagnosticCollector?.record({
+          pass: "function-rewrite",
+          moduleName,
+          runtimeProfile,
+          decision: "rejected",
+          reason,
+          candidateSize: 1,
+          sourceRange: sourceRangeOf(callable.declaration),
+        });
+      });
       passes.run("prune-trailing-unused-parameters", () => {
         const analysis = passes.analysis(
           OPTIMIZER_ANALYSIS_CACHE_KEY,
@@ -253,6 +323,10 @@ export class Minifier {
         const result = pruneTrailingUnusedParameters(
           analysis.interprocedural.callGraph,
           this.getSourceMetadata(moduleName),
+        );
+        recordAccepted(
+          "prune-trailing-unused-parameters",
+          result.prunedParameters,
         );
         return {
           changed: result.changed,
@@ -269,6 +343,10 @@ export class Minifier {
           currentResolve,
           this.getSourceMetadata(moduleName),
         );
+        recordAccepted(
+          "inline-closed-single-use-functions",
+          result.inlinedFunctions,
+        );
         return {
           changed: result.changed,
           invalidatesResolve: result.changed,
@@ -283,6 +361,10 @@ export class Minifier {
           analysis.interprocedural,
           currentResolve,
           this.getSourceMetadata(moduleName),
+        );
+        recordAccepted(
+          "inline-literal-argument-functions",
+          result.inlinedFunctions,
         );
         return {
           changed: result.changed,
@@ -317,6 +399,7 @@ export class Minifier {
             },
           },
         );
+        recordAccepted("inline-tail-call-functions", result.inlinedFunctions);
         return {
           changed: result.changed,
           invalidatesResolve: result.changed,
@@ -332,6 +415,10 @@ export class Minifier {
           analysis.interprocedural,
           currentResolve,
           this.getSourceMetadata(moduleName),
+        );
+        recordAccepted(
+          "inline-closed-statement-functions",
+          result.inlinedFunctions,
         );
         return {
           changed: result.changed,
@@ -364,6 +451,10 @@ export class Minifier {
               );
             },
           },
+        );
+        recordAccepted(
+          "inline-bound-statement-functions",
+          result.inlinedFunctions,
         );
         return {
           changed: result.changed,
@@ -882,6 +973,16 @@ export class Minifier {
           currentResolve,
           metadata,
           facts,
+          (statement) =>
+            this.diagnosticCollector?.record({
+              pass: "function-dce",
+              moduleName,
+              runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+              decision: "accepted",
+              reason: "unused-function",
+              candidateSize: 1,
+              sourceRange: sourceRangeOf(statement),
+            }),
         );
         return { changed, invalidatesResolve: changed };
       });

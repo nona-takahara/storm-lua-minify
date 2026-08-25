@@ -41,7 +41,13 @@ export type OptimizationDiagnosticReason =
   | "recursive-scc-converged"
   | "parameter-field-effect"
   | "parameter-escape"
-  | "external-contract-used";
+  | "external-contract-used"
+  | "function-rewrite-applied"
+  | "multiple-call-sites"
+  | "function-escape"
+  | "recursive-function"
+  | "vararg-function"
+  | "unused-function";
 
 export interface OptimizationDiagnostic {
   readonly pass: string;

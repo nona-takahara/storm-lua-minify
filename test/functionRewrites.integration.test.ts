@@ -116,4 +116,51 @@ return first(1,sideEffect())
     expect(optimized).toContain("return");
     expect(optimized).toContain("make()");
   });
+
+  test("deletes unreachable local functions through the shared unused pass", () => {
+    const source = "local function unreachable() publish() end return 1";
+    const result = minifyTemporaryLuaSource(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "stormworks",
+      collectOptimizationDiagnostics: true,
+    });
+
+    expect(result.code).not.toContain("function");
+    expect(result.minifier.optimizationDiagnostics).toContainEqual(
+      expect.objectContaining({
+        pass: "function-dce",
+        decision: "accepted",
+        reason: "unused-function",
+      }),
+    );
+  });
+
+  test("reports recursive, escaping, multi-use, and vararg rejection reasons", () => {
+    const source = `
+local function recursive(value) if value then return recursive(false) end end
+local function escaping(value) return value end
+consume(escaping)
+local function shared(value) return value end
+publish(shared(1),shared(2))
+local function variadic(...) return ... end
+return recursive(true),variadic(1)
+`;
+    const result = minifyTemporaryLuaSource(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "stormworks",
+      collectOptimizationDiagnostics: true,
+    });
+    const reasons = result.minifier.optimizationDiagnostics
+      .filter((diagnostic) => diagnostic.pass === "function-rewrite")
+      .map((diagnostic) => diagnostic.reason);
+
+    expect(reasons).toEqual(
+      expect.arrayContaining([
+        "recursive-function",
+        "function-escape",
+        "multiple-call-sites",
+        "vararg-function",
+      ]),
+    );
+  });
 });

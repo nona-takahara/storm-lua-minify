@@ -69,11 +69,19 @@ function removeFromBlock(
   resolved: ResolveResult,
   metadata: SourceMetadata,
   facts: OptimizerFacts,
+  onRemoveLocalFunction?: (statement: Parser.FunctionDeclaration) => void,
 ): boolean {
   let changed = false;
   body.forEach((statement) => {
     nestedBodies(statement).forEach((nested) => {
-      changed = removeFromBlock(nested, resolved, metadata, facts) || changed;
+      changed =
+        removeFromBlock(
+          nested,
+          resolved,
+          metadata,
+          facts,
+          onRemoveLocalFunction,
+        ) || changed;
     });
   });
 
@@ -87,6 +95,7 @@ function removeFromBlock(
     ) {
       const symbol = resolved.symbolOf(statement.identifier);
       if (symbol && !hasExternalReference(statement, symbol.references)) {
+        onRemoveLocalFunction?.(statement);
         changed = true;
         replacements.set(statement, []);
         return;
@@ -188,6 +197,13 @@ export function removeUnusedLocals(
   resolved: ResolveResult,
   metadata: SourceMetadata,
   facts: OptimizerFacts,
+  onRemoveLocalFunction?: (statement: Parser.FunctionDeclaration) => void,
 ): boolean {
-  return removeFromBlock(chunk.body, resolved, metadata, facts);
+  return removeFromBlock(
+    chunk.body,
+    resolved,
+    metadata,
+    facts,
+    onRemoveLocalFunction,
+  );
 }
