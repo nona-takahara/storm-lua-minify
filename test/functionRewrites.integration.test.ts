@@ -72,4 +72,18 @@ return first(1,sideEffect())
     expect(optimized).toContain("first()globalValue=second()");
     expect(optimized).not.toContain("function");
   });
+
+  test("specializes literal arguments before later optimization", () => {
+    const source =
+      "local function add(value,amount)return value+amount end return add(40,2)";
+    const optimized = minifyTemporaryLuaSource(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "stormworks",
+      mergeLocals: false,
+      foldConstants: true,
+    }).code;
+
+    expect(optimized).not.toContain("function");
+    expect(optimized).toContain("42");
+  });
 });

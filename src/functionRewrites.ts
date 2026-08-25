@@ -20,6 +20,12 @@ export interface StatementInlineRewriteResult {
   readonly inlinedFunctions: number;
 }
 
+type PrimitiveLiteral =
+  | Parser.StringLiteral
+  | Parser.NumericLiteral
+  | Parser.BooleanLiteral
+  | Parser.NilLiteral;
+
 /**
  * Remove only the trailing, identifier parameters proven unused by Resolve.
  *
@@ -88,6 +94,126 @@ function isClosedInlineExpression(
   return closed && expression.type !== "VarargLiteral";
 }
 
+function primitiveLiteral(
+  expression: Parser.Expression | undefined,
+): PrimitiveLiteral | undefined {
+  if (!expression) return { type: "NilLiteral", value: null, raw: "nil" };
+  switch (expression.type) {
+    case "StringLiteral":
+    case "NumericLiteral":
+    case "BooleanLiteral":
+    case "NilLiteral":
+      return expression;
+    default:
+      return undefined;
+  }
+}
+
+function substituteParameters(
+  expression: Parser.Expression,
+  replacements: ReadonlyMap<string, PrimitiveLiteral>,
+): Parser.Expression {
+  const clone = structuredClone(expression);
+  const substitute = (
+    original: Parser.Expression,
+    copied: Parser.Expression,
+  ): void => {
+    if (original.type !== copied.type)
+      throw new Error("Cloned expression changed node type");
+    switch (original.type) {
+      case "Identifier": {
+        const replacement = replacements.get(original.name);
+        if (replacement)
+          overwriteExpression(copied, structuredClone(replacement));
+        return;
+      }
+      case "StringLiteral":
+      case "NumericLiteral":
+      case "BooleanLiteral":
+      case "NilLiteral":
+      case "VarargLiteral":
+        return;
+      case "LogicalExpression":
+      case "BinaryExpression": {
+        const binary = copied as Parser.BinaryExpression;
+        substitute(original.left, binary.left);
+        substitute(original.right, binary.right);
+        return;
+      }
+      case "UnaryExpression":
+        substitute(
+          original.argument,
+          (copied as Parser.UnaryExpression).argument,
+        );
+        return;
+      case "CallExpression": {
+        const call = copied as Parser.CallExpression;
+        substitute(original.base, call.base);
+        original.arguments.forEach((argument, index) =>
+          substitute(argument, call.arguments[index]),
+        );
+        return;
+      }
+      case "TableCallExpression": {
+        const call = copied as Parser.TableCallExpression;
+        substitute(original.base, call.base);
+        substitute(original.arguments, call.arguments);
+        return;
+      }
+      case "StringCallExpression": {
+        const call = copied as Parser.StringCallExpression;
+        substitute(original.base, call.base);
+        substitute(original.argument, call.argument);
+        return;
+      }
+      case "IndexExpression": {
+        const index = copied as Parser.IndexExpression;
+        substitute(original.base, index.base);
+        substitute(original.index, index.index);
+        return;
+      }
+      case "MemberExpression":
+        substitute(original.base, (copied as Parser.MemberExpression).base);
+        return;
+      case "TableConstructorExpression": {
+        const table = copied as Parser.TableConstructorExpression;
+        original.fields.forEach((field, index) => {
+          const copiedField = table.fields[index];
+          if (field.type === "TableKey") {
+            if (copiedField.type !== "TableKey")
+              throw new Error("Cloned table field changed node type");
+            substitute(field.key, copiedField.key);
+          }
+          substitute(field.value, copiedField.value);
+        });
+        return;
+      }
+      case "FunctionDeclaration":
+        throw new Error("Nested functions are not substitutable");
+    }
+  };
+  substitute(expression, clone);
+  return clone;
+}
+
+function onlyParametersOrGlobals(
+  expression: Parser.Expression,
+  resolved: ResolveResult,
+  parameterNames: ReadonlySet<string>,
+): boolean {
+  let safe = true;
+  walkExpression(expression, {
+    onIdentifierReference: (identifier) => {
+      const symbol = resolved.symbolOf(identifier);
+      if (symbol && !parameterNames.has(symbol.name)) safe = false;
+    },
+    onFunction: () => {
+      safe = false;
+    },
+  });
+  return safe && expression.type !== "VarargLiteral";
+}
+
 /**
  * Inline the first deliberately narrow class whose binding proof is complete:
  * a zero-argument, single-use local function returning one closed expression.
@@ -134,6 +260,71 @@ export function inlineClosedSingleUseFunctions(
     // structuredClone retains loc/range on every copied node, so the inlined
     // expression maps to the function body/return origin rather than call-site text.
     overwriteExpression(site.call, structuredClone(expression));
+    inlinedFunctions++;
+  });
+
+  return { changed: inlinedFunctions > 0, inlinedFunctions };
+}
+
+/** Inline a single-return function when every actual is an immutable literal. */
+export function inlineLiteralArgumentFunctions(
+  analysis: InterproceduralAnalysis,
+  resolved: ResolveResult,
+  metadata: SourceMetadata,
+): InlineRewriteResult {
+  let inlinedFunctions = 0;
+
+  analysis.callGraph.functions.forEach((callable) => {
+    const declaration = callable.declaration;
+    const symbol = callable.symbol;
+    if (
+      !symbol ||
+      !declaration.isLocal ||
+      declaration.parameters.length === 0 ||
+      declaration.parameters.some(
+        (parameter) => parameter.type !== "Identifier",
+      ) ||
+      declaration.body.length !== 1 ||
+      symbol.references.length !== 1 ||
+      metadata.annotationsOf(declaration).keep
+    )
+      return;
+    const returned = declaration.body[0];
+    if (returned.type !== "ReturnStatement" || returned.arguments.length !== 1)
+      return;
+
+    const site = analysis.callGraph.calls.find(
+      (candidate) =>
+        !candidate.hasUnknownTarget &&
+        candidate.targets.size === 1 &&
+        candidate.targets.has(callable) &&
+        candidate.call.type === "CallExpression" &&
+        candidate.call.arguments.length <= declaration.parameters.length &&
+        candidate.call.base === symbol.references[0],
+    );
+    if (!site || site.call.type !== "CallExpression") return;
+
+    const replacements = new Map<string, PrimitiveLiteral>();
+    for (let index = 0; index < declaration.parameters.length; index++) {
+      const parameter = declaration.parameters[index];
+      if (parameter.type !== "Identifier") return;
+      const actual = primitiveLiteral(site.call.arguments[index]);
+      if (!actual) return;
+      replacements.set(parameter.name, actual);
+    }
+    if (
+      !onlyParametersOrGlobals(
+        returned.arguments[0],
+        resolved,
+        new Set(replacements.keys()),
+      )
+    )
+      return;
+
+    overwriteExpression(
+      site.call,
+      substituteParameters(returned.arguments[0], replacements),
+    );
     inlinedFunctions++;
   });
 

@@ -4,6 +4,7 @@ import { analyzeCallGraph } from "../src/callGraph";
 import {
   inlineClosedStatementFunctions,
   inlineClosedSingleUseFunctions,
+  inlineLiteralArgumentFunctions,
   pruneTrailingUnusedParameters,
 } from "../src/functionRewrites";
 import { analyzeInterprocedural } from "../src/interproceduralAnalysis";
@@ -142,5 +143,43 @@ describe("function rewrites", () => {
       "CallStatement",
       "AssignmentStatement",
     ]);
+  });
+
+  test("specializes primitive literal arguments with call-site provenance", () => {
+    const source =
+      'local function format(value,suffix)return prefix..value..suffix end return format("x","!")';
+    const chunk = Parser.parse(source, {
+      luaVersion: "5.3",
+      comments: true,
+      locations: true,
+      ranges: true,
+    });
+    const resolved = resolveScopes(chunk);
+    const facts = analyzeOptimizerFacts(chunk, resolved);
+    const callGraph = analyzeCallGraph(chunk, resolved, facts);
+    const call = callGraph.calls.at(-1)?.call;
+    if (call?.type !== "CallExpression") throw new Error("expected call");
+    const firstActualLoc = call.arguments[0].loc;
+    const result = inlineLiteralArgumentFunctions(
+      analyzeInterprocedural(chunk, resolved, callGraph),
+      resolved,
+      new SourceMetadata(chunk, source),
+    );
+    const finalReturn = chunk.body[1] as Parser.ReturnStatement;
+
+    expect(result).toEqual({ changed: true, inlinedFunctions: 1 });
+    expect(finalReturn.arguments[0].type).toBe("BinaryExpression");
+    const strings: Parser.StringLiteral[] = [];
+    const collectStrings = (value: unknown): void => {
+      if (!value || typeof value !== "object") return;
+      if ((value as Parser.Node).type === "StringLiteral") {
+        strings.push(value as Parser.StringLiteral);
+        return;
+      }
+      Object.values(value).forEach(collectStrings);
+    };
+    collectStrings(finalReturn.arguments[0]);
+    expect(strings[0].raw).toBe('"x"');
+    expect(strings[0].loc).toEqual(firstActualLoc);
   });
 });

@@ -40,6 +40,7 @@ import { propagateInterproceduralConstants } from "./interproceduralConstants";
 import {
   inlineClosedStatementFunctions,
   inlineClosedSingleUseFunctions,
+  inlineLiteralArgumentFunctions,
   pruneTrailingUnusedParameters,
 } from "./functionRewrites";
 
@@ -211,6 +212,7 @@ export class Minifier {
     this.foldConstantsAll();
     this.removeUnusedAll();
     this.rewriteFunctionsAll();
+    this.foldConstantsAll();
     this.removeUnusedAll();
     this.rebuildIdentifiersInUse();
     this.computeGlobalRenames();
@@ -261,6 +263,21 @@ export class Minifier {
           analyzeOptimizerAtGeneration,
         );
         const result = inlineClosedSingleUseFunctions(
+          analysis.interprocedural,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+      passes.run("inline-literal-argument-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const result = inlineLiteralArgumentFunctions(
           analysis.interprocedural,
           currentResolve,
           this.getSourceMetadata(moduleName),
