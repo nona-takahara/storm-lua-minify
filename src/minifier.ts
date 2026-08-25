@@ -37,6 +37,7 @@ import {
   OPTIMIZER_ANALYSIS_CACHE_KEY,
 } from "./optimizerAnalysis";
 import { propagateInterproceduralConstants } from "./interproceduralConstants";
+import { pruneTrailingUnusedParameters } from "./functionRewrites";
 
 export type { RuntimeProfile } from "./runtimeEnvironment";
 
@@ -205,6 +206,8 @@ export class Minifier {
     this.link();
     this.foldConstantsAll();
     this.removeUnusedAll();
+    this.rewriteFunctionsAll();
+    this.removeUnusedAll();
     this.rebuildIdentifiersInUse();
     this.computeGlobalRenames();
     this.transformAll();
@@ -224,7 +227,36 @@ export class Minifier {
     return result;
   }
 
+  /** Function-summary consumers run before scheduling and final rename/print. */
+  private rewriteFunctionsAll(): void {
+    if (this.schedulerVariant === "baseline" || !this.functionRewritesEnabled())
+      return;
+
+    this.linkOrder.forEach((moduleName) => {
+      const ast = this.moduleAST.get(moduleName);
+      const resolved = this.moduleResolve.get(moduleName);
+      if (!ast || !resolved) throw new Error(moduleName + " is not found");
+      const passes = new PassOrchestrator(ast, resolved);
+      passes.run("prune-trailing-unused-parameters", () => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const result = pruneTrailingUnusedParameters(
+          analysis.interprocedural.callGraph,
+          this.getSourceMetadata(moduleName),
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+      this.moduleResolve.set(moduleName, passes.resolved);
+    });
+  }
+
   private requiresSchedulerSelection(): boolean {
+    if (this.functionRewritesEnabled()) return true;
     if (this.mode.mergeLocals !== false) return true;
     if (this.mode.effectAwareTransforms === false) return false;
     const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53");
@@ -235,6 +267,15 @@ export class Minifier {
       lifetimeAllowed &&
       (this.mode.effectAwareLocalHoist !== false ||
         this.mode.effectAwareTableReads !== false)
+    );
+  }
+
+  private functionRewritesEnabled(): boolean {
+    if (this.mode.effectAwareTransforms === false) return false;
+    const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53");
+    return (
+      !runtime.semantics.debugLocalIntrospection ||
+      this.mode.allowLocalLifetimeChanges === true
     );
   }
 
