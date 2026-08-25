@@ -2,7 +2,11 @@ import { test } from "vitest";
 import assert from "node:assert/strict";
 import Parser from "luaparse";
 import { resolveScopes } from "../src/resolver";
-import { mergeLocalDeclarations } from "../src/transform";
+import { analyzeOptimizer } from "../src/optimizerAnalysis";
+import {
+  applyStatementSchedule,
+  planStatementSchedule,
+} from "../src/statementScheduler";
 
 // Transformパス（#9）の単体テスト。連続するlocal宣言のまとめ上げと、
 // 3つのハザード（参照順序・複数値展開・SLモードのrequire splice保持）に対する
@@ -15,7 +19,17 @@ function parse(code: string): Parser.Chunk {
 function merge(code: string, preserveRequireSplice = false): Parser.Chunk {
   const chunk = parse(code);
   const resolved = resolveScopes(chunk);
-  mergeLocalDeclarations(chunk, resolved, { preserveRequireSplice });
+  const analysis = analyzeOptimizer(chunk, resolved);
+  applyStatementSchedule(
+    planStatementSchedule(chunk, resolved, {
+      facts: analysis.facts,
+      dataflow: analysis.statementDataflow,
+      outputNameLengthOf: () => 1,
+      preserveRequireSplice,
+      enableLocalPacking: false,
+      enableLexicalLocalMerge: true,
+    }),
+  );
   return chunk;
 }
 
@@ -206,7 +220,17 @@ test("merging preserves node identity so resolveResult.symbolOf keeps working af
   const aSymbolBefore = resolved.symbolOf(
     (chunk.body[0] as Parser.LocalStatement).variables[0],
   );
-  mergeLocalDeclarations(chunk, resolved, { preserveRequireSplice: false });
+  const analysis = analyzeOptimizer(chunk, resolved);
+  applyStatementSchedule(
+    planStatementSchedule(chunk, resolved, {
+      facts: analysis.facts,
+      dataflow: analysis.statementDataflow,
+      outputNameLengthOf: () => 1,
+      preserveRequireSplice: false,
+      enableLocalPacking: false,
+      enableLexicalLocalMerge: true,
+    }),
+  );
 
   const merged = chunk.body[0] as Parser.LocalStatement;
   assert.equal(resolved.symbolOf(merged.variables[0]), aSymbolBefore);

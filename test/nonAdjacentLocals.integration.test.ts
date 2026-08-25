@@ -96,6 +96,23 @@ describe("effect-aware non-adjacent locals pipeline", () => {
     );
   });
 
+  test.each(["if flag then tick() end", "while flag do tick() break end"])(
+    "shortens across a proven structured control boundary: %s",
+    (middle) => {
+      const source = `local first=makeFirst() ${middle} local second=makeSecond() use(first,second)`;
+      const disabled = minify(source, {
+        runtimeProfile: "stormworks",
+        effectAwareLocalHoist: false,
+      });
+      const enabled = minify(source, { runtimeProfile: "stormworks" });
+
+      expect(Buffer.byteLength(enabled)).toBeLessThan(
+        Buffer.byteLength(disabled),
+      );
+      expect(() => Parser.parse(enabled, { luaVersion: "5.3" })).not.toThrow();
+    },
+  );
+
   test("does not grow after Rename crosses the one-character name range", () => {
     const names = Array.from(
       { length: 60 },

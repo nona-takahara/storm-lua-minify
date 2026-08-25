@@ -1,68 +1,95 @@
 import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
-import { analyzeControlFlow } from "../src/controlFlow";
+import { analyzeControlFlow, ControlFlowNode } from "../src/controlFlow";
+import { resolveScopes } from "../src/resolver";
 
-describe("certified linear control-flow regions", () => {
-  test("keeps calls and assignments in a region and splits at control flow", () => {
+function analyze(chunk: Parser.Chunk, version = 0) {
+  return analyzeControlFlow(chunk, resolveScopes(chunk), version);
+}
+
+function successorKinds(node: ControlFlowNode | undefined): string[] {
+  return node?.successors.map((edge) => edge.kind) ?? [];
+}
+
+describe("intraprocedural control-flow graph", () => {
+  test("represents both arms and the join of an if/elseif/else", () => {
     const chunk = Parser.parse(
-      "local a=f() tick() a=2 if flag then local b=g() tick() end local c=h() return c",
+      "local a=1 if first then a=2 elseif second then a=3 else a=4 end use(a)",
       { luaVersion: "5.3" },
     );
-    const flow = analyzeControlFlow(chunk, 7);
+    const flow = analyze(chunk, 7);
+    const conditional = chunk.body[1];
+    const after = chunk.body[2];
+    const conditions = flow.nodes.filter(
+      (node) => node.statement === conditional && node.kind === "condition",
+    );
 
-    expect(flow.complete).toBe(false);
     expect(flow.version).toBe(7);
-    expect(flow.regions.map((region) => region.points.length)).toEqual([
-      3, 2, 1,
+    expect(flow.complete).toBe(true);
+    expect(conditions).toHaveLength(2);
+    expect(successorKinds(conditions[0])).toEqual([
+      "branch-true",
+      "branch-false",
     ]);
-    expect(flow.units).toHaveLength(1);
-    expect(flow.pointsBetween(chunk.body[0], chunk.body[2])).toHaveLength(3);
-    expect(flow.pointsBetween(chunk.body[0], chunk.body[4])).toBeUndefined();
+    expect(flow.dominates(chunk.body[0], after)).toBe(true);
+    expect(flow.dominates(conditional, after)).toBe(true);
   });
 
-  test("creates a separate execution unit for each nested function", () => {
+  test("models loop back-edges, loop exits, and break", () => {
     const chunk = Parser.parse(
-      "local outer=1 local f=function() local inner=2 tick() return inner end use(outer,f)",
+      "while ready do if stop then break end tick() end finish()",
       { luaVersion: "5.3" },
     );
-    const flow = analyzeControlFlow(chunk);
+    const flow = analyze(chunk);
+    const loop = flow.nodeOf(chunk.body[0]);
+    const breakStatement = (chunk.body[0] as Parser.WhileStatement)
+      .body[0] as Parser.IfStatement;
+    const breakNode = flow.nodeOf(breakStatement.clauses[0].body[0]);
+
+    expect(successorKinds(loop)).toEqual(["loop-body", "loop-exit"]);
+    expect(successorKinds(breakNode)).toEqual(["break"]);
+    expect(
+      flow.nodes.some((node) => successorKinds(node).includes("loop-back")),
+    ).toBe(true);
+  });
+
+  test("routes return to the function exit and keeps nested functions separate", () => {
+    const chunk = Parser.parse(
+      "local outer=1 local f=function(flag) if flag then return outer end return 0 end use(f)",
+      { luaVersion: "5.3" },
+    );
+    const flow = analyze(chunk);
+    const returns = flow.nodes.filter(
+      (node) => node.statement?.type === "ReturnStatement",
+    );
 
     expect(flow.units.map((unit) => unit.kind)).toEqual(["chunk", "function"]);
-    expect(flow.regions.map((region) => region.unit.id)).toEqual([1, 0]);
-  });
-
-  test("does not certify label, goto, loop, or return statements", () => {
-    const chunk = Parser.parse(
-      "::again:: local a=1 while flag do a=2 end goto again",
-      { luaVersion: "5.3" },
-    );
-    const flow = analyzeControlFlow(chunk);
-
-    expect(chunk.body.map((statement) => flow.pointOf(statement))).toEqual([
-      undefined,
-      expect.any(Object),
-      undefined,
-      undefined,
-    ]);
-  });
-
-  test("exposes an explicit conservative graph without claiming unknown edges", () => {
-    const chunk = Parser.parse(
-      "local a=1 tick() if flag then use(a) end local b=2 return b",
-      { luaVersion: "5.3" },
-    );
-    const flow = analyzeControlFlow(chunk);
-    const ifNode = flow.nodeOf(chunk.body[2]);
-    expect(ifNode?.kind).toBe("opaque");
-    expect(ifNode?.successors[0].kind).toBe("unknown");
-    expect(flow.nodes.filter((node) => node.kind === "entry")).toHaveLength(1);
-    expect(flow.nodes.filter((node) => node.kind === "exit")).toHaveLength(1);
-    flow.nodes.forEach((node) => {
-      node.successors.forEach((edge) => {
-        expect(edge.to.predecessors).toContain(edge);
-      });
+    expect(returns).toHaveLength(2);
+    returns.forEach((node) => {
+      expect(node.successors).toHaveLength(1);
+      expect(node.successors[0]).toMatchObject({ kind: "return" });
+      expect(node.successors[0].to.unit).toBe(node.unit);
+      expect(node.successors[0].to.kind).toBe("exit");
     });
-    expect(flow.dominates(chunk.body[0], chunk.body[1])).toBe(true);
-    expect(flow.dominates(chunk.body[0], chunk.body[3])).toBe(false);
+  });
+
+  test("resolves label/goto and exposes unresolved transfers as unknown", () => {
+    const known = Parser.parse(
+      "local skipped=1 goto done skipped=2 ::done:: return",
+      {
+        luaVersion: "5.3",
+      },
+    );
+    const knownFlow = analyze(known);
+    expect(successorKinds(knownFlow.nodeOf(known.body[1]))).toEqual(["goto"]);
+    expect(knownFlow.complete).toBe(true);
+
+    const unresolved = Parser.parse("goto target ::target::", {
+      luaVersion: "5.3",
+    });
+    (unresolved.body[1] as Parser.LabelStatement).label.name = "other";
+    const unresolvedFlow = analyze(unresolved);
+    expect(unresolvedFlow.complete).toBe(false);
+    expect(unresolvedFlow.unknownEdges).toHaveLength(1);
   });
 });

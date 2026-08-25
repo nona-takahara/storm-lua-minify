@@ -131,3 +131,7 @@ dist
 
 # Local benchmark artifacts
 benchmark-results/
+
+# Local Codex instructions and long-running task memory
+/AGENTS.override.md
+/.codex/long-running-task.md

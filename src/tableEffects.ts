@@ -439,7 +439,14 @@ export function analyzeTableEffects(
         .filter((escape) => escape.table === table)
         .map((escape) => escape.reason),
     stabilityBetween: (table, baseSymbol, first, last) => {
-      if (!valueFlow.controlFlow.pointsBetween(first, last)) {
+      const firstPoint = valueFlow.controlFlow.pointOf(first);
+      const lastPoint = valueFlow.controlFlow.pointOf(last);
+      if (
+        !firstPoint ||
+        !lastPoint ||
+        firstPoint.unit !== lastPoint.unit ||
+        !valueFlow.controlFlow.dominates(first, last)
+      ) {
         return { stable: false, reason: "control-flow-barrier" };
       }
       return valueFlow.stableAllocationBetween(
@@ -472,20 +479,30 @@ export function analyzeTableEffects(
     const target = owner.variables[index];
     if (target.type !== "Identifier") return undefined;
     const symbol = resolved.symbolOf(target);
-    if (
-      !symbol ||
-      (owner.type === "AssignmentStatement" &&
-        !valueFlow.controlFlow.regions.some(
-          (region) =>
-            region.unit === allocation.unit &&
-            region.points.some(
-              (point) =>
-                point.statement.type === "LocalStatement" &&
-                point.statement.variables.includes(symbol.declaration),
-            ),
-        ))
-    ) {
-      return undefined;
+    if (!symbol) return undefined;
+    if (owner.type === "AssignmentStatement") {
+      const declaration = facts
+        .operationsOfSymbol(symbol)
+        .find(
+          (operation) =>
+            operation.kind === "declare" &&
+            operation.origin === symbol.declaration,
+        );
+      const declarationPoint = declaration
+        ? valueFlow.controlFlow.pointOf(declaration.owner)
+        : undefined;
+      const allocationPoint = valueFlow.controlFlow.pointOf(owner);
+      if (
+        !declarationPoint ||
+        !allocationPoint ||
+        declarationPoint.unit !== allocation.unit ||
+        allocationPoint.unit !== allocation.unit ||
+        !valueFlow.controlFlow.dominates(
+          declarationPoint.statement,
+          allocationPoint.statement,
+        )
+      )
+        return undefined;
     }
     return { symbol, declaration: owner };
   }

@@ -1,5 +1,6 @@
 import Parser from "luaparse";
 import { walkStatement } from "./astWalk";
+import { ResolveResult, Symbol } from "./resolver";
 
 export interface ExecutionUnit {
   readonly id: number;
@@ -14,135 +15,116 @@ export interface ProgramPoint {
   readonly body: Parser.Statement[];
   readonly index: number;
   readonly statement: Parser.Statement;
+  readonly node: ControlFlowNode;
 }
 
-export interface LinearRegion {
-  readonly id: number;
-  readonly unit: ExecutionUnit;
-  readonly body: Parser.Statement[];
-  readonly points: readonly ProgramPoint[];
-  readonly certified: true;
-}
+export type ControlFlowEdgeKind =
+  | "entry"
+  | "fallthrough"
+  | "branch-true"
+  | "branch-false"
+  | "loop-body"
+  | "loop-exit"
+  | "loop-back"
+  | "break"
+  | "return"
+  | "goto"
+  | "exit"
+  | "unknown";
 
 export interface ControlFlowEdge {
   readonly from: ControlFlowNode;
   readonly to: ControlFlowNode;
-  readonly kind: "entry" | "fallthrough" | "unknown" | "exit";
+  readonly kind: ControlFlowEdgeKind;
 }
 
 export interface ControlFlowNode {
   readonly id: number;
   readonly unit: ExecutionUnit;
-  readonly kind: "entry" | "statement" | "opaque" | "exit";
+  readonly kind: "entry" | "statement" | "condition" | "exit";
   readonly statement?: Parser.Statement;
+  /** `elseif` conditions share their source statement and use this index as node identity. */
+  readonly clauseIndex?: number;
   readonly successors: readonly ControlFlowEdge[];
   readonly predecessors: readonly ControlFlowEdge[];
 }
 
 export interface ControlFlowAnalysis {
   readonly version: number;
-  readonly complete: false;
+  readonly complete: boolean;
   readonly units: readonly ExecutionUnit[];
-  readonly regions: readonly LinearRegion[];
   readonly nodes: readonly ControlFlowNode[];
+  readonly unknownEdges: readonly ControlFlowEdge[];
   pointOf(statement: Parser.Statement): ProgramPoint | undefined;
   nodeOf(statement: Parser.Statement): ControlFlowNode | undefined;
-  regionOf(statement: Parser.Statement): LinearRegion | undefined;
-  pointsBetween(
-    first: Parser.Statement,
-    last: Parser.Statement,
-  ): readonly ProgramPoint[] | undefined;
   dominates(first: Parser.Statement, last: Parser.Statement): boolean;
+  nodeDominates(first: ControlFlowNode, last: ControlFlowNode): boolean;
 }
 
+interface MutableNode extends Omit<
+  ControlFlowNode,
+  "successors" | "predecessors"
+> {
+  readonly successors: ControlFlowEdge[];
+  readonly predecessors: ControlFlowEdge[];
+}
+
+type BuildBlock = (
+  body: Parser.Statement[],
+  continuation: MutableNode,
+  loopExit?: MutableNode,
+  loopBack?: MutableNode,
+) => MutableNode;
+
+/**
+ * Builds a conservative intraprocedural CFG. Nested function bodies are separate execution units;
+ * closure construction never creates an execution edge into the nested body.
+ */
 export function analyzeControlFlow(
   chunk: Parser.Chunk,
+  resolved: ResolveResult,
   version = 0,
 ): ControlFlowAnalysis {
   const units: ExecutionUnit[] = [];
-  const regions: LinearRegion[] = [];
-  const nodes: ControlFlowNode[] = [];
+  const nodes: MutableNode[] = [];
+  const unknownEdges: ControlFlowEdge[] = [];
   const pointByStatement = new WeakMap<Parser.Statement, ProgramPoint>();
-  const regionByStatement = new WeakMap<Parser.Statement, LinearRegion>();
-  const nodeByStatement = new WeakMap<Parser.Statement, ControlFlowNode>();
+  const nodeByStatement = new WeakMap<Parser.Statement, MutableNode>();
+  const analyzedFunctions = new WeakSet<Parser.FunctionDeclaration>();
   let nextUnitId = 0;
-  let nextRegionId = 0;
   let nextNodeId = 0;
 
-  type MutableNode = Omit<ControlFlowNode, "successors" | "predecessors"> & {
-    successors: ControlFlowEdge[];
-    predecessors: ControlFlowEdge[];
-  };
-  const node = (
+  const createNode = (
     unit: ExecutionUnit,
     kind: ControlFlowNode["kind"],
     statement?: Parser.Statement,
+    clauseIndex?: number,
   ): MutableNode => {
     const created: MutableNode = {
       id: nextNodeId++,
       unit,
       kind,
       ...(statement ? { statement } : {}),
+      ...(clauseIndex === undefined ? {} : { clauseIndex }),
       successors: [],
       predecessors: [],
     };
     nodes.push(created);
-    if (statement) nodeByStatement.set(statement, created);
+    if (statement && !nodeByStatement.has(statement)) {
+      nodeByStatement.set(statement, created);
+    }
     return created;
   };
+
   const connect = (
     from: MutableNode,
     to: MutableNode,
-    kind: ControlFlowEdge["kind"],
-  ) => {
+    kind: ControlFlowEdgeKind,
+  ): void => {
     const edge: ControlFlowEdge = { from, to, kind };
     from.successors.push(edge);
     to.predecessors.push(edge);
-  };
-
-  const analyzeBody = (body: Parser.Statement[], unit: ExecutionUnit) => {
-    let pending: ProgramPoint[] = [];
-    const flush = () => {
-      if (pending.length === 0) return;
-      const region: LinearRegion = {
-        id: nextRegionId++,
-        unit,
-        body,
-        points: pending,
-        certified: true,
-      };
-      regions.push(region);
-      pending.forEach((point) =>
-        regionByStatement.set(point.statement, region),
-      );
-      pending = [];
-    };
-
-    body.forEach((statement, index) => {
-      if (isCertifiedLinearStatement(statement)) {
-        const point: ProgramPoint = { unit, body, index, statement };
-        pending.push(point);
-        pointByStatement.set(statement, point);
-      } else {
-        flush();
-      }
-
-      const nestedFunctions: Parser.FunctionDeclaration[] = [];
-      walkStatement(statement, {
-        onFunction: (fn) => {
-          nestedFunctions.push(fn);
-        },
-      });
-      nestedFunctions.forEach((fn) => {
-        analyzeUnit(fn.body, "function", unit, fn);
-      });
-      if (statement.type !== "FunctionDeclaration") {
-        childBodiesOfStatement(statement).forEach((child) => {
-          analyzeBody(child, unit);
-        });
-      }
-    });
-    flush();
+    if (kind === "unknown") unknownEdges.push(edge);
   };
 
   const analyzeUnit = (
@@ -150,7 +132,7 @@ export function analyzeControlFlow(
     kind: ExecutionUnit["kind"],
     parent?: ExecutionUnit,
     owner?: Parser.FunctionDeclaration,
-  ) => {
+  ): void => {
     const unit: ExecutionUnit = {
       id: nextUnitId++,
       kind,
@@ -159,83 +141,255 @@ export function analyzeControlFlow(
       ...(owner ? { owner } : {}),
     };
     units.push(unit);
-    analyzeBody(body, unit);
-    const entry = node(unit, "entry");
-    const exit = node(unit, "exit");
-    let previous = entry;
-    body.forEach((statement) => {
-      const current = node(
-        unit,
-        isCertifiedLinearStatement(statement) ? "statement" : "opaque",
-        statement,
-      );
-      connect(
-        previous,
-        current,
-        previous === entry
-          ? "entry"
-          : previous.kind === "statement" && current.kind === "statement"
-            ? "fallthrough"
-            : "unknown",
-      );
-      previous = current;
+    const entry = createNode(unit, "entry");
+    const exit = createNode(unit, "exit");
+    const labels = new Map<Symbol, MutableNode>();
+    const pendingGotos: { node: MutableNode; target?: Symbol }[] = [];
+    const buildStatement = (
+      statement: Parser.Statement,
+      continuation: MutableNode,
+      loopExit?: MutableNode,
+      loopBack?: MutableNode,
+    ): MutableNode => {
+      switch (statement.type) {
+        case "ReturnStatement": {
+          const current = createNode(unit, "statement", statement);
+          connect(current, exit, "return");
+          return current;
+        }
+        case "BreakStatement": {
+          const current = createNode(unit, "statement", statement);
+          connect(current, loopExit ?? exit, loopExit ? "break" : "unknown");
+          return current;
+        }
+        case "GotoStatement": {
+          const current = createNode(unit, "statement", statement);
+          pendingGotos.push({
+            node: current,
+            target: resolved.symbolOf(statement.label),
+          });
+          return current;
+        }
+        case "LabelStatement": {
+          const current = createNode(unit, "statement", statement);
+          connect(current, continuation, "fallthrough");
+          const symbol = resolved.symbolOf(statement.label);
+          if (symbol) labels.set(symbol, current);
+          return current;
+        }
+        case "IfStatement": {
+          let falseTarget = continuation;
+          for (let index = statement.clauses.length - 1; index >= 0; index--) {
+            const clause = statement.clauses[index];
+            const branchStart = buildBlock(
+              clause.body,
+              continuation,
+              loopExit,
+              loopBack,
+            );
+            if (clause.type === "ElseClause") {
+              falseTarget = branchStart;
+              continue;
+            }
+            const condition = createNode(unit, "condition", statement, index);
+            connect(condition, branchStart, "branch-true");
+            connect(condition, falseTarget, "branch-false");
+            falseTarget = condition;
+          }
+          nodeByStatement.set(statement, falseTarget);
+          return falseTarget;
+        }
+        case "DoStatement": {
+          const current = createNode(unit, "statement", statement);
+          const bodyStart = buildBlock(
+            statement.body,
+            continuation,
+            loopExit,
+            loopBack,
+          );
+          connect(current, bodyStart, "fallthrough");
+          return current;
+        }
+        case "WhileStatement": {
+          const header = createNode(unit, "condition", statement);
+          const bodyStart = buildBlock(
+            statement.body,
+            header,
+            continuation,
+            header,
+          );
+          connect(header, bodyStart, "loop-body");
+          connect(header, continuation, "loop-exit");
+          return header;
+        }
+        case "RepeatStatement": {
+          const loopEntry = createNode(unit, "statement", statement);
+          const condition = createNode(unit, "condition", statement, 0);
+          const bodyStart = buildBlock(
+            statement.body,
+            condition,
+            continuation,
+            condition,
+          );
+          connect(loopEntry, bodyStart, "loop-body");
+          connect(condition, continuation, "loop-exit");
+          connect(condition, bodyStart, "loop-back");
+          return loopEntry;
+        }
+        case "ForNumericStatement":
+        case "ForGenericStatement": {
+          const header = createNode(unit, "condition", statement);
+          const bodyStart = buildBlock(
+            statement.body,
+            header,
+            continuation,
+            header,
+          );
+          connect(header, bodyStart, "loop-body");
+          connect(header, continuation, "loop-exit");
+          return header;
+        }
+        case "LocalStatement":
+        case "AssignmentStatement":
+        case "CallStatement":
+        case "FunctionDeclaration": {
+          const current = createNode(unit, "statement", statement);
+          connect(
+            current,
+            continuation,
+            continuation === exit
+              ? "exit"
+              : continuation === loopBack
+                ? "loop-back"
+                : "fallthrough",
+          );
+          return current;
+        }
+      }
+    };
+
+    const buildBlock: BuildBlock = (
+      statements,
+      continuation,
+      loopExit,
+      loopBack,
+    ) => {
+      let next = continuation;
+      for (let index = statements.length - 1; index >= 0; index--) {
+        next = buildStatement(statements[index], next, loopExit, loopBack);
+      }
+      return next;
+    };
+
+    const first = buildBlock(body, exit);
+    connect(entry, first, first === exit ? "exit" : "entry");
+    pendingGotos.forEach(({ node, target: targetSymbol }) => {
+      const target = targetSymbol ? labels.get(targetSymbol) : undefined;
+      const known = target !== undefined;
+      connect(node, known ? target : exit, known ? "goto" : "unknown");
     });
-    connect(previous, exit, previous.kind === "statement" ? "exit" : "unknown");
+
+    const indexPoints = (statements: Parser.Statement[]): void => {
+      statements.forEach((statement, index) => {
+        const node = nodeByStatement.get(statement);
+        if (node)
+          pointByStatement.set(statement, {
+            unit,
+            body: statements,
+            index,
+            statement,
+            node,
+          });
+        childBodiesOfStatement(statement).forEach(indexPoints);
+      });
+    };
+    indexPoints(body);
+
+    const nestedFunctions: Parser.FunctionDeclaration[] = [];
+    body.forEach((statement) => {
+      walkStatement(statement, {
+        onFunction: (fn) => nestedFunctions.push(fn),
+      });
+    });
+    nestedFunctions.forEach((fn) => {
+      if (analyzedFunctions.has(fn)) return;
+      analyzedFunctions.add(fn);
+      analyzeUnit(fn.body, "function", unit, fn);
+    });
   };
 
   analyzeUnit(chunk.body, "chunk");
+  const dominators = computeDominators(units, nodes);
+  const nodeDominates = (
+    first: ControlFlowNode,
+    last: ControlFlowNode,
+  ): boolean =>
+    first.unit === last.unit && (dominators.get(last)?.has(first) ?? false);
+
   return {
     version,
-    complete: false,
+    complete: unknownEdges.length === 0,
     units,
-    regions,
     nodes,
+    unknownEdges,
     pointOf: (statement) => pointByStatement.get(statement),
     nodeOf: (statement) => nodeByStatement.get(statement),
-    regionOf: (statement) => regionByStatement.get(statement),
-    pointsBetween: (first, last) => {
-      const firstRegion = regionByStatement.get(first);
-      if (!firstRegion || firstRegion !== regionByStatement.get(last)) {
-        return undefined;
-      }
-      const from = firstRegion.points.findIndex(
-        (point) => point.statement === first,
-      );
-      const to = firstRegion.points.findIndex(
-        (point) => point.statement === last,
-      );
-      return from >= 0 && to >= from
-        ? firstRegion.points.slice(from, to + 1)
-        : undefined;
-    },
     dominates: (first, last) => {
-      const firstRegion = regionByStatement.get(first);
-      if (!firstRegion || firstRegion !== regionByStatement.get(last)) {
-        return false;
-      }
-      const firstIndex = firstRegion.points.findIndex(
-        (point) => point.statement === first,
-      );
-      const lastIndex = firstRegion.points.findIndex(
-        (point) => point.statement === last,
-      );
-      return firstIndex >= 0 && lastIndex >= firstIndex;
+      const firstNode = nodeByStatement.get(first);
+      const lastNode = nodeByStatement.get(last);
+      return !!firstNode && !!lastNode && nodeDominates(firstNode, lastNode);
     },
+    nodeDominates,
   };
+}
+
+function computeDominators(
+  units: readonly ExecutionUnit[],
+  nodes: readonly MutableNode[],
+): ReadonlyMap<ControlFlowNode, ReadonlySet<ControlFlowNode>> {
+  const result = new Map<ControlFlowNode, Set<ControlFlowNode>>();
+  units.forEach((unit) => {
+    const unitNodes = nodes.filter((node) => node.unit === unit);
+    const entry = unitNodes.find((node) => node.kind === "entry");
+    if (!entry) return;
+    unitNodes.forEach((node) =>
+      result.set(node, new Set(node === entry ? [entry] : unitNodes)),
+    );
+    let changed = true;
+    while (changed) {
+      changed = false;
+      [...unitNodes].reverse().forEach((node) => {
+        if (node === entry) return;
+        const predecessors = node.predecessors.map((edge) => edge.from);
+        let next = new Set<ControlFlowNode>();
+        if (predecessors.length > 0) {
+          next = new Set(result.get(predecessors[0]) ?? []);
+          predecessors.slice(1).forEach((predecessor) => {
+            const set = result.get(predecessor) ?? new Set();
+            [...next].forEach((candidate) => {
+              if (!set.has(candidate)) next.delete(candidate);
+            });
+          });
+        }
+        next.add(node);
+        const previous = result.get(node) ?? new Set();
+        if (
+          previous.size !== next.size ||
+          [...previous].some((item) => !next.has(item))
+        ) {
+          result.set(node, next);
+          changed = true;
+        }
+      });
+    }
+  });
+  return result;
 }
 
 export function childStatementBodies(
   body: readonly Parser.Statement[],
 ): Parser.Statement[][] {
   return body.flatMap(childBodiesOfStatement);
-}
-
-function isCertifiedLinearStatement(statement: Parser.Statement): boolean {
-  return (
-    statement.type === "LocalStatement" ||
-    statement.type === "AssignmentStatement" ||
-    statement.type === "CallStatement"
-  );
 }
 
 function childBodiesOfStatement(
@@ -259,11 +413,5 @@ function childBodiesOfStatement(
     case "LabelStatement":
     case "GotoStatement":
       return [];
-    default: {
-      const exhaustive: never = statement;
-      throw new TypeError(
-        `Unknown statement type: ${JSON.stringify(exhaustive)}`,
-      );
-    }
   }
 }

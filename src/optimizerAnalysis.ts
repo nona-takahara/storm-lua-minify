@@ -7,12 +7,17 @@ import {
 import { ResolveResult } from "./resolver";
 import { analyzeValueFlow, ValueFlowAnalysis } from "./valueFlow";
 import { analyzeTableEffects, TableEffectAnalysis } from "./tableEffects";
+import {
+  analyzeStatementDataflow,
+  StatementDataflowAnalysis,
+} from "./statementDataflow";
 
 export interface OptimizerAnalysis {
   readonly generation: number;
   readonly facts: OptimizerFacts;
   readonly valueFlow: ValueFlowAnalysis;
   readonly tableEffects: TableEffectAnalysis;
+  readonly statementDataflow: StatementDataflowAnalysis;
 }
 
 export const OPTIMIZER_ANALYSIS_CACHE_KEY = {};
@@ -36,7 +41,8 @@ export function analyzeOptimizer(
   });
   const valueFlow = analyzeValueFlow(chunk, resolved, facts, generation);
   const tableEffects = analyzeTableEffects(chunk, resolved, valueFlow, facts);
-  return { generation, facts, valueFlow, tableEffects };
+  const statementDataflow = analyzeStatementDataflow(chunk, facts, valueFlow);
+  return { generation, facts, valueFlow, tableEffects, statementDataflow };
 }
 
 export function analyzeOptimizerAtGeneration(

@@ -9,7 +9,7 @@ function analyze(source: string) {
   return { chunk, resolved, flow: analyzeOptimizer(chunk, resolved).valueFlow };
 }
 
-describe("linear allocation value flow", () => {
+describe("CFG allocation value flow", () => {
   test("tracks allocation identity through an alias and kills it on reassignment", () => {
     const { chunk, resolved, flow } = analyze(
       "local t={} local alias=t use(alias) alias={} use(alias) use(t)",
@@ -39,7 +39,7 @@ describe("linear allocation value flow", () => {
     expect(flow.aliasesBefore(secondPoint, replacement).has(alias)).toBe(true);
   });
 
-  test("does not carry an allocation across a control-flow barrier", () => {
+  test("carries an unchanged allocation through a branch join", () => {
     const { chunk, resolved, flow } = analyze(
       "local t={} if flag then use(t) end use(t)",
     );
@@ -52,10 +52,28 @@ describe("linear allocation value flow", () => {
     const point = flow.controlFlow.pointOf(use);
     if (!symbol || !point) throw new Error("missing facts");
 
-    expect(flow.valueBefore(point, symbol)).toEqual({
-      kind: "unknown",
-      reason: "region-entry",
+    expect(flow.valueBefore(point, symbol)).toMatchObject({
+      kind: "allocations",
     });
+    expect(flow.aliasesBefore(point, flow.allocations[0]).has(symbol)).toBe(
+      true,
+    );
+  });
+
+  test("joins branch definitions and reaches a loop fixed point", () => {
+    const { chunk, resolved, flow } = analyze(
+      "local t={} while again do if replace then t={} end use(t) end use(t)",
+    );
+    const declaration = chunk.body[0] as Parser.LocalStatement;
+    const finalUse = chunk.body[2] as Parser.CallStatement;
+    const symbol = resolved.symbolOf(declaration.variables[0]);
+    const point = flow.controlFlow.pointOf(finalUse);
+    if (!symbol || !point) throw new Error("missing facts");
+
+    const value = flow.valueBefore(point, symbol);
+    expect(value.kind).toBe("allocations");
+    if (value.kind !== "allocations") throw new Error("unexpected value");
+    expect(value.allocations.size).toBe(2);
   });
 
   test("assigns a distinct identity to each table constructor", () => {
