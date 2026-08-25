@@ -2,6 +2,7 @@ import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
 import { analyzeCallGraph } from "../src/callGraph";
 import {
+  inlineBoundStatementFunctions,
   inlineClosedStatementFunctions,
   inlineClosedSingleUseFunctions,
   inlineLiteralArgumentFunctions,
@@ -181,5 +182,62 @@ describe("function rewrites", () => {
     collectStrings(finalReturn.arguments[0]);
     expect(strings[0].raw).toBe('"x"');
     expect(strings[0].loc).toEqual(firstActualLoc);
+  });
+
+  test("binds arbitrary actuals before splicing a statement body", () => {
+    const source =
+      "local function run(first,second) local sum=first+second publish(sum) end run(makeFirst(),makeSecond())";
+    const chunk = Parser.parse(source, {
+      luaVersion: "5.3",
+      comments: true,
+      locations: true,
+      ranges: true,
+    });
+    const resolved = resolveScopes(chunk);
+    const facts = analyzeOptimizerFacts(chunk, resolved);
+    const callGraph = analyzeCallGraph(chunk, resolved, facts);
+    const result = inlineBoundStatementFunctions(
+      chunk,
+      analyzeInterprocedural(chunk, resolved, callGraph),
+      resolved,
+      new SourceMetadata(chunk, source),
+      { maxIntroducedLocalsAt: () => 10 },
+    );
+
+    expect(result).toEqual({ changed: true, inlinedFunctions: 1 });
+    const replacement = chunk.body[1];
+    expect(replacement.type).toBe("DoStatement");
+    if (replacement.type !== "DoStatement") throw new Error("expected do");
+    expect(replacement.body[0]).toMatchObject({
+      type: "LocalStatement",
+      variables: [{ name: "first" }, { name: "second" }],
+      init: [
+        { type: "CallExpression", base: { name: "makeFirst" } },
+        { type: "CallExpression", base: { name: "makeSecond" } },
+      ],
+    });
+  });
+
+  test("rejects an upvalue whose spelling could be captured at the call site", () => {
+    const source =
+      "local captured=1 local function run(value) publish(captured,value) end do local captured=2 run(make()) end";
+    const chunk = Parser.parse(source, {
+      luaVersion: "5.3",
+      comments: true,
+      locations: true,
+      ranges: true,
+    });
+    const resolved = resolveScopes(chunk);
+    const facts = analyzeOptimizerFacts(chunk, resolved);
+    const callGraph = analyzeCallGraph(chunk, resolved, facts);
+    const result = inlineBoundStatementFunctions(
+      chunk,
+      analyzeInterprocedural(chunk, resolved, callGraph),
+      resolved,
+      new SourceMetadata(chunk, source),
+      { maxIntroducedLocalsAt: () => 10 },
+    );
+
+    expect(result).toEqual({ changed: false, inlinedFunctions: 0 });
   });
 });

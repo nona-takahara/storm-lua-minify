@@ -86,4 +86,20 @@ return first(1,sideEffect())
     expect(optimized).not.toContain("function");
     expect(optimized).toContain("42");
   });
+
+  test("preserves arbitrary actual evaluation through a parameter binding", () => {
+    const source =
+      "local function run(first,second)local sum=first+second publish(sum)end run(makeFirst(),makeSecond())";
+    const optimized = minifyTemporaryLuaSource(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "stormworks",
+      mergeLocals: false,
+    }).code;
+
+    expect(optimized.indexOf("makeFirst()")).toBeLessThan(
+      optimized.indexOf("makeSecond()"),
+    );
+    expect(optimized).not.toContain("function");
+    expect(optimized).toContain("publish");
+  });
 });

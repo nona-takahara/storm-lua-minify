@@ -1,9 +1,10 @@
 import Parser from "luaparse";
 import { CallGraphAnalysis } from "./callGraph";
-import { walkExpression } from "./astWalk";
+import { walkExpression, walkStatement } from "./astWalk";
 import { InterproceduralAnalysis } from "./interproceduralAnalysis";
-import { ResolveResult } from "./resolver";
+import { ResolveResult, Scope } from "./resolver";
 import { SourceMetadata } from "./sourceMetadata";
+import { copyNodeOrigin } from "./generatedNode";
 
 export interface FunctionRewriteResult {
   readonly changed: boolean;
@@ -18,6 +19,10 @@ export interface InlineRewriteResult {
 export interface StatementInlineRewriteResult {
   readonly changed: boolean;
   readonly inlinedFunctions: number;
+}
+
+export interface BoundStatementInlineOptions {
+  readonly maxIntroducedLocalsAt: (statement: Parser.Statement) => number;
 }
 
 type PrimitiveLiteral =
@@ -385,6 +390,52 @@ function isClosedInlineStatement(
   }
 }
 
+function hasFunctionScopeAncestor(
+  symbolScope: Scope,
+  functionScope: Scope,
+): boolean {
+  for (let scope: Scope | null = symbolScope; scope; scope = scope.parent) {
+    if (scope === functionScope) return true;
+  }
+  return false;
+}
+
+function bodyUsesOnlyOwnedBindings(
+  body: readonly Parser.Statement[],
+  resolved: ResolveResult,
+  functionScope: Scope,
+): boolean {
+  let safe = true;
+  const visitBlock = (statements: readonly Parser.Statement[]): void => {
+    statements.forEach((statement) => {
+      if (statement.type === "FunctionDeclaration") {
+        safe = false;
+        return;
+      }
+      if (statement.type === "ReturnStatement") {
+        safe = false;
+        return;
+      }
+      walkStatementForOwnedBindings(statement);
+    });
+  };
+  const walkStatementForOwnedBindings = (statement: Parser.Statement): void => {
+    walkStatement(statement, {
+      onIdentifierReference: (identifier) => {
+        const symbol = resolved.symbolOf(identifier);
+        if (symbol && !hasFunctionScopeAncestor(symbol.scope, functionScope))
+          safe = false;
+      },
+      onFunction: () => {
+        safe = false;
+      },
+      onBlock: visitBlock,
+    });
+  };
+  visitBlock(body);
+  return safe;
+}
+
 /** Inline a straight-line, closed function body at a statement call site. */
 export function inlineClosedStatementFunctions(
   chunk: Parser.Chunk,
@@ -440,6 +491,92 @@ export function inlineClosedStatementFunctions(
     metadata.replaceStatement(site.owner, replacements);
     executable.forEach((source, index) => {
       metadata.transferStatements([source], replacements[index]);
+    });
+    inlinedFunctions++;
+  });
+
+  return { changed: inlinedFunctions > 0, inlinedFunctions };
+}
+
+/**
+ * Inline a non-returning statement function behind a lexical block and a
+ * parameter-binding local. The binding statement is the semantic boundary:
+ * arbitrary actuals keep Lua's original left-to-right evaluation and tuple
+ * adjustment before the copied body starts.
+ */
+export function inlineBoundStatementFunctions(
+  chunk: Parser.Chunk,
+  analysis: InterproceduralAnalysis,
+  resolved: ResolveResult,
+  metadata: SourceMetadata,
+  options: BoundStatementInlineOptions,
+): StatementInlineRewriteResult {
+  let inlinedFunctions = 0;
+
+  analysis.callGraph.functions.forEach((callable) => {
+    const declaration = callable.declaration;
+    const symbol = callable.symbol;
+    const functionScope = resolved.scopeOfFunction(declaration);
+    if (
+      !symbol ||
+      !functionScope ||
+      !declaration.isLocal ||
+      declaration.parameters.length === 0 ||
+      declaration.parameters.some(
+        (parameter) => parameter.type !== "Identifier",
+      ) ||
+      symbol.references.length !== 1 ||
+      metadata.annotationsOf(declaration).keep
+    )
+      return;
+
+    const executable = [...declaration.body];
+    const tail = executable.at(-1);
+    if (tail?.type === "ReturnStatement" && tail.arguments.length === 0)
+      executable.pop();
+    if (
+      executable.length === 0 ||
+      executable.some((statement) => metadata.annotationsOf(statement).keep) ||
+      !bodyUsesOnlyOwnedBindings(executable, resolved, functionScope)
+    )
+      return;
+
+    const site = analysis.callGraph.calls.find(
+      (candidate) =>
+        candidate.owner.type === "CallStatement" &&
+        candidate.owner.expression === candidate.call &&
+        !candidate.hasUnknownTarget &&
+        candidate.targets.size === 1 &&
+        candidate.targets.has(callable) &&
+        candidate.call.type === "CallExpression" &&
+        candidate.call.base === symbol.references[0],
+    );
+    if (!site || site.call.type !== "CallExpression") return;
+    if (
+      declaration.parameters.length > options.maxIntroducedLocalsAt(site.owner)
+    )
+      return;
+
+    const binding: Parser.LocalStatement = {
+      type: "LocalStatement",
+      variables: declaration.parameters.map((parameter) =>
+        structuredClone(parameter as Parser.Identifier),
+      ),
+      init: site.call.arguments.map((argument) => structuredClone(argument)),
+    };
+    copyNodeOrigin(binding, site.owner);
+    const copiedBody = executable.map((statement) =>
+      structuredClone(statement),
+    );
+    const replacement: Parser.DoStatement = {
+      type: "DoStatement",
+      body: [binding, ...copiedBody],
+    };
+    copyNodeOrigin(replacement, site.owner);
+    if (!replaceStatement(chunk.body, site.owner, [replacement])) return;
+    metadata.replaceStatement(site.owner, [replacement]);
+    executable.forEach((source, index) => {
+      metadata.transferStatements([source], copiedBody[index]);
     });
     inlinedFunctions++;
   });

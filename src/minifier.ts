@@ -38,6 +38,7 @@ import {
 } from "./optimizerAnalysis";
 import { propagateInterproceduralConstants } from "./interproceduralConstants";
 import {
+  inlineBoundStatementFunctions,
   inlineClosedStatementFunctions,
   inlineClosedSingleUseFunctions,
   inlineLiteralArgumentFunctions,
@@ -297,6 +298,38 @@ export class Minifier {
           analysis.interprocedural,
           currentResolve,
           this.getSourceMetadata(moduleName),
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+      passes.run("inline-bound-statement-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const localResources = analyzeLocalResourceUsage(ast);
+        const result = inlineBoundStatementFunctions(
+          ast,
+          analysis.interprocedural,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+          {
+            maxIntroducedLocalsAt: (statement) => {
+              const active = localResources.activeLocalsBefore(statement);
+              if (active === undefined) return 0;
+              return Math.max(
+                0,
+                Math.min(
+                  runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53")
+                    .resources.maxActiveLocalsPerFunction - active,
+                  runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53")
+                    .resources.maxRegistersPerFunction - active,
+                ),
+              );
+            },
+          },
         );
         return {
           changed: result.changed,
