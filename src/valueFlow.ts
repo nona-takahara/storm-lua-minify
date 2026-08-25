@@ -8,11 +8,19 @@ import {
 } from "./controlFlow";
 import { ResolveResult, Symbol } from "./resolver";
 import { OptimizerFacts, ValueSlotFact } from "./optimizerFacts";
+import { InterproceduralAnalysis } from "./interproceduralAnalysis";
+import { FiniteOptimizerValue } from "./optimizerValueDomain";
+import { OptimizerValueAtom } from "./optimizerValueDomain";
 
 export interface Allocation {
   readonly id: number;
   readonly kind: "table";
-  readonly origin: Parser.TableConstructorExpression;
+  readonly origin:
+    | Parser.TableConstructorExpression
+    | Parser.CallExpression
+    | Parser.TableCallExpression
+    | Parser.StringCallExpression;
+  readonly templateId?: string;
   readonly owner: Parser.Statement;
   readonly unit: ExecutionUnit;
 }
@@ -79,6 +87,7 @@ export function analyzeValueFlow(
   resolved: ResolveResult,
   facts: OptimizerFacts,
   version = facts.generation,
+  interprocedural?: InterproceduralAnalysis,
 ): ValueFlowAnalysis {
   if (facts.generation !== version) {
     throw new Error("Value flow requires facts from the same AST generation");
@@ -89,6 +98,10 @@ export function analyzeValueFlow(
   const allocationByOrigin = new WeakMap<
     Parser.TableConstructorExpression,
     Allocation
+  >();
+  const callAllocations = new WeakMap<
+    Parser.Expression,
+    Map<string, Allocation>
   >();
   const writesByNode = new Map<ControlFlowNode, readonly Write[]>();
   const beforeByNode = new Map<
@@ -124,6 +137,43 @@ export function analyzeValueFlow(
     };
     allocations.push(allocation);
     allocationByOrigin.set(operation.origin, allocation);
+  });
+
+  interprocedural?.callGraph.calls.forEach((call) => {
+    const point = controlFlow.pointOf(call.owner);
+    if (!point) return;
+    const byTemplate = new Map<string, Allocation>();
+    interprocedural.returnsOf(call).prefix.forEach((value) => {
+      const templates = value.atoms.filter(
+        (
+          atom,
+        ): atom is Extract<OptimizerValueAtom, { kind: "allocation" }> & {
+          readonly allocationKind: "table";
+        } => atom.kind === "allocation" && atom.allocationKind === "table",
+      );
+      if (
+        value.unknownReasons.length > 0 ||
+        templates.length === 0 ||
+        templates.length !== value.atoms.length
+      )
+        return;
+      const existing = templates
+        .map((template) => byTemplate.get(template.id))
+        .find((allocation) => allocation !== undefined);
+      const allocation =
+        existing ??
+        ({
+          id: allocations.length,
+          kind: "table",
+          origin: call.call,
+          templateId: templates.map((template) => template.id).join("|"),
+          owner: call.owner,
+          unit: point.unit,
+        } satisfies Allocation);
+      if (!existing) allocations.push(allocation);
+      templates.forEach((template) => byTemplate.set(template.id, allocation));
+    });
+    if (byTemplate.size > 0) callAllocations.set(call.call, byTemplate);
   });
 
   controlFlow.nodes.forEach((node) => {
@@ -197,6 +247,8 @@ export function analyzeValueFlow(
             before,
             resolved,
             allocationByOrigin,
+            interprocedural,
+            callAllocations,
           );
           write.definition.value = value;
           after.set(write.definition.symbol, value);
@@ -303,11 +355,10 @@ function abstractSlot(
   values: ReadonlyMap<Symbol, AbstractValue>,
   resolved: ResolveResult,
   allocations: WeakMap<Parser.TableConstructorExpression, Allocation>,
+  interprocedural?: InterproceduralAnalysis,
+  callAllocations?: WeakMap<Parser.Expression, Map<string, Allocation>>,
 ): AbstractValue {
   if (!slot || slot.source.kind === "nil-padding") return { kind: "nil" };
-  if (slot.source.kind === "tail-expansion" && slot.source.offset > 0) {
-    return { kind: "unknown", reason: "multi-value-tail" };
-  }
   const expression = slot.source.expression;
   if (expression.type === "TableConstructorExpression") {
     const allocation = allocations.get(expression);
@@ -321,8 +372,116 @@ function abstractSlot(
       ? (values.get(symbol) ?? UNKNOWN_ENTRY)
       : { kind: "unknown", reason: "global-or-unresolved" };
   }
+  if (
+    expression.type === "CallExpression" ||
+    expression.type === "TableCallExpression" ||
+    expression.type === "StringCallExpression"
+  ) {
+    const call = interprocedural?.callGraph.callSiteOf(expression);
+    if (call && interprocedural) {
+      const result = interprocedural.returnsOf(call);
+      const index =
+        slot.source.kind === "tail-expansion" ? slot.source.offset : 0;
+      const value = result.prefix.at(index);
+      if (value) {
+        const abstracted = abstractInterproceduralValue(
+          value,
+          callAllocations?.get(expression),
+        );
+        if (abstracted.kind !== "unknown") return abstracted;
+        const symbolic = interprocedural
+          .symbolicReturnsOf(call)
+          .prefix.at(index);
+        const argumentsValue = symbolic
+          ? abstractParameterAliases(
+              symbolic,
+              callArguments(expression),
+              values,
+              resolved,
+              allocations,
+            )
+          : undefined;
+        if (argumentsValue) return argumentsValue;
+        return abstracted;
+      }
+    }
+  }
+  if (slot.source.kind === "tail-expansion" && slot.source.offset > 0) {
+    return { kind: "unknown", reason: "multi-value-tail" };
+  }
   if (expression.type === "NilLiteral") return { kind: "nil" };
   return { kind: "unknown", reason: "unsupported-expression" };
+}
+
+function callArguments(
+  call:
+    | Parser.CallExpression
+    | Parser.TableCallExpression
+    | Parser.StringCallExpression,
+): readonly Parser.Expression[] {
+  const explicit =
+    call.type === "CallExpression"
+      ? call.arguments
+      : [call.type === "TableCallExpression" ? call.arguments : call.argument];
+  return call.base.type === "MemberExpression" && call.base.indexer === ":"
+    ? [call.base.base, ...explicit]
+    : explicit;
+}
+
+function abstractParameterAliases(
+  value: FiniteOptimizerValue,
+  actuals: readonly Parser.Expression[],
+  values: ReadonlyMap<Symbol, AbstractValue>,
+  resolved: ResolveResult,
+  allocations: WeakMap<Parser.TableConstructorExpression, Allocation>,
+): AbstractValue | undefined {
+  if (
+    value.unknownReasons.length > 0 ||
+    value.atoms.length === 0 ||
+    !value.atoms.every((atom) => atom.kind === "parameter")
+  )
+    return undefined;
+  const alternatives = value.atoms.map((atom) => {
+    const actual = actuals.at(atom.index);
+    if (!actual) return { kind: "nil" } satisfies AbstractValue;
+    if (actual.type === "Identifier") {
+      const symbol = resolved.symbolOf(actual);
+      return symbol ? (values.get(symbol) ?? UNKNOWN_ENTRY) : UNKNOWN_ENTRY;
+    }
+    if (actual.type === "TableConstructorExpression") {
+      const allocation = allocations.get(actual);
+      return allocation
+        ? ({
+            kind: "allocations",
+            allocations: new Set([allocation]),
+          } satisfies AbstractValue)
+        : UNKNOWN_ENTRY;
+    }
+    if (actual.type === "NilLiteral")
+      return { kind: "nil" } satisfies AbstractValue;
+    return UNKNOWN_ENTRY;
+  });
+  return alternatives.reduce(joinValue);
+}
+
+function abstractInterproceduralValue(
+  value: FiniteOptimizerValue,
+  allocations: ReadonlyMap<string, Allocation> | undefined,
+): AbstractValue {
+  if (value.unknownReasons.length > 0)
+    return { kind: "unknown", reason: value.unknownReasons.join(",") };
+  const mapped = value.atoms.flatMap((atom) => {
+    if (atom.kind !== "allocation" || atom.allocationKind !== "table")
+      return [];
+    const allocation = allocations?.get(atom.id);
+    return allocation ? [allocation] : [];
+  });
+  const resolved = new Set(mapped);
+  if (mapped.length === value.atoms.length && resolved.size > 0)
+    return { kind: "allocations", allocations: resolved };
+  if (value.atoms.length === 1 && value.atoms[0].kind === "nil")
+    return { kind: "nil" };
+  return { kind: "unknown", reason: "interprocedural-nonallocation-value" };
 }
 
 function joinValueMaps(

@@ -2,6 +2,10 @@ import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
 import { PassOrchestrator, UNCHANGED } from "../src/optimizerPass";
 import { resolveScopes } from "../src/resolver";
+import {
+  analyzeOptimizerAtGeneration,
+  OPTIMIZER_ANALYSIS_CACHE_KEY,
+} from "../src/optimizerAnalysis";
 
 describe("optimizer pass orchestrator", () => {
   test("re-resolves immediately after an invalidating transform", () => {
@@ -100,5 +104,36 @@ describe("optimizer pass orchestrator", () => {
     expect(() => orchestrator.analysis({}, () => ({ generation: 99 }))).toThrow(
       /stale AST generation/,
     );
+  });
+
+  test("invalidates call graph and function summaries with the AST generation", () => {
+    const chunk = Parser.parse(
+      "local function value() return 1 end local result=value()",
+      { luaVersion: "5.3" },
+    );
+    const orchestrator = new PassOrchestrator(chunk, resolveScopes(chunk));
+    const first = orchestrator.analysis(
+      OPTIMIZER_ANALYSIS_CACHE_KEY,
+      analyzeOptimizerAtGeneration,
+    );
+    const declaration = chunk.body[0] as Parser.FunctionDeclaration;
+    const returned = (declaration.body[0] as Parser.ReturnStatement)
+      .arguments[0] as Parser.NumericLiteral;
+    returned.value = 2;
+    returned.raw = "2";
+    orchestrator.run("change-return-value", () => ({
+      changed: true,
+      invalidatesResolve: false,
+    }));
+    const second = orchestrator.analysis(
+      OPTIMIZER_ANALYSIS_CACHE_KEY,
+      analyzeOptimizerAtGeneration,
+    );
+
+    expect(second).not.toBe(first);
+    expect(second.interprocedural.generation).toBe(1);
+    expect(
+      second.interprocedural.summaries[0].returns.prefix[0].atoms,
+    ).toContainEqual({ kind: "number", raw: "2" });
   });
 });

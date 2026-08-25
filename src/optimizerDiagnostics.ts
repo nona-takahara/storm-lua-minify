@@ -35,7 +35,13 @@ export type OptimizationDiagnosticReason =
   | "dependency-metamethod-order"
   | "dependency-allocation-order"
   | "dependency-control-order"
-  | "dependency-scope-order";
+  | "dependency-scope-order"
+  | "resolved-call-target"
+  | "unknown-call-target"
+  | "recursive-scc-converged"
+  | "parameter-field-effect"
+  | "parameter-escape"
+  | "external-contract-used";
 
 export interface OptimizationDiagnostic {
   readonly pass: string;

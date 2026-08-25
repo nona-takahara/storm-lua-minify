@@ -57,6 +57,45 @@ use(first,second)
     );
   });
 
+  test("projects a known helper write onto only the affected field", () => {
+    const source = `
+local function writeY(value) value.y=2 end
+local tableValue={x=1}
+local first=tableValue.x
+writeY(tableValue)
+local second=tableValue.x
+use(first,second)
+`;
+    const fieldSensitive = minify(source, { effectAwareLocalHoist: false });
+    const wholeTable = minify(source, {
+      fieldSensitiveTableEffects: false,
+      effectAwareLocalHoist: false,
+    });
+
+    expect(Buffer.byteLength(fieldSensitive)).toBeLessThan(
+      Buffer.byteLength(wholeTable),
+    );
+  });
+
+  test("does not treat a proven no-escape helper argument as an unknown escape", () => {
+    const source = `
+local function observe(value) return value.x end
+local tableValue={x=1,y=2}
+local first=tableValue.x
+observe(tableValue)
+local second=tableValue.y
+use(first,second)
+`;
+    const enabled = minify(source, { effectAwareLocalHoist: false });
+    const disabled = minify(source, {
+      effectAwareTableReads: false,
+      effectAwareLocalHoist: false,
+    });
+    expect(Buffer.byteLength(enabled)).toBeLessThan(
+      Buffer.byteLength(disabled),
+    );
+  });
+
   test("merges reads through a stable local alias", () => {
     const source = `
 local tableValue={x=1,y=2}
@@ -75,6 +114,27 @@ use(first,second)
     expect(Buffer.byteLength(enabled)).toBeLessThan(
       Buffer.byteLength(disabled),
     );
+  });
+
+  test("merges reads from a proven fresh factory call", () => {
+    const source = `
+local function makeValue() return {x=1,y=2} end
+local tableValue=makeValue()
+local first=tableValue.x
+tick()
+local second=tableValue.y
+use(first,second)
+`;
+    const enabled = minify(source, { effectAwareLocalHoist: false });
+    const disabled = minify(source, {
+      effectAwareTableReads: false,
+      effectAwareLocalHoist: false,
+    });
+
+    expect(Buffer.byteLength(enabled)).toBeLessThan(
+      Buffer.byteLength(disabled),
+    );
+    expect(() => Parser.parse(enabled, { luaVersion: "5.3" })).not.toThrow();
   });
 
   test("does not move reads for an escaped table", () => {

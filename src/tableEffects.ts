@@ -2,12 +2,13 @@ import Parser from "luaparse";
 import { ResolveResult, Symbol } from "./resolver";
 import { Allocation, ValueFlowAnalysis } from "./valueFlow";
 import { OptimizerFacts } from "./optimizerFacts";
+import { InterproceduralAnalysis } from "./interproceduralAnalysis";
 
 export interface FreshTable {
   readonly allocation: Allocation;
   readonly symbol: Symbol;
   readonly declaration: Parser.LocalStatement | Parser.AssignmentStatement;
-  readonly constructor: Parser.TableConstructorExpression;
+  readonly constructor?: Parser.TableConstructorExpression;
   readonly functionDepth: number;
 }
 
@@ -16,7 +17,7 @@ export interface TableEffect {
   readonly table: FreshTable;
   // undefinedは動的keyまたは安全にdecodeできない文字列literal。
   readonly staticKey: string | undefined;
-  readonly expression: Parser.MemberExpression | Parser.IndexExpression;
+  readonly expression?: Parser.MemberExpression | Parser.IndexExpression;
   readonly owner: Parser.Statement;
   readonly baseSymbol: Symbol;
 }
@@ -61,6 +62,7 @@ export function analyzeTableEffects(
   resolved: ResolveResult,
   valueFlow: ValueFlowAnalysis,
   facts: OptimizerFacts,
+  interprocedural?: InterproceduralAnalysis,
 ): TableEffectAnalysis {
   const freshTables: FreshTable[] = [];
   const freshByAllocation = new Map<Allocation, FreshTable>();
@@ -78,7 +80,9 @@ export function analyzeTableEffects(
       allocation,
       symbol: binding.symbol,
       declaration: binding.declaration,
-      constructor: allocation.origin,
+      ...(allocation.origin.type === "TableConstructorExpression"
+        ? { constructor: allocation.origin }
+        : {}),
       functionDepth: depthOf(allocation.unit),
     };
     freshTables.push(table);
@@ -163,28 +167,13 @@ export function analyzeTableEffects(
         analyzeTableAccess(expression, "read", owner, functionDepth);
         return;
       case "CallExpression":
-        analyzeCallParts(
-          expression.base,
-          expression.arguments,
-          owner,
-          functionDepth,
-        );
+        analyzeCall(expression, owner, functionDepth);
         return;
       case "TableCallExpression":
-        analyzeCallParts(
-          expression.base,
-          [expression.arguments],
-          owner,
-          functionDepth,
-        );
+        analyzeCall(expression, owner, functionDepth);
         return;
       case "StringCallExpression":
-        analyzeCallParts(
-          expression.base,
-          [expression.argument],
-          owner,
-          functionDepth,
-        );
+        analyzeCall(expression, owner, functionDepth);
         return;
       case "FunctionDeclaration":
         analyzeBlock(expression.body, functionDepth + 1);
@@ -206,20 +195,59 @@ export function analyzeTableEffects(
     }
   }
 
-  function analyzeCallParts(
-    base: Parser.Expression,
-    args: Parser.Expression[],
+  function analyzeCall(
+    call:
+      | Parser.CallExpression
+      | Parser.TableCallExpression
+      | Parser.StringCallExpression,
     owner: Parser.Statement,
     functionDepth: number,
   ): void {
-    analyzeExpression(base, owner, "call", functionDepth);
-    args.forEach((argument) => {
+    analyzeExpression(call.base, owner, "call", functionDepth);
+    const explicitArgs =
+      call.type === "CallExpression"
+        ? call.arguments
+        : [
+            call.type === "TableCallExpression"
+              ? call.arguments
+              : call.argument,
+          ];
+    const args =
+      call.base.type === "MemberExpression" && call.base.indexer === ":"
+        ? [call.base.base, ...explicitArgs]
+        : explicitArgs;
+    const callSite = interprocedural?.callGraph.callSiteOf(call);
+    args.forEach((argument, argumentIndex) => {
+      const symbol =
+        argument.type === "Identifier"
+          ? resolved.symbolOf(argument)
+          : undefined;
+      const table = tableOfBase(argument, owner);
+      if (table && symbol && callSite && interprocedural) {
+        interprocedural
+          .effectsOf(callSite)
+          .filter((effect) => effect.argumentIndex === argumentIndex)
+          .forEach((effect) =>
+            effects.push({
+              access: effect.access,
+              table,
+              staticKey: effect.staticKey,
+              owner,
+              baseSymbol: symbol,
+            }),
+          );
+        if (!interprocedural.escapesArgument(callSite, argumentIndex)) return;
+      }
       analyzeExpression(argument, owner, "call", functionDepth);
     });
-    if (base.type === "MemberExpression" && base.indexer === ":") {
-      const table = tableOfBase(base.base, owner);
-      if (table && base.base.type === "Identifier") {
-        escapeIdentifier(base.base, "call", owner, functionDepth);
+    if (
+      call.base.type === "MemberExpression" &&
+      call.base.indexer === ":" &&
+      !callSite
+    ) {
+      const table = tableOfBase(call.base.base, owner);
+      if (table && call.base.base.type === "Identifier") {
+        escapeIdentifier(call.base.base, "call", owner, functionDepth);
       }
     }
   }
