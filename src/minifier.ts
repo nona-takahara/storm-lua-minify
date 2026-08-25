@@ -348,23 +348,33 @@ export class Minifier {
       return;
     }
     this.linkOrder.forEach((moduleName) => {
+      const ast = this.moduleAST.get(moduleName);
       const resolved = this.moduleResolve.get(moduleName);
-      if (!resolved) {
+      if (!ast || !resolved) {
         throw new Error(moduleName + " is not found");
       }
-      const result = assignRenames(
-        resolved,
-        this.identifiersInUse,
-        this.globalRenames,
-        new Set(
-          resolved.symbols.filter(
-            (symbol) =>
-              this.getSourceMetadata(moduleName).annotationsOfIdentifier(
-                symbol.declaration,
-              ).keepName,
+      const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53");
+      const result =
+        this.renameCache.get(moduleName) ??
+        assignRenames(
+          ast,
+          resolved,
+          this.identifiersInUse,
+          this.globalRenames,
+          new Set(
+            resolved.symbols.filter(
+              (symbol) =>
+                this.getSourceMetadata(moduleName).annotationsOfIdentifier(
+                  symbol.declaration,
+                ).keepName,
+            ),
           ),
-        ),
-      );
+          {
+            allowLocalNameReuse:
+              !runtime.semantics.debugLocalIntrospection ||
+              this.mode.allowLocalLifetimeChanges === true,
+          },
+        );
       this.renameCache.set(moduleName, result);
       result.usedNames.forEach((name) => this.identifiersInUse.add(name));
     });
@@ -442,6 +452,9 @@ export class Minifier {
         this.mode.effectAwareTransforms !== false &&
         (!runtime.semantics.debugLocalIntrospection ||
           this.mode.allowLocalLifetimeChanges === true);
+      const localNameReuseEnabled =
+        !runtime.semantics.debugLocalIntrospection ||
+        this.mode.allowLocalLifetimeChanges === true;
       const keepNames = new Set(
         resolved.symbols.filter(
           (symbol) =>
@@ -457,14 +470,27 @@ export class Minifier {
             (this.mode.effectAwareLocalHoist !== false ||
               this.mode.effectAwareTableReads !== false)))
       ) {
+        const provisionalAnalysis =
+          this.mode.rename === false ? undefined : optimizerAnalysis();
         const provisionalRenames =
           this.mode.rename === false
             ? NO_RENAME
             : assignRenames(
+                ast,
                 resolved,
                 plannedIdentifiersInUse,
                 this.globalRenames,
                 keepNames,
+                {
+                  allowLocalNameReuse: localNameReuseEnabled,
+                  analysis: provisionalAnalysis
+                    ? {
+                        facts: provisionalAnalysis.facts,
+                        liveness:
+                          provisionalAnalysis.statementDataflow.symbolLiveness,
+                      }
+                    : undefined,
+                },
               );
         passes.run("statement-scheduler", (currentResolve) => {
           const analysis = optimizerAnalysis();
@@ -562,12 +588,21 @@ export class Minifier {
               ).keepName,
           ),
         );
-        assignRenames(
+        // plannedIdentifiersInUse advances in the same link order as renameAll.
+        // Cache this final-generation result so Print does not rebuild the same
+        // facts, CFG, liveness, graph, and binding proof a second time.
+        const finalRename = assignRenames(
+          ast,
           resolved,
           plannedIdentifiersInUse,
           this.globalRenames,
           finalKeepNames,
-        ).usedNames.forEach((name) => plannedIdentifiersInUse.add(name));
+          { allowLocalNameReuse: localNameReuseEnabled },
+        );
+        this.renameCache.set(moduleName, finalRename);
+        finalRename.usedNames.forEach((name) =>
+          plannedIdentifiersInUse.add(name),
+        );
       }
     });
   }

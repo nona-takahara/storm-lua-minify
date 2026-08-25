@@ -2,6 +2,10 @@ import Parser from "luaparse";
 import { ControlFlowAnalysis, ControlFlowNode } from "./controlFlow";
 import { Location, OptimizerFacts, OptimizerOperation } from "./optimizerFacts";
 import { GlobalBinding, Symbol } from "./resolver";
+import {
+  analyzeSymbolLiveness,
+  SymbolLivenessAnalysis,
+} from "./symbolLiveness";
 import { ValueFlowAnalysis } from "./valueFlow";
 
 export type DependenceKind =
@@ -25,6 +29,7 @@ export interface StatementDependenceEdge {
 export interface StatementDataflowAnalysis {
   readonly generation: number;
   readonly controlFlow: ControlFlowAnalysis;
+  readonly symbolLiveness: SymbolLivenessAnalysis;
   readonly dependencies: readonly StatementDependenceEdge[];
   liveIn(node: ControlFlowNode): ReadonlySet<Symbol>;
   liveOut(node: ControlFlowNode): ReadonlySet<Symbol>;
@@ -75,10 +80,6 @@ export function analyzeStatementDataflow(
   const controlFlow = valueFlow.controlFlow;
   const symbolIds = new Map<Symbol, number>();
   const globalIds = new Map<GlobalBinding, number>();
-  const directUses = new Map<ControlFlowNode, ReadonlySet<Symbol>>();
-  const directDefs = new Map<ControlFlowNode, ReadonlySet<Symbol>>();
-  const liveIn = new Map<ControlFlowNode, ReadonlySet<Symbol>>();
-  const liveOut = new Map<ControlFlowNode, ReadonlySet<Symbol>>();
   const dependencies: StatementDependenceEdge[] = [];
   const dependenciesByFrom = new WeakMap<
     Parser.Statement,
@@ -184,70 +185,7 @@ export function analyzeStatementDataflow(
     };
   };
 
-  controlFlow.nodes.forEach((node) => {
-    const statement = node.statement;
-    if (!statement) {
-      directUses.set(node, new Set());
-      directDefs.set(node, new Set());
-      return;
-    }
-    const operations = facts.operationsOf(statement);
-    directUses.set(
-      node,
-      new Set(
-        operations.flatMap((operation) => {
-          if (operation.kind !== "read") return [];
-          return symbolOfLocation(operation.location)
-            ? [symbolOfLocation(operation.location) as Symbol]
-            : [];
-        }),
-      ),
-    );
-    directDefs.set(
-      node,
-      new Set(
-        operations.flatMap((operation) => {
-          if (operation.kind !== "write" && operation.kind !== "declare")
-            return [];
-          return symbolOfLocation(operation.location)
-            ? [symbolOfLocation(operation.location) as Symbol]
-            : [];
-        }),
-      ),
-    );
-  });
-
-  controlFlow.units.forEach((unit) => {
-    const unitNodes = controlFlow.nodes.filter((node) => node.unit === unit);
-    unitNodes.forEach((node) => {
-      liveIn.set(node, new Set());
-      liveOut.set(node, new Set());
-    });
-    let changed = true;
-    while (changed) {
-      changed = false;
-      // Node construction is reverse lexical order, which is the natural order for backward liveness.
-      unitNodes.forEach((node) => {
-        const nextOut = new Set<Symbol>();
-        node.successors.forEach((edge) =>
-          liveIn.get(edge.to)?.forEach((symbol) => nextOut.add(symbol)),
-        );
-        const nextIn = new Set(directUses.get(node) ?? []);
-        nextOut.forEach((symbol) => {
-          if (!(directDefs.get(node) ?? new Set()).has(symbol))
-            nextIn.add(symbol);
-        });
-        if (!setsEqual(liveOut.get(node), nextOut)) {
-          liveOut.set(node, nextOut);
-          changed = true;
-        }
-        if (!setsEqual(liveIn.get(node), nextIn)) {
-          liveIn.set(node, nextIn);
-          changed = true;
-        }
-      });
-    }
-  });
+  const liveness = analyzeSymbolLiveness(controlFlow, facts);
 
   const analyzeBody = (body: Parser.Statement[]): void => {
     body.forEach((statement, index) => {
@@ -285,16 +223,17 @@ export function analyzeStatementDataflow(
   return {
     generation: facts.generation,
     controlFlow,
+    symbolLiveness: liveness,
     dependencies,
-    liveIn: (node) => liveIn.get(node) ?? new Set(),
-    liveOut: (node) => liveOut.get(node) ?? new Set(),
+    liveIn: (node) => liveness.liveIn(node),
+    liveOut: (node) => liveness.liveOut(node),
     isLiveBefore: (statement, symbol) => {
       const node = controlFlow.nodeOf(statement);
-      return !!node && (liveIn.get(node)?.has(symbol) ?? false);
+      return !!node && liveness.liveIn(node).has(symbol);
     },
     isLiveAfter: (statement, symbol) => {
       const node = controlFlow.nodeOf(statement);
-      return !!node && (liveOut.get(node)?.has(symbol) ?? false);
+      return !!node && liveness.liveOut(node).has(symbol);
     },
     dependenciesBetween: (first, last) =>
       dependenciesByFrom.get(first)?.get(last) ?? [],
@@ -406,25 +345,6 @@ function deduplicateAccesses(accesses: readonly Access[]): Access[] {
     seen.add(access.identity);
     return true;
   });
-}
-
-function symbolOfLocation(location: Location): Symbol | undefined {
-  return location.kind === "local" ||
-    location.kind === "parameter" ||
-    location.kind === "upvalue"
-    ? location.symbol
-    : undefined;
-}
-
-function setsEqual<T>(
-  left: ReadonlySet<T> | undefined,
-  right: ReadonlySet<T>,
-): boolean {
-  return (
-    !!left &&
-    left.size === right.size &&
-    [...left].every((item) => right.has(item))
-  );
 }
 
 function isExpression(node: Parser.Node): node is Parser.Expression {

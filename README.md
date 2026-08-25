@@ -82,6 +82,8 @@ Luaコード内で完結し、意味論を変更しない最適化は既定で�
 - `--no-remove-unused-globals`: 将来追加する未使用グローバル削除だけを無効にします（ローカル削除は続けます）
 - `--reserved-globals-config <path>`: `{"neverRenameGlobals": ["name", ...]}`形式のJSONファイルを指定し、**代入されていても常にリネームしないグローバル名**を列挙します
 
+ローカル識別子は、CFGのlivenessから作る干渉グラフを重み付きでcoloringし、同時に生きないlocal・parameter・for変数へ同じ短名を再利用します。branch join、loop back-edge、upvalue capture、字句shadowingを考慮し、割当後には全参照を再Resolveして元と同じ宣言へ結び付くことを検証します。`stormworks` profileではdebug APIによるlocal lifetime観測がないため同一scope内でも再利用します。`lua53` profileでは既定で同一scope内の再利用を抑止し、`--allow-local-lifetime-changes`を明示した場合だけ有効にします。`--@storm keep-name`、予約global、module splice、Source Map上の元identifier名は従来どおり維持されます。
+
 ## 定数の事前計算と定数伝搬（opt-in）
 
 `--fold-constants`を指定すると、定数式の事前計算（例: `1+2`を`3`に）と、再代入されない定数ローカル変数の伝搬（例: `local x=1 print(x)`を`print(1)`に）を行います。上記の識別子短縮関連のオプションと違い、**このオプションは既定では無効**です（指定しない限り、このパスは一切実行されません）。
