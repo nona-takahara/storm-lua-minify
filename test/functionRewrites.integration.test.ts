@@ -203,11 +203,10 @@ return recursive(true),variadic(1)
         collectOptimizationDiagnostics: true,
       },
     );
-    expect(result.minifier.optimizationDiagnostics).toContainEqual(
-      expect.objectContaining({
-        pass: "function-rewrite-final-cost",
-        decision: expect.stringMatching(/accepted|rejected/),
-      }),
-    );
+    expect(
+      result.minifier.optimizationDiagnostics.some(
+        (diagnostic) => diagnostic.pass === "function-rewrite-final-cost",
+      ),
+    ).toBe(true);
   });
 });

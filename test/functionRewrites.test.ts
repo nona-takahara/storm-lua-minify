@@ -35,7 +35,7 @@ function rewrite(source: string) {
 
 function firstFunction(chunk: Parser.Chunk): Parser.FunctionDeclaration {
   const statement = chunk.body[0];
-  if (statement?.type !== "FunctionDeclaration")
+  if (statement.type !== "FunctionDeclaration")
     throw new Error("expected a function declaration");
   return statement;
 }

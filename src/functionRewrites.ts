@@ -62,9 +62,7 @@ export function pruneTrailingUnusedParameters(
 
     if (retained === declaration.parameters.length) return;
     prunedParameters += declaration.parameters.length - retained;
-    declaration.parameters = declaration.parameters.slice(0, retained) as (
-      Parser.Identifier | Parser.VarargLiteral
-    )[];
+    declaration.parameters = declaration.parameters.slice(0, retained);
   });
 
   return {
@@ -77,9 +75,8 @@ function overwriteExpression(
   target: Parser.Expression,
   replacement: Parser.Expression,
 ): void {
-  Object.keys(target).forEach((key) => {
-    delete (target as unknown as Record<string, unknown>)[key];
-  });
+  // Visitors dispatch exclusively on `type`; fields from the former node are
+  // inert after this assignment and do not need an unsafe dynamic deletion.
   Object.assign(target, replacement);
 }
 
@@ -96,7 +93,7 @@ function isClosedInlineExpression(
       closed = false;
     },
   });
-  return closed && expression.type !== "VarargLiteral";
+  return closed;
 }
 
 function primitiveLiteral(
@@ -154,9 +151,9 @@ function substituteParameters(
       case "CallExpression": {
         const call = copied as Parser.CallExpression;
         substitute(original.base, call.base);
-        original.arguments.forEach((argument, index) =>
-          substitute(argument, call.arguments[index]),
-        );
+        original.arguments.forEach((argument, index) => {
+          substitute(argument, call.arguments[index]);
+        });
         return;
       }
       case "TableCallExpression": {
@@ -216,7 +213,7 @@ function onlyParametersOrGlobals(
       safe = false;
     },
   });
-  return safe && expression.type !== "VarargLiteral";
+  return safe;
 }
 
 /**
