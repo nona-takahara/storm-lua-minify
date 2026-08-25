@@ -59,6 +59,7 @@ use(first,second)
 
   test("projects a known helper write onto only the affected field", () => {
     const source = `
+--@storm keep
 local function writeY(value) value.y=2 end
 local tableValue={x=1}
 local first=tableValue.x
