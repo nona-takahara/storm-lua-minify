@@ -59,4 +59,17 @@ return first(1,sideEffect())
     expect(optimized).toContain("external()+1");
     expect(optimized).not.toContain("function");
   });
+
+  test("splices a multi-statement closed body and removes the call frame", () => {
+    const source =
+      "local function run() first() globalValue=second() end run()";
+    const optimized = minifyTemporaryLuaSource(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "stormworks",
+      mergeLocals: false,
+    }).code;
+
+    expect(optimized).toContain("first()globalValue=second()");
+    expect(optimized).not.toContain("function");
+  });
 });

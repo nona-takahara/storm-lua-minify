@@ -15,6 +15,11 @@ export interface InlineRewriteResult {
   readonly inlinedFunctions: number;
 }
 
+export interface StatementInlineRewriteResult {
+  readonly changed: boolean;
+  readonly inlinedFunctions: number;
+}
+
 /**
  * Remove only the trailing, identifier parameters proven unused by Resolve.
  *
@@ -129,6 +134,122 @@ export function inlineClosedSingleUseFunctions(
     // structuredClone retains loc/range on every copied node, so the inlined
     // expression maps to the function body/return origin rather than call-site text.
     overwriteExpression(site.call, structuredClone(expression));
+    inlinedFunctions++;
+  });
+
+  return { changed: inlinedFunctions > 0, inlinedFunctions };
+}
+
+function statementChildren(statement: Parser.Statement): Parser.Statement[][] {
+  switch (statement.type) {
+    case "DoStatement":
+    case "WhileStatement":
+    case "RepeatStatement":
+    case "FunctionDeclaration":
+    case "ForNumericStatement":
+    case "ForGenericStatement":
+      return [statement.body];
+    case "IfStatement":
+      return statement.clauses.map((clause) => clause.body);
+    default:
+      return [];
+  }
+}
+
+function replaceStatement(
+  body: Parser.Statement[],
+  target: Parser.Statement,
+  replacements: Parser.Statement[],
+): boolean {
+  const index = body.indexOf(target);
+  if (index >= 0) {
+    body.splice(index, 1, ...replacements);
+    return true;
+  }
+  return body.some((statement) =>
+    statementChildren(statement).some((child) =>
+      replaceStatement(child, target, replacements),
+    ),
+  );
+}
+
+function isClosedInlineStatement(
+  statement: Parser.Statement,
+  resolved: ResolveResult,
+): boolean {
+  let closed = true;
+  const inspect = (expression: Parser.Expression) => {
+    if (!isClosedInlineExpression(expression, resolved)) closed = false;
+  };
+  switch (statement.type) {
+    case "AssignmentStatement":
+      statement.variables.forEach(inspect);
+      statement.init.forEach(inspect);
+      return closed;
+    case "CallStatement":
+      inspect(statement.expression);
+      return closed;
+    default:
+      return false;
+  }
+}
+
+/** Inline a straight-line, closed function body at a statement call site. */
+export function inlineClosedStatementFunctions(
+  chunk: Parser.Chunk,
+  analysis: InterproceduralAnalysis,
+  resolved: ResolveResult,
+  metadata: SourceMetadata,
+): StatementInlineRewriteResult {
+  let inlinedFunctions = 0;
+
+  analysis.callGraph.functions.forEach((callable) => {
+    const declaration = callable.declaration;
+    const symbol = callable.symbol;
+    if (
+      !symbol ||
+      !declaration.isLocal ||
+      declaration.parameters.length !== 0 ||
+      symbol.references.length !== 1 ||
+      metadata.annotationsOf(declaration).keep
+    )
+      return;
+
+    const executable = [...declaration.body];
+    const tail = executable.at(-1);
+    if (tail?.type === "ReturnStatement" && tail.arguments.length === 0)
+      executable.pop();
+    if (
+      executable.length === 0 ||
+      executable.some(
+        (statement) =>
+          metadata.annotationsOf(statement).keep ||
+          !isClosedInlineStatement(statement, resolved),
+      )
+    )
+      return;
+
+    const site = analysis.callGraph.calls.find(
+      (candidate) =>
+        candidate.owner.type === "CallStatement" &&
+        candidate.owner.expression === candidate.call &&
+        !candidate.hasUnknownTarget &&
+        candidate.targets.size === 1 &&
+        candidate.targets.has(callable) &&
+        candidate.call.type === "CallExpression" &&
+        candidate.call.arguments.length === 0 &&
+        candidate.call.base === symbol.references[0],
+    );
+    if (!site) return;
+
+    const replacements = executable.map((statement) =>
+      structuredClone(statement),
+    );
+    if (!replaceStatement(chunk.body, site.owner, replacements)) return;
+    metadata.replaceStatement(site.owner, replacements);
+    executable.forEach((source, index) => {
+      metadata.transferStatements([source], replacements[index]);
+    });
     inlinedFunctions++;
   });
 

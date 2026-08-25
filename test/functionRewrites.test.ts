@@ -2,6 +2,7 @@ import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
 import { analyzeCallGraph } from "../src/callGraph";
 import {
+  inlineClosedStatementFunctions,
   inlineClosedSingleUseFunctions,
   pruneTrailingUnusedParameters,
 } from "../src/functionRewrites";
@@ -114,5 +115,32 @@ describe("function rewrites", () => {
     );
 
     expect(result).toEqual({ changed: false, inlinedFunctions: 0 });
+  });
+
+  test("splices a closed straight-line body at its only statement call", () => {
+    const source =
+      "local function run() first() globalValue=second() return end run()";
+    const chunk = Parser.parse(source, {
+      luaVersion: "5.3",
+      comments: true,
+      locations: true,
+      ranges: true,
+    });
+    const resolved = resolveScopes(chunk);
+    const facts = analyzeOptimizerFacts(chunk, resolved);
+    const callGraph = analyzeCallGraph(chunk, resolved, facts);
+    const result = inlineClosedStatementFunctions(
+      chunk,
+      analyzeInterprocedural(chunk, resolved, callGraph),
+      resolved,
+      new SourceMetadata(chunk, source),
+    );
+
+    expect(result).toEqual({ changed: true, inlinedFunctions: 1 });
+    expect(chunk.body.map((statement) => statement.type)).toEqual([
+      "FunctionDeclaration",
+      "CallStatement",
+      "AssignmentStatement",
+    ]);
   });
 });

@@ -38,6 +38,7 @@ import {
 } from "./optimizerAnalysis";
 import { propagateInterproceduralConstants } from "./interproceduralConstants";
 import {
+  inlineClosedStatementFunctions,
   inlineClosedSingleUseFunctions,
   pruneTrailingUnusedParameters,
 } from "./functionRewrites";
@@ -260,6 +261,22 @@ export class Minifier {
           analyzeOptimizerAtGeneration,
         );
         const result = inlineClosedSingleUseFunctions(
+          analysis.interprocedural,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+      passes.run("inline-closed-statement-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const result = inlineClosedStatementFunctions(
+          ast,
           analysis.interprocedural,
           currentResolve,
           this.getSourceMetadata(moduleName),
