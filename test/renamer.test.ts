@@ -23,7 +23,7 @@ test("sibling scopes (non-overlapping) reuse the same short name", () => {
     end
   `);
   const resolved = resolveScopes(chunk);
-  const result = assignRenames(resolved, new Set());
+  const result = assignRenames(chunk, resolved, new Set());
 
   const firstDecl = (
     (chunk.body[0] as Parser.DoStatement).body[0] as Parser.LocalStatement
@@ -46,12 +46,191 @@ test("symbols live in the same scope never receive the same short name", () => {
     print(a, b, c)
   `);
   const resolved = resolveScopes(chunk);
-  const result = assignRenames(resolved, new Set());
+  const result = assignRenames(chunk, resolved, new Set());
 
   const names = (chunk.body.slice(0, 3) as Parser.LocalStatement[]).map((s) =>
     result.nameOf(s.variables[0]),
   );
   assert.equal(new Set(names).size, 3);
+});
+
+test("same-scope symbols with disjoint liveness reuse one short name", () => {
+  const chunk = parse(`
+    local first = 1
+    print(first)
+    local second = 2
+    print(second)
+  `);
+  const resolved = resolveScopes(chunk);
+  const result = assignRenames(
+    chunk,
+    resolved,
+    new Set(),
+    undefined,
+    new Set(),
+    { allowLocalNameReuse: true },
+  );
+  const first = (chunk.body[0] as Parser.LocalStatement).variables[0];
+  const second = (chunk.body[2] as Parser.LocalStatement).variables[0];
+
+  assert.equal(result.nameOf(first), result.nameOf(second));
+});
+
+test("branch join and loop back-edge keep simultaneously live symbols apart", () => {
+  const chunk = parse(`
+    local branchValue = 0
+    if flag then branchValue = 1 else branchValue = 2 end
+    local loopValue = 0
+    while flag do loopValue = loopValue + branchValue end
+    print(branchValue, loopValue)
+  `);
+  const resolved = resolveScopes(chunk);
+  const result = assignRenames(
+    chunk,
+    resolved,
+    new Set(),
+    undefined,
+    new Set(),
+    { allowLocalNameReuse: true },
+  );
+  const branchValue = (chunk.body[0] as Parser.LocalStatement).variables[0];
+  const loopValue = (chunk.body[2] as Parser.LocalStatement).variables[0];
+
+  assert.notEqual(result.nameOf(branchValue), result.nameOf(loopValue));
+});
+
+test("a captured ancestor never collides with a nested local", () => {
+  const chunk = parse(`
+    local captured = 1
+    do
+      local nested = 2
+      local function read() return captured end
+      print(nested, read())
+    end
+  `);
+  const resolved = resolveScopes(chunk);
+  const result = assignRenames(
+    chunk,
+    resolved,
+    new Set(),
+    undefined,
+    new Set(),
+    { allowLocalNameReuse: true },
+  );
+  const captured = (chunk.body[0] as Parser.LocalStatement).variables[0];
+  const nested = (
+    (chunk.body[1] as Parser.DoStatement).body[0] as Parser.LocalStatement
+  ).variables[0];
+
+  assert.notEqual(result.nameOf(captured), result.nameOf(nested));
+});
+
+test("a captured local never collides with a same-scope function binding", () => {
+  const chunk = parse(`
+    local captured
+    local function reader() return captured end
+    reader()
+  `);
+  const resolved = resolveScopes(chunk);
+  const result = assignRenames(
+    chunk,
+    resolved,
+    new Set(),
+    undefined,
+    new Set(),
+    { allowLocalNameReuse: true },
+  );
+  const captured = (chunk.body[0] as Parser.LocalStatement).variables[0];
+  const reader = (chunk.body[1] as Parser.FunctionDeclaration)
+    .identifier as Parser.Identifier;
+
+  assert.notEqual(result.nameOf(captured), result.nameOf(reader));
+});
+
+test("parameters bound together interfere", () => {
+  const chunk = parse(`
+    local function combine(left, right) return left + right end
+  `);
+  const resolved = resolveScopes(chunk);
+  const result = assignRenames(
+    chunk,
+    resolved,
+    new Set(),
+    undefined,
+    new Set(),
+    { allowLocalNameReuse: true },
+  );
+  const fn = chunk.body[0] as Parser.FunctionDeclaration;
+  const left = fn.parameters[0] as Parser.Identifier;
+  const right = fn.parameters[1] as Parser.Identifier;
+
+  assert.notEqual(result.nameOf(left), result.nameOf(right));
+});
+
+test("generic-for variables bound together interfere", () => {
+  const chunk = parse(`
+    for key, value in pairs(items) do print(key, value) end
+  `);
+  const resolved = resolveScopes(chunk);
+  const result = assignRenames(
+    chunk,
+    resolved,
+    new Set(),
+    undefined,
+    new Set(),
+    { allowLocalNameReuse: true },
+  );
+  const loop = chunk.body[0] as Parser.ForGenericStatement;
+
+  assert.notEqual(
+    result.nameOf(loop.variables[0]),
+    result.nameOf(loop.variables[1]),
+  );
+});
+
+test("return keeps all returned locals mutually live", () => {
+  const chunk = parse(`
+    local first = source()
+    local second = source()
+    return first, second
+  `);
+  const resolved = resolveScopes(chunk);
+  const result = assignRenames(
+    chunk,
+    resolved,
+    new Set(),
+    undefined,
+    new Set(),
+    { allowLocalNameReuse: true },
+  );
+  const first = (chunk.body[0] as Parser.LocalStatement).variables[0];
+  const second = (chunk.body[1] as Parser.LocalStatement).variables[0];
+
+  assert.notEqual(result.nameOf(first), result.nameOf(second));
+});
+
+test("coloring is deterministic", () => {
+  const source = `
+    local first = 1
+    print(first)
+    local second = 2
+    print(second)
+  `;
+  const names = () => {
+    const chunk = parse(source);
+    const resolved = resolveScopes(chunk);
+    const result = assignRenames(
+      chunk,
+      resolved,
+      new Set(),
+      undefined,
+      new Set(),
+      { allowLocalNameReuse: true },
+    );
+    return resolved.symbols.map((symbol) => result.nameOf(symbol.declaration));
+  };
+
+  assert.deepEqual(names(), names());
 });
 
 test("more frequently referenced symbols get shorter names", () => {
@@ -62,7 +241,7 @@ test("more frequently referenced symbols get shorter names", () => {
     print(cold)
   `);
   const resolved = resolveScopes(chunk);
-  const result = assignRenames(resolved, new Set());
+  const result = assignRenames(chunk, resolved, new Set());
 
   const hotDecl = (chunk.body[0] as Parser.LocalStatement).variables[0];
   const coldDecl = (chunk.body[1] as Parser.LocalStatement).variables[0];
@@ -82,7 +261,7 @@ test("reserved names (globals/keywords) are never assigned to a symbol", () => {
   `);
   const resolved = resolveScopes(chunk);
   // "a" は本来最初に割り当てられるはずの名前。予約済みとして渡すと避けられる。
-  const result = assignRenames(resolved, new Set(["a"]));
+  const result = assignRenames(chunk, resolved, new Set(["a"]));
 
   const decl = (chunk.body[0] as Parser.LocalStatement).variables[0];
   assert.notEqual(result.nameOf(decl), "a");
@@ -95,7 +274,7 @@ test("self is never renamed and never assigned to another symbol", () => {
     end
   `);
   const resolved = resolveScopes(chunk);
-  const result = assignRenames(resolved, new Set());
+  const result = assignRenames(chunk, resolved, new Set());
 
   const fnDecl = chunk.body[0] as Parser.FunctionDeclaration;
   const selfParam = fnDecl.parameters[0] as Parser.Identifier;
@@ -115,7 +294,7 @@ test("usedNames reflects exactly the short names handed out", () => {
     print(x)
   `);
   const resolved = resolveScopes(chunk);
-  const result = assignRenames(resolved, new Set());
+  const result = assignRenames(chunk, resolved, new Set());
 
   const xDecl = (chunk.body[0] as Parser.LocalStatement).variables[0];
   const yDecl = (
@@ -136,6 +315,7 @@ test("globalRenames applies to genuine global references (#8a)", () => {
   `);
   const resolved = resolveScopes(chunk);
   const result = assignRenames(
+    chunk,
     resolved,
     new Set(),
     new Map([["counter", "g"]]),
@@ -155,6 +335,7 @@ test("globalRenames never renames a field name that happens to share a global's 
   `);
   const resolved = resolveScopes(chunk);
   const result = assignRenames(
+    chunk,
     resolved,
     new Set(),
     new Map([["counter", "g"]]),
