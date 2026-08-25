@@ -46,6 +46,12 @@ CLIはStormworks向けツールとして、`--runtime-profile stormworks`を既�
 
 2段目はlocalの生存期間を早めるため、`debug.getlocal`等を持つ純Luaでは既定で無効です。3段目は実際に読む値が変わり得ます。出力サイズを優先し、その違いを受け入れられるコードでだけ指定してください。
 
+### 関数rewrite
+
+解決可能なlocal関数について、末尾の未使用parameter削除、single-use関数のinline、到達不能なlocal関数の削除を共通call graph・function summary上で行います。inlineで複製するparameter・local・labelはResolveのsymbol単位でalpha conversionし、呼び出し側の同名bindingによるcaptureを防ぎます。実引数は元の順序と回数で評価し、複数戻り値と末尾展開はLuaの代入・return規則を保ちます。再帰、escape、複数call、vararg、未知のcall target、証明できないupvalue/closureは保守的に拒否します。
+
+関数inlineはstack frameやparameter数をdebug APIから観測できるため、`stormworks` profileでは既定で有効、`lua53` profileでは`--allow-local-lifetime-changes`を明示した場合だけ有効です。関数rewriteあり／なしはschedulerとは別の隔離された`Minifier`で最終Rename／Printまで比較し、関数rewrite単独で出力が厳密に短くなる場合だけ採用します。Source Mapは、inlineした本体を元の関数本体へ、埋め込んだ実引数を元のcall siteへ対応付けます。
+
 # Source Map
 
 このツールは、ミニファイ後のコードと合わせて [Source Map](https://tc39.es/source-map/) (`.lua.map`) を出力します。

@@ -37,6 +37,14 @@ import {
   OPTIMIZER_ANALYSIS_CACHE_KEY,
 } from "./optimizerAnalysis";
 import { propagateInterproceduralConstants } from "./interproceduralConstants";
+import {
+  inlineBoundStatementFunctions,
+  inlineClosedStatementFunctions,
+  inlineClosedSingleUseFunctions,
+  inlineLiteralArgumentFunctions,
+  inlineTailCallFunctions,
+  pruneTrailingUnusedParameters,
+} from "./functionRewrites";
 
 export type { RuntimeProfile } from "./runtimeEnvironment";
 
@@ -91,6 +99,10 @@ const NO_RENAME: RenameResult = {
   usedNames: new Set(),
 };
 
+function sourceRangeOf(node: object): [number, number] | undefined {
+  return (node as { range?: [number, number] }).range;
+}
+
 function copyMap<K, V>(source: ReadonlyMap<K, V>, target: Map<K, V>): void {
   target.clear();
   source.forEach((value, key) => target.set(key, value));
@@ -118,14 +130,17 @@ export class Minifier {
   private readonly moduleMetadata = new Map<string, SourceMetadata>();
   private readonly diagnosticCollector?: OptimizationDiagnosticCollector;
   private readonly schedulerVariant?: "baseline" | "trial";
+  private readonly functionRewriteVariant?: "baseline" | "trial";
 
   constructor(
     entryFilePath: string,
     luaParseSettings: Partial<Options>,
     mode: MinifierMode,
     schedulerVariant?: "baseline" | "trial",
+    functionRewriteVariant?: "baseline" | "trial",
   ) {
     this.schedulerVariant = schedulerVariant;
+    this.functionRewriteVariant = functionRewriteVariant;
     this.entryFilePath = entryFilePath;
     this.identifiersInUse = new Set<string>();
     this.moduleSourceText = new Map<string, string>();
@@ -154,6 +169,12 @@ export class Minifier {
 
   parse(): SourceNode {
     if (
+      this.functionRewriteVariant === undefined &&
+      this.functionRewritesEnabled()
+    ) {
+      return this.parseWithFunctionRewriteSelection();
+    }
+    if (
       this.schedulerVariant === undefined &&
       this.requiresSchedulerSelection()
     ) {
@@ -162,12 +183,57 @@ export class Minifier {
     return this.parseOnce();
   }
 
+  private parseWithFunctionRewriteSelection(): SourceNode {
+    const baselineMinifier = new Minifier(
+      this.entryFilePath,
+      this.luaParseSettings,
+      this.mode,
+      undefined,
+      "baseline",
+    );
+    const baseline = baselineMinifier.parse();
+    const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
+    let trialMinifier: Minifier;
+    let trial: SourceNode;
+    try {
+      trialMinifier = new Minifier(
+        this.entryFilePath,
+        this.luaParseSettings,
+        this.mode,
+        undefined,
+        "trial",
+      );
+      trial = trialMinifier.parse();
+    } catch {
+      this.copyDiagnosticsFrom(baselineMinifier);
+      this.recordFinalFunctionRewriteDecision("rejected", "trial-failed");
+      return this.adoptVariant(baselineMinifier, baseline);
+    }
+    const trialBytes = new TextEncoder().encode(trial.toString()).length;
+    if (trialBytes >= baselineBytes) {
+      this.copyDiagnosticsFrom(trialMinifier);
+      this.recordFinalFunctionRewriteDecision(
+        "rejected",
+        "final-output-not-shorter",
+      );
+      return this.adoptVariant(baselineMinifier, baseline);
+    }
+    this.copyDiagnosticsFrom(trialMinifier);
+    this.recordFinalFunctionRewriteDecision(
+      "accepted",
+      "final-output-shorter",
+      baselineBytes - trialBytes,
+    );
+    return this.adoptVariant(trialMinifier, trial);
+  }
+
   private parseWithSchedulerSelection(): SourceNode {
     const baselineMinifier = new Minifier(
       this.entryFilePath,
       this.luaParseSettings,
       this.mode,
       "baseline",
+      this.functionRewriteVariant,
     );
     const baseline = baselineMinifier.parseOnce();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -179,6 +245,7 @@ export class Minifier {
         this.luaParseSettings,
         this.mode,
         "trial",
+        this.functionRewriteVariant,
       );
       trial = trialMinifier.parseOnce();
     } catch {
@@ -205,6 +272,9 @@ export class Minifier {
     this.link();
     this.foldConstantsAll();
     this.removeUnusedAll();
+    this.rewriteFunctionsAll();
+    this.foldConstantsAll();
+    this.removeUnusedAll();
     this.rebuildIdentifiersInUse();
     this.computeGlobalRenames();
     this.transformAll();
@@ -224,6 +294,235 @@ export class Minifier {
     return result;
   }
 
+  /** Function-summary consumers run before scheduling and final rename/print. */
+  private rewriteFunctionsAll(): void {
+    if (
+      this.functionRewriteVariant === "baseline" ||
+      !this.functionRewritesEnabled()
+    )
+      return;
+
+    this.linkOrder.forEach((moduleName) => {
+      const ast = this.moduleAST.get(moduleName);
+      const resolved = this.moduleResolve.get(moduleName);
+      if (!ast || !resolved) throw new Error(moduleName + " is not found");
+      const passes = new PassOrchestrator(ast, resolved);
+      const runtimeProfile = this.mode.runtimeProfile ?? "lua53";
+      const moduleRange =
+        sourceRangeOf(ast) ??
+        ([0, this.moduleSourceText.get(moduleName)?.length ?? 0] as const);
+      const recordAccepted = (pass: string, count: number) => {
+        if (count === 0) return;
+        this.diagnosticCollector?.record({
+          pass,
+          moduleName,
+          runtimeProfile,
+          decision: "accepted",
+          reason: "function-rewrite-applied",
+          candidateSize: count,
+          sourceRange: moduleRange,
+        });
+      };
+      const initialAnalysis = passes.analysis(
+        OPTIMIZER_ANALYSIS_CACHE_KEY,
+        analyzeOptimizerAtGeneration,
+      );
+      const recursive = new Set(
+        initialAnalysis.callGraph.sccs
+          .filter((scc) => scc.recursive)
+          .flatMap((scc) => scc.functions),
+      );
+      initialAnalysis.interprocedural.diagnostics.forEach((diagnostic) =>
+        this.diagnosticCollector?.record({
+          pass: "interprocedural-summary",
+          moduleName,
+          runtimeProfile,
+          decision:
+            diagnostic.reason === "unknown-call-target"
+              ? "rejected"
+              : "accepted",
+          reason: diagnostic.reason,
+          candidateSize: 1,
+          sourceRange: diagnostic.sourceRange ?? moduleRange,
+        }),
+      );
+      initialAnalysis.callGraph.functions.forEach((callable) => {
+        if (!callable.symbol || !callable.declaration.isLocal) return;
+        const calls = initialAnalysis.callGraph.calls.filter((call) =>
+          call.targets.has(callable),
+        ).length;
+        const reason = recursive.has(callable)
+          ? "recursive-function"
+          : callable.declaration.parameters.some(
+                (parameter) => parameter.type === "VarargLiteral",
+              )
+            ? "vararg-function"
+            : callable.symbol.references.length > calls
+              ? "function-escape"
+              : calls > 1
+                ? "multiple-call-sites"
+                : undefined;
+        if (!reason) return;
+        this.diagnosticCollector?.record({
+          pass: "function-rewrite",
+          moduleName,
+          runtimeProfile,
+          decision: "rejected",
+          reason,
+          candidateSize: 1,
+          sourceRange: sourceRangeOf(callable.declaration),
+        });
+      });
+      passes.run("prune-trailing-unused-parameters", () => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const result = pruneTrailingUnusedParameters(
+          analysis.interprocedural.callGraph,
+          this.getSourceMetadata(moduleName),
+        );
+        recordAccepted(
+          "prune-trailing-unused-parameters",
+          result.prunedParameters,
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+      passes.run("inline-closed-single-use-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const result = inlineClosedSingleUseFunctions(
+          analysis.interprocedural,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+        );
+        recordAccepted(
+          "inline-closed-single-use-functions",
+          result.inlinedFunctions,
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+      passes.run("inline-literal-argument-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const result = inlineLiteralArgumentFunctions(
+          analysis.interprocedural,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+        );
+        recordAccepted(
+          "inline-literal-argument-functions",
+          result.inlinedFunctions,
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+      passes.run("inline-tail-call-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const localResources = analyzeLocalResourceUsage(ast);
+        const runtime = runtimeEnvironmentOf(
+          this.mode.runtimeProfile ?? "lua53",
+        );
+        const result = inlineTailCallFunctions(
+          ast,
+          analysis.interprocedural,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+          {
+            maxIntroducedLocalsAt: (statement) => {
+              const active = localResources.activeLocalsBefore(statement);
+              if (active === undefined) return 0;
+              return Math.max(
+                0,
+                Math.min(
+                  runtime.resources.maxActiveLocalsPerFunction - active,
+                  runtime.resources.maxRegistersPerFunction - active,
+                ),
+              );
+            },
+          },
+        );
+        recordAccepted("inline-tail-call-functions", result.inlinedFunctions);
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+      passes.run("inline-closed-statement-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const result = inlineClosedStatementFunctions(
+          ast,
+          analysis.interprocedural,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+        );
+        recordAccepted(
+          "inline-closed-statement-functions",
+          result.inlinedFunctions,
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+      passes.run("inline-bound-statement-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const localResources = analyzeLocalResourceUsage(ast);
+        const result = inlineBoundStatementFunctions(
+          ast,
+          analysis.interprocedural,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+          {
+            maxIntroducedLocalsAt: (statement) => {
+              const active = localResources.activeLocalsBefore(statement);
+              if (active === undefined) return 0;
+              return Math.max(
+                0,
+                Math.min(
+                  runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53")
+                    .resources.maxActiveLocalsPerFunction - active,
+                  runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53")
+                    .resources.maxRegistersPerFunction - active,
+                ),
+              );
+            },
+          },
+        );
+        recordAccepted(
+          "inline-bound-statement-functions",
+          result.inlinedFunctions,
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+      this.moduleResolve.set(moduleName, passes.resolved);
+    });
+  }
+
   private requiresSchedulerSelection(): boolean {
     if (this.mode.mergeLocals !== false) return true;
     if (this.mode.effectAwareTransforms === false) return false;
@@ -235,6 +534,15 @@ export class Minifier {
       lifetimeAllowed &&
       (this.mode.effectAwareLocalHoist !== false ||
         this.mode.effectAwareTableReads !== false)
+    );
+  }
+
+  private functionRewritesEnabled(): boolean {
+    if (this.mode.effectAwareTransforms === false) return false;
+    const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53");
+    return (
+      !runtime.semantics.debugLocalIntrospection ||
+      this.mode.allowLocalLifetimeChanges === true
     );
   }
 
@@ -268,6 +576,24 @@ export class Minifier {
   ): void {
     this.diagnosticCollector?.record({
       pass: "statement-scheduler-final-cost",
+      decision,
+      reason,
+      candidateSize: 1,
+      estimatedByteSavings: byteSavings,
+      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      moduleName: this.entryModule,
+      sourceRange: [0, fs.readFileSync(this.entryFilePath, "utf8").length],
+    });
+  }
+
+  private recordFinalFunctionRewriteDecision(
+    decision: "accepted" | "rejected",
+    reason:
+      "final-output-shorter" | "final-output-not-shorter" | "trial-failed",
+    byteSavings?: number,
+  ): void {
+    this.diagnosticCollector?.record({
+      pass: "function-rewrite-final-cost",
       decision,
       reason,
       candidateSize: 1,
@@ -722,6 +1048,16 @@ export class Minifier {
           currentResolve,
           metadata,
           facts,
+          (statement) =>
+            this.diagnosticCollector?.record({
+              pass: "function-dce",
+              moduleName,
+              runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+              decision: "accepted",
+              reason: "unused-function",
+              candidateSize: 1,
+              sourceRange: sourceRangeOf(statement),
+            }),
         );
         return { changed, invalidatesResolve: changed };
       });
