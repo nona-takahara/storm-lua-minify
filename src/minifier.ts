@@ -130,14 +130,17 @@ export class Minifier {
   private readonly moduleMetadata = new Map<string, SourceMetadata>();
   private readonly diagnosticCollector?: OptimizationDiagnosticCollector;
   private readonly schedulerVariant?: "baseline" | "trial";
+  private readonly functionRewriteVariant?: "baseline" | "trial";
 
   constructor(
     entryFilePath: string,
     luaParseSettings: Partial<Options>,
     mode: MinifierMode,
     schedulerVariant?: "baseline" | "trial",
+    functionRewriteVariant?: "baseline" | "trial",
   ) {
     this.schedulerVariant = schedulerVariant;
+    this.functionRewriteVariant = functionRewriteVariant;
     this.entryFilePath = entryFilePath;
     this.identifiersInUse = new Set<string>();
     this.moduleSourceText = new Map<string, string>();
@@ -166,6 +169,12 @@ export class Minifier {
 
   parse(): SourceNode {
     if (
+      this.functionRewriteVariant === undefined &&
+      this.functionRewritesEnabled()
+    ) {
+      return this.parseWithFunctionRewriteSelection();
+    }
+    if (
       this.schedulerVariant === undefined &&
       this.requiresSchedulerSelection()
     ) {
@@ -174,12 +183,57 @@ export class Minifier {
     return this.parseOnce();
   }
 
+  private parseWithFunctionRewriteSelection(): SourceNode {
+    const baselineMinifier = new Minifier(
+      this.entryFilePath,
+      this.luaParseSettings,
+      this.mode,
+      undefined,
+      "baseline",
+    );
+    const baseline = baselineMinifier.parse();
+    const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
+    let trialMinifier: Minifier;
+    let trial: SourceNode;
+    try {
+      trialMinifier = new Minifier(
+        this.entryFilePath,
+        this.luaParseSettings,
+        this.mode,
+        undefined,
+        "trial",
+      );
+      trial = trialMinifier.parse();
+    } catch {
+      this.copyDiagnosticsFrom(baselineMinifier);
+      this.recordFinalFunctionRewriteDecision("rejected", "trial-failed");
+      return this.adoptVariant(baselineMinifier, baseline);
+    }
+    const trialBytes = new TextEncoder().encode(trial.toString()).length;
+    if (trialBytes >= baselineBytes) {
+      this.copyDiagnosticsFrom(trialMinifier);
+      this.recordFinalFunctionRewriteDecision(
+        "rejected",
+        "final-output-not-shorter",
+      );
+      return this.adoptVariant(baselineMinifier, baseline);
+    }
+    this.copyDiagnosticsFrom(trialMinifier);
+    this.recordFinalFunctionRewriteDecision(
+      "accepted",
+      "final-output-shorter",
+      baselineBytes - trialBytes,
+    );
+    return this.adoptVariant(trialMinifier, trial);
+  }
+
   private parseWithSchedulerSelection(): SourceNode {
     const baselineMinifier = new Minifier(
       this.entryFilePath,
       this.luaParseSettings,
       this.mode,
       "baseline",
+      this.functionRewriteVariant,
     );
     const baseline = baselineMinifier.parseOnce();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -191,6 +245,7 @@ export class Minifier {
         this.luaParseSettings,
         this.mode,
         "trial",
+        this.functionRewriteVariant,
       );
       trial = trialMinifier.parseOnce();
     } catch {
@@ -241,7 +296,10 @@ export class Minifier {
 
   /** Function-summary consumers run before scheduling and final rename/print. */
   private rewriteFunctionsAll(): void {
-    if (this.schedulerVariant === "baseline" || !this.functionRewritesEnabled())
+    if (
+      this.functionRewriteVariant === "baseline" ||
+      !this.functionRewritesEnabled()
+    )
       return;
 
     this.linkOrder.forEach((moduleName) => {
@@ -466,7 +524,6 @@ export class Minifier {
   }
 
   private requiresSchedulerSelection(): boolean {
-    if (this.functionRewritesEnabled()) return true;
     if (this.mode.mergeLocals !== false) return true;
     if (this.mode.effectAwareTransforms === false) return false;
     const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53");
@@ -519,6 +576,24 @@ export class Minifier {
   ): void {
     this.diagnosticCollector?.record({
       pass: "statement-scheduler-final-cost",
+      decision,
+      reason,
+      candidateSize: 1,
+      estimatedByteSavings: byteSavings,
+      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      moduleName: this.entryModule,
+      sourceRange: [0, fs.readFileSync(this.entryFilePath, "utf8").length],
+    });
+  }
+
+  private recordFinalFunctionRewriteDecision(
+    decision: "accepted" | "rejected",
+    reason:
+      "final-output-shorter" | "final-output-not-shorter" | "trial-failed",
+    byteSavings?: number,
+  ): void {
+    this.diagnosticCollector?.record({
+      pass: "function-rewrite-final-cost",
       decision,
       reason,
       candidateSize: 1,

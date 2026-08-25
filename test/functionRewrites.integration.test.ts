@@ -192,4 +192,22 @@ return recursive(true),variadic(1)
       expect(origin.name).toBe("external");
     });
   });
+
+  test("gates function rewrites separately at final output", () => {
+    const result = minifyTemporaryLuaSource(
+      "local function run(value)publish(value)end run(make())",
+      {
+        moduleLikeLua: false,
+        runtimeProfile: "stormworks",
+        mergeLocals: false,
+        collectOptimizationDiagnostics: true,
+      },
+    );
+    expect(result.minifier.optimizationDiagnostics).toContainEqual(
+      expect.objectContaining({
+        pass: "function-rewrite-final-cost",
+        decision: expect.stringMatching(/accepted|rejected/),
+      }),
+    );
+  });
 });
