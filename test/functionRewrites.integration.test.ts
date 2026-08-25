@@ -46,4 +46,17 @@ return first(1,sideEffect())
 
     expect(allowed.length).toBeLessThan(preserved.length);
   });
+
+  test("inlines a closed single-use function and removes its declaration", () => {
+    const source =
+      "local function compute()return external()+1 end return compute()";
+    const optimized = minifyTemporaryLuaSource(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "stormworks",
+      mergeLocals: false,
+    }).code;
+
+    expect(optimized).toContain("external()+1");
+    expect(optimized).not.toContain("function");
+  });
 });

@@ -1,10 +1,18 @@
 import Parser from "luaparse";
 import { CallGraphAnalysis } from "./callGraph";
+import { walkExpression } from "./astWalk";
+import { InterproceduralAnalysis } from "./interproceduralAnalysis";
+import { ResolveResult } from "./resolver";
 import { SourceMetadata } from "./sourceMetadata";
 
 export interface FunctionRewriteResult {
   readonly changed: boolean;
   readonly prunedParameters: number;
+}
+
+export interface InlineRewriteResult {
+  readonly changed: boolean;
+  readonly inlinedFunctions: number;
 }
 
 /**
@@ -47,4 +55,82 @@ export function pruneTrailingUnusedParameters(
     changed: prunedParameters > 0,
     prunedParameters,
   };
+}
+
+function overwriteExpression(
+  target: Parser.Expression,
+  replacement: Parser.Expression,
+): void {
+  Object.keys(target).forEach((key) => {
+    delete (target as unknown as Record<string, unknown>)[key];
+  });
+  Object.assign(target, replacement);
+}
+
+function isClosedInlineExpression(
+  expression: Parser.Expression,
+  resolved: ResolveResult,
+): boolean {
+  let closed = true;
+  walkExpression(expression, {
+    onIdentifierReference: (identifier) => {
+      if (resolved.symbolOf(identifier)) closed = false;
+    },
+    onFunction: () => {
+      closed = false;
+    },
+  });
+  return closed && expression.type !== "VarargLiteral";
+}
+
+/**
+ * Inline the first deliberately narrow class whose binding proof is complete:
+ * a zero-argument, single-use local function returning one closed expression.
+ * Closed means every identifier is global; local/upvalue references wait for
+ * symbol-level alpha conversion instead of being guessed from their spelling.
+ */
+export function inlineClosedSingleUseFunctions(
+  analysis: InterproceduralAnalysis,
+  resolved: ResolveResult,
+  metadata: SourceMetadata,
+): InlineRewriteResult {
+  let inlinedFunctions = 0;
+
+  analysis.callGraph.functions.forEach((callable) => {
+    const declaration = callable.declaration;
+    const symbol = callable.symbol;
+    if (
+      !symbol ||
+      !declaration.isLocal ||
+      declaration.parameters.length !== 0 ||
+      declaration.body.length !== 1 ||
+      symbol.references.length !== 1 ||
+      metadata.annotationsOf(declaration).keep
+    )
+      return;
+
+    const returned = declaration.body[0];
+    if (returned.type !== "ReturnStatement" || returned.arguments.length !== 1)
+      return;
+    const expression = returned.arguments[0];
+    if (!isClosedInlineExpression(expression, resolved)) return;
+
+    const site = analysis.callGraph.calls.find(
+      (candidate) =>
+        !candidate.hasUnknownTarget &&
+        candidate.targets.size === 1 &&
+        candidate.targets.has(callable) &&
+        candidate.call.type === "CallExpression" &&
+        candidate.call.arguments.length === 0 &&
+        candidate.call.base === symbol.references[0],
+    );
+    if (!site) return;
+
+    // structuredClone retains loc/range on every copied node, so the inlined
+    // expression maps to the function body/return origin rather than call-site text.
+    overwriteExpression(site.call, structuredClone(expression));
+    inlinedFunctions++;
+  });
+
+  return { changed: inlinedFunctions > 0, inlinedFunctions };
 }

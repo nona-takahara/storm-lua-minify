@@ -37,7 +37,10 @@ import {
   OPTIMIZER_ANALYSIS_CACHE_KEY,
 } from "./optimizerAnalysis";
 import { propagateInterproceduralConstants } from "./interproceduralConstants";
-import { pruneTrailingUnusedParameters } from "./functionRewrites";
+import {
+  inlineClosedSingleUseFunctions,
+  pruneTrailingUnusedParameters,
+} from "./functionRewrites";
 
 export type { RuntimeProfile } from "./runtimeEnvironment";
 
@@ -244,6 +247,21 @@ export class Minifier {
         );
         const result = pruneTrailingUnusedParameters(
           analysis.interprocedural.callGraph,
+          this.getSourceMetadata(moduleName),
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+      passes.run("inline-closed-single-use-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const result = inlineClosedSingleUseFunctions(
+          analysis.interprocedural,
+          currentResolve,
           this.getSourceMetadata(moduleName),
         );
         return {

@@ -1,7 +1,11 @@
 import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
 import { analyzeCallGraph } from "../src/callGraph";
-import { pruneTrailingUnusedParameters } from "../src/functionRewrites";
+import {
+  inlineClosedSingleUseFunctions,
+  pruneTrailingUnusedParameters,
+} from "../src/functionRewrites";
+import { analyzeInterprocedural } from "../src/interproceduralAnalysis";
 import { analyzeOptimizerFacts } from "../src/optimizerFacts";
 import { resolveScopes } from "../src/resolver";
 import { SourceMetadata } from "../src/sourceMetadata";
@@ -61,5 +65,54 @@ describe("function rewrites", () => {
     );
     expect(result).toEqual({ changed: false, prunedParameters: 0 });
     expect(firstFunction(chunk).parameters).toHaveLength(1);
+  });
+
+  test("inlines a single-use closed return expression with body provenance", () => {
+    const source =
+      "local function value() return external()+1 end return value()";
+    const chunk = Parser.parse(source, {
+      luaVersion: "5.3",
+      comments: true,
+      locations: true,
+      ranges: true,
+    });
+    const resolved = resolveScopes(chunk);
+    const facts = analyzeOptimizerFacts(chunk, resolved);
+    const callGraph = analyzeCallGraph(chunk, resolved, facts);
+    const originalExpression = (
+      firstFunction(chunk).body[0] as Parser.ReturnStatement
+    ).arguments[0];
+    const result = inlineClosedSingleUseFunctions(
+      analyzeInterprocedural(chunk, resolved, callGraph),
+      resolved,
+      new SourceMetadata(chunk, source),
+    );
+    const finalReturn = chunk.body[1] as Parser.ReturnStatement;
+
+    expect(result).toEqual({ changed: true, inlinedFunctions: 1 });
+    expect(finalReturn.arguments[0].type).toBe("BinaryExpression");
+    expect(finalReturn.arguments[0]).not.toBe(originalExpression);
+    expect(finalReturn.arguments[0].loc).toEqual(originalExpression.loc);
+  });
+
+  test("rejects local/upvalue capture until alpha conversion is available", () => {
+    const source =
+      "local captured=1 local function value() return captured end do local captured=2 return value() end";
+    const chunk = Parser.parse(source, {
+      luaVersion: "5.3",
+      comments: true,
+      locations: true,
+      ranges: true,
+    });
+    const resolved = resolveScopes(chunk);
+    const facts = analyzeOptimizerFacts(chunk, resolved);
+    const callGraph = analyzeCallGraph(chunk, resolved, facts);
+    const result = inlineClosedSingleUseFunctions(
+      analyzeInterprocedural(chunk, resolved, callGraph),
+      resolved,
+      new SourceMetadata(chunk, source),
+    );
+
+    expect(result).toEqual({ changed: false, inlinedFunctions: 0 });
   });
 });
