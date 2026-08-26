@@ -10,6 +10,22 @@ function parse(code: string): Parser.Chunk {
   return Parser.parse(code, { luaVersion: "5.3" });
 }
 
+test("binds colon method self as an implicit first parameter", () => {
+  const chunk = parse(
+    "local Object={} function Object:method(value)return self.value,value end",
+  );
+  const result = resolveScopes(chunk);
+  const method = chunk.body[1] as Parser.FunctionDeclaration;
+  assert.equal(method.type, "FunctionDeclaration");
+  const self = result.scopeOfFunction(method)?.symbols[0];
+
+  assert.ok(self);
+  assert.equal(self.kind, "param");
+  assert.equal(self.name, "self");
+  assert.equal(self.references.length, 1);
+  assert.equal(result.globals.has("self"), false);
+});
+
 test("resolves references to their declaring local symbol", () => {
   const chunk = parse(`
     local x = 1

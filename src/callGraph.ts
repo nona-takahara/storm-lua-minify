@@ -44,6 +44,64 @@ export interface CallGraphAnalysis {
   ): CallSite | undefined;
 }
 
+/** Combine generation-matched module graphs and replace proved method unknown edges. */
+export function combineCallGraphs(
+  graphs: readonly CallGraphAnalysis[],
+  resolvedTargets: ReadonlyMap<CallSite, Callable>,
+  generation: number,
+): CallGraphAnalysis {
+  if (graphs.some((graph) => graph.generation !== generation))
+    throw new Error(
+      "Cannot combine call graphs from different AST generations",
+    );
+  const functions = [...new Set(graphs.flatMap((graph) => graph.functions))];
+  const calls: CallSite[] = [];
+  const callSiteByExpression = new WeakMap<
+    | Parser.CallExpression
+    | Parser.TableCallExpression
+    | Parser.StringCallExpression,
+    CallSite
+  >();
+  graphs
+    .flatMap((graph) => graph.calls)
+    .forEach((original) => {
+      const resolved = resolvedTargets.get(original);
+      const targets = resolved
+        ? new Set<Callable>([...original.targets, resolved])
+        : original.targets;
+      const call: CallSite = {
+        ...original,
+        id: calls.length,
+        targets,
+        hasUnknownTarget: resolved ? false : original.hasUnknownTarget,
+      };
+      calls.push(call);
+      callSiteByExpression.set(call.call, call);
+    });
+  const sccs = stronglyConnectedComponents(functions, calls);
+  return {
+    generation,
+    functions,
+    calls,
+    sccs,
+    functionOf: (declaration) => {
+      for (const graph of graphs) {
+        const found = graph.functionOf(declaration);
+        if (found) return found;
+      }
+      return undefined;
+    },
+    functionOfSymbol: (symbol) => {
+      for (const graph of graphs) {
+        const found = graph.functionOfSymbol(symbol);
+        if (found) return found;
+      }
+      return undefined;
+    },
+    callSiteOf: (call) => callSiteByExpression.get(call),
+  };
+}
+
 /**
  * Resolve identityに基づくmodule-local call graphを構築する。
  *

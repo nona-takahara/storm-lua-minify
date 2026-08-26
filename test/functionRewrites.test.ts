@@ -45,13 +45,21 @@ describe("function rewrites", () => {
     const { chunk, result } = rewrite(
       "local function pick(first,unused,last) return last end return pick(1,side(),3)",
     );
-    expect(result).toEqual({ changed: false, prunedParameters: 0 });
+    expect(result).toEqual({
+      changed: false,
+      prunedParameters: 0,
+      prunedMethodParameters: 0,
+    });
     expect(firstFunction(chunk).parameters).toHaveLength(3);
 
     const pruned = rewrite(
       "local function pick(first,unused,last) return first end return pick(1,side(),3)",
     );
-    expect(pruned.result).toEqual({ changed: true, prunedParameters: 2 });
+    expect(pruned.result).toEqual({
+      changed: true,
+      prunedParameters: 2,
+      prunedMethodParameters: 0,
+    });
     expect(firstFunction(pruned.chunk).parameters).toHaveLength(1);
   });
 
@@ -59,7 +67,11 @@ describe("function rewrites", () => {
     const { chunk, result } = rewrite(
       "local function collect(unused,...) return ... end return collect(side(),1)",
     );
-    expect(result).toEqual({ changed: false, prunedParameters: 0 });
+    expect(result).toEqual({
+      changed: false,
+      prunedParameters: 0,
+      prunedMethodParameters: 0,
+    });
     expect(firstFunction(chunk).parameters).toHaveLength(2);
   });
 
@@ -67,7 +79,11 @@ describe("function rewrites", () => {
     const { chunk, result } = rewrite(
       "--@storm keep\nlocal function kept(unused) return 1 end return kept(side())",
     );
-    expect(result).toEqual({ changed: false, prunedParameters: 0 });
+    expect(result).toEqual({
+      changed: false,
+      prunedParameters: 0,
+      prunedMethodParameters: 0,
+    });
     expect(firstFunction(chunk).parameters).toHaveLength(1);
   });
 

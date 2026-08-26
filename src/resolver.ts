@@ -21,6 +21,8 @@ export interface Symbol {
   readonly declaration: Parser.Identifier;
   // このシンボルを指す参照（宣言箇所自体は含まない）
   readonly references: Parser.Identifier[];
+  /** Lua declares this binding without an identifier token (currently colon-method self). */
+  readonly implicit?: true;
 }
 
 export interface GlobalBinding {
@@ -96,6 +98,7 @@ export function resolveScopes(
     scope: MutableScope,
     node: Parser.Identifier,
     kind: SymbolKind,
+    implicit = false,
   ): Symbol {
     const name = identifierName(node);
     const symbol: Symbol = {
@@ -105,6 +108,7 @@ export function resolveScopes(
       scope,
       declaration: node,
       references: [],
+      ...(implicit ? { implicit: true as const } : {}),
     };
     // 同名の再宣言はスコープ内の以後の参照から見た束縛を上書きする（Luaの通常のシャドーイング）
     scope.symbols.push(symbol);
@@ -319,6 +323,15 @@ export function resolveScopes(
     }
     const inner = createScope("function", scope);
     functionScopes.set(fn, inner);
+    if (
+      fn.identifier?.type === "MemberExpression" &&
+      fn.identifier.indexer === ":"
+    ) {
+      // `function object:method(...)` declares an implicit first parameter. It has no
+      // declaration token in the AST, but it must still own every `self` reference so
+      // global analysis, aliases, summaries, and binding validation share Lua's binding.
+      declare(inner, { type: "Identifier", name: "self" }, "param", true);
+    }
     fn.parameters.forEach((parameter) => {
       if (parameter.type === "Identifier") {
         declare(inner, parameter, "param");

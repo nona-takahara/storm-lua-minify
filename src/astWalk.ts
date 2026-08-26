@@ -7,6 +7,8 @@ import Parser from "luaparse";
  * nested blockまで集めるpassの両方が、同じAST分類を利用できる。
  */
 export interface AstWalkVisitor {
+  readonly onStatement?: (statement: Parser.Statement) => void;
+  readonly onExpression?: (expression: Parser.Expression) => void;
   readonly onIdentifierReference?: (id: Parser.Identifier) => void;
   readonly onBlock?: (body: Parser.Statement[]) => void;
   // Function bodyは遅延実行されるためwalker自身は入らない。必要な解析だけが
@@ -18,6 +20,7 @@ export function walkStatement(
   statement: Parser.Statement,
   visitor: AstWalkVisitor,
 ): void {
+  visitor.onStatement?.(statement);
   switch (statement.type) {
     case "LocalStatement":
       statement.init.forEach((expr) => {
@@ -105,6 +108,7 @@ export function walkExpression(
   expression: Parser.Expression,
   visitor: AstWalkVisitor,
 ): void {
+  visitor.onExpression?.(expression);
   switch (expression.type) {
     case "Identifier":
       visitor.onIdentifierReference?.(expression);
@@ -163,4 +167,21 @@ export function walkExpression(
       );
     }
   }
+}
+
+/** Walk a complete execution tree while preserving the shared node classification above. */
+export function walkBlockDeep(
+  body: readonly Parser.Statement[],
+  visitor: AstWalkVisitor,
+): void {
+  const deepVisitor: AstWalkVisitor = {
+    ...visitor,
+    onBlock: (nested) => {
+      visitor.onBlock?.(nested);
+      walkBlockDeep(nested, visitor);
+    },
+  };
+  body.forEach((statement) => {
+    walkStatement(statement, deepVisitor);
+  });
 }
