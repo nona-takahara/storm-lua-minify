@@ -33,6 +33,7 @@ CLIはStormworks向けツールとして、`--runtime-profile stormworks`を既�
 - `--no-field-sensitive-table-effects`: tableの変更追跡をstatic key単位からtable全体へ戻します
 - `--allow-local-lifetime-changes`: Lua 5.3 profileで、debug APIから観測可能な`local`生存期間の変更を許可します
 - `--aggressive-table-read-merges`: tableへの変更を越えるreadも積極的なまとめ上げの対象にします（既定は無効）
+- `--assume-annotations`: 対応するEmmyLua annotationをoptimizer factの根拠として信頼します（既定は無効）
 
 `-m` / `--module-like-lua`は`require`・`dofile`の出力方式を選ぶオプションであり、runtime profileとは独立です。
 
@@ -43,6 +44,7 @@ CLIはStormworks向けツールとして、`--runtime-profile stormworks`を既�
 | 純Luaで意味保存        | `mergeLocals` / `--no-merge-locals`                            | 有効（opt-out）                     | 独立した連続localを1文へ結合            |
 | Stormworksで意味保存   | `effectAwareLocalHoist` / `--no-effect-aware-local-hoist`      | Stormworks profileで有効（opt-out） | 依存するinitializerを元位置の代入へ分離 |
 | Stormworksでも意味変更 | `aggressiveTableReadMerges` / `--aggressive-table-read-merges` | 無効（opt-in）                      | dirtyなtable readを変更より前へ移動     |
+| source上の明示的仮定   | `assumeAnnotations` / `--assume-annotations`                   | 無効（opt-in）                      | EmmyLua由来のconstructor field fact     |
 
 2段目はlocalの生存期間を早めるため、`debug.getlocal`等を持つ純Luaでは既定で無効です。3段目は実際に読む値が変わり得ます。出力サイズを優先し、その違いを受け入れられるコードでだけ指定してください。
 
@@ -117,6 +119,8 @@ Luaコード内で完結し、意味論を変更しない最適化は既定で�
 - `--@storm keep-name`: 名前短縮から保護しますが、未使用なら削除を許可します
 
 未知の`--@storm`指示や引数付きの指示は、指定ミスを見逃さないためエラーになります。
+
+EmmyLuaの`class`／継承、`field`、`param`／`return`／`type`、`alias`／`enum`は`SourceMetadata`へ関連付けられ、constructor field解析の候補になります。通常は候補の発見とdiagnosticsにだけ使われ、変換の根拠にはなりません。`--assume-annotations`（APIでは`assumeAnnotations: true`）を明示した場合だけ、対応subsetのliteral factがコード由来factと同じ失効規則の下で変換へ参加します。再代入、未知call、alias escape、動的key、metatable変更、またはコードとannotationの矛盾が見つかったfieldはunknownへ戻ります。`---@diagnostic`など他のdirectiveは通常のsource metadataとして保持され、optimizer factにはなりません。
 
 ### ⚠️ `--reserved-globals-config` について（重要）
 

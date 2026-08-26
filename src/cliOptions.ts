@@ -45,6 +45,10 @@ export function createCliProgram(): Command {
       "Lua 5.3 profileでdebug APIから観測可能なlocal生存期間の変更を許可します",
     )
     .option(
+      "--assume-annotations",
+      "対応するEmmyLua annotationをoptimizerの明示的な仮定として利用します",
+    )
+    .option(
       "--no-rename",
       "識別子の短縮(リネーム)を無効にします（デバッグ用途）",
     )

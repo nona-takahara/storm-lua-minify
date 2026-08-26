@@ -51,6 +51,13 @@ describe("effect-aware CLI options", () => {
     });
   });
 
+  test("uses one explicit annotation assumption contract", () => {
+    expect(optionsOf()).not.toHaveProperty("assumeAnnotations");
+    expect(optionsOf("--assume-annotations")).toMatchObject({
+      assumeAnnotations: true,
+    });
+  });
+
   test("rejects an unknown runtime profile", () => {
     const program = createCliProgram();
     program.exitOverride();

@@ -4,7 +4,7 @@ const { Minifier } = require("../dist/minifier");
 
 const entry = process.argv.slice(2).find((argument) => argument !== "--");
 if (!entry) {
-  throw new Error("Usage: pnpm report:whole-program-objects -- <entry.lua>");
+  throw new Error("Usage: pnpm report:whole-program-fields -- <entry.lua>");
 }
 
 const parseSettings = {
@@ -26,8 +26,8 @@ function run(variant) {
     parseSettings,
     mode,
     undefined,
+    undefined,
     variant,
-    "baseline",
   );
   const code = minifier.parse().toString();
   return { minifier, code, milliseconds: performance.now() - started };
@@ -37,49 +37,29 @@ run("trial");
 const baseline = run("baseline");
 const measured = [run("trial"), run("trial"), run("trial")];
 const trial = measured.at(-1);
-const analysis = trial.minifier.wholeProgramObjects;
-if (!analysis) throw new Error("Whole-program object analysis is missing");
+const analysis = trial.minifier.wholeProgramFields;
+if (!analysis) throw new Error("Whole-program field analysis is missing");
 
-const colonCandidates = analysis.modules.reduce(
-  (count, module) =>
-    count +
-    module.analysis.callGraph.calls.filter(
-      (call) =>
-        call.call.type === "CallExpression" &&
-        call.call.base.type === "MemberExpression" &&
-        call.call.base.indexer === ":",
-    ).length,
-  0,
-);
 const refusalReasons = {};
-const refusalSamples = [];
-const refusalSampleCounts = {};
 analysis.diagnostics.forEach((diagnostic) => {
-  if (diagnostic.reason === "resolved-method-target") return;
+  if (diagnostic.reason === "field-fact") return;
   refusalReasons[diagnostic.reason] =
     (refusalReasons[diagnostic.reason] ?? 0) + 1;
-  const sampleCount = refusalSampleCounts[diagnostic.reason] ?? 0;
-  if (sampleCount < 3) {
-    const source = trial.minifier.moduleSourceText.get(diagnostic.moduleName);
-    refusalSamples.push({
-      reason: diagnostic.reason,
-      moduleName: diagnostic.moduleName,
-      sourceRange: diagnostic.sourceRange,
-      source:
-        source && diagnostic.sourceRange
-          ? source.slice(diagnostic.sourceRange[0], diagnostic.sourceRange[1])
-          : undefined,
-    });
-    refusalSampleCounts[diagnostic.reason] = sampleCount + 1;
-  }
 });
-const prunedMethodParameters = trial.minifier.optimizationDiagnostics
+const countRewrite = (reason) =>
+  trial.minifier.optimizationDiagnostics
+    .filter(
+      (diagnostic) =>
+        diagnostic.pass === "whole-program-constructor-field-rewrite" &&
+        diagnostic.reason === reason,
+    )
+    .reduce((count, diagnostic) => count + (diagnostic.candidateSize ?? 0), 0);
+const downstreamDce = trial.minifier.optimizationDiagnostics
   .filter(
     (diagnostic) =>
-      diagnostic.pass === "whole-program-method-parameter-pruning" &&
-      diagnostic.decision === "accepted",
+      diagnostic.pass === "function-dce" && diagnostic.decision === "accepted",
   )
-  .reduce((total, diagnostic) => total + (diagnostic.candidateSize ?? 0), 0);
+  .reduce((count, diagnostic) => count + (diagnostic.candidateSize ?? 0), 0);
 const times = measured
   .map((result) => result.milliseconds)
   .sort((left, right) => left - right);
@@ -90,13 +70,19 @@ console.log(
   JSON.stringify(
     {
       entry,
-      moduleCount: analysis.modules.length,
-      objectIdentityCount: analysis.objects.length,
-      methodCandidates: colonCandidates,
-      resolvedMethods: analysis.resolvedMethods.length,
-      prunedMethodParameters,
+      moduleCount: trial.minifier.wholeProgramObjects?.modules.length ?? 0,
+      annotationFacts: analysis.annotationFacts.length,
+      authorizedAnnotationFacts: analysis.annotationFacts.filter(
+        (fact) => fact.authorized,
+      ).length,
+      stableFieldFacts: analysis.facts.filter(
+        (fact) => fact.value && fact.invalidationReasons.size === 0,
+      ).length,
       refusalReasons,
-      refusalSamples,
+      replacedFieldReads: countRewrite("field-read-replaced"),
+      removedFieldWrites: countRewrite("dead-field-write"),
+      preservedWriteEffects: countRewrite("field-write-effect-preserved"),
+      downstreamDce,
       baselineBytes,
       trialBytes,
       byteDifference: trialBytes - baselineBytes,

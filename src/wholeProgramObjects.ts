@@ -35,6 +35,7 @@ export interface ProgramObjectIdentity {
   readonly kind: "module-return" | "prototype" | "allocation";
   readonly methods: ReadonlyMap<string, Callable>;
   readonly invalidationReasons: ReadonlySet<ObjectRefusalReason>;
+  readonly sources: readonly ProgramObjectIdentity[];
 }
 
 export interface ResolvedMethodCall {
@@ -42,6 +43,15 @@ export interface ResolvedMethodCall {
   readonly receiver: Parser.Expression;
   readonly target: Callable;
   readonly object: ProgramObjectIdentity;
+}
+
+export interface ResolvedConstructorCall {
+  readonly moduleName: string;
+  readonly call: CallSite;
+  readonly target: Callable;
+  readonly object: ProgramObjectIdentity;
+  readonly returnedSymbol: Symbol;
+  readonly arguments: readonly Parser.Expression[];
 }
 
 export interface WholeProgramObjectDiagnostic {
@@ -56,6 +66,7 @@ export interface WholeProgramObjectAnalysis {
   readonly objects: readonly ProgramObjectIdentity[];
   readonly callGraph: CallGraphAnalysis;
   readonly resolvedMethods: readonly ResolvedMethodCall[];
+  readonly resolvedConstructors: readonly ResolvedConstructorCall[];
   readonly diagnostics: readonly WholeProgramObjectDiagnostic[];
   objectOf(expression: Parser.Expression): ProgramObjectIdentity | undefined;
   methodCallOf(call: CallSite): ResolvedMethodCall | undefined;
@@ -72,6 +83,8 @@ interface MutableObject {
 }
 
 interface ConstructorTemplate {
+  readonly callable: Callable;
+  readonly returnedSymbol: Symbol;
   readonly prototype: Parser.Expression;
   readonly base: Parser.Expression;
   readonly module: WholeProgramModule;
@@ -318,6 +331,10 @@ export function analyzeWholeProgramObjects(
   // Constructor calls allocate a distinct identity at each call site. The copied prototype
   // and a factory-returned base contribute methods to that one identity.
   const instanceOfCall = new WeakMap<Parser.Expression, MutableObject>();
+  const constructorOfCall = new WeakMap<
+    Parser.Expression,
+    ConstructorTemplate
+  >();
   changed = true;
   while (changed) {
     changed = false;
@@ -356,6 +373,7 @@ export function analyzeWholeProgramObjects(
         }
         const sources = new Set<MutableObject>();
         if (constructor.length === 1) {
+          constructorOfCall.set(call.call, constructor[0]);
           directValues(constructor[0].prototype, constructor[0].module).forEach(
             (object) => sources.add(object),
           );
@@ -573,11 +591,37 @@ export function analyzeWholeProgramObjects(
       kind: object.kind,
       methods: object.methods,
       invalidationReasons: object.invalidationReasons,
+      sources: [],
     }),
   );
   const publicOfMutable = new Map(
     mutableObjects.map((object, index) => [object, publicObjects[index]]),
   );
+  mutableObjects.forEach((object, index) => {
+    const target = publicObjects[index].sources as ProgramObjectIdentity[];
+    sourcesOfObject.get(object)?.forEach((source) => {
+      const publicSource = publicOfMutable.get(source);
+      if (publicSource) target.push(publicSource);
+    });
+  });
+  const resolvedConstructors: ResolvedConstructorCall[] = [];
+  modules.forEach((module) => {
+    module.analysis.callGraph.calls.forEach((call) => {
+      if (call.call.type !== "CallExpression") return;
+      const template = constructorOfCall.get(call.call);
+      const mutable = instanceOfCall.get(call.call);
+      const object = mutable ? publicOfMutable.get(mutable) : undefined;
+      if (!template || !object) return;
+      resolvedConstructors.push({
+        moduleName: module.name,
+        call,
+        target: template.callable,
+        object,
+        returnedSymbol: template.returnedSymbol,
+        arguments: call.call.arguments,
+      });
+    });
+  });
   const resolvedPublic = resolvedMethods.map((resolved) => ({
     ...resolved,
     object: publicOfMutable.get(resolved.object) as ProgramObjectIdentity,
@@ -613,9 +657,13 @@ export function analyzeWholeProgramObjects(
     objects: publicObjects,
     callGraph,
     resolvedMethods: resolvedPublic,
+    resolvedConstructors,
     diagnostics,
     objectOf: (expression) => {
-      const values = valuesOfExpression.get(expression);
+      const module = moduleOfNode.get(expression);
+      const values =
+        valuesOfExpression.get(expression) ??
+        (module ? directValues(expression, module) : undefined);
       if (values?.size !== 1) return undefined;
       return publicOfMutable.get([...values][0]);
     },
@@ -766,6 +814,8 @@ function recognizeConstructor(
         return;
       if (value.arguments.length < 2) return;
       template = {
+        callable,
+        returnedSymbol,
         base: value.arguments[0],
         prototype: value.arguments[1],
         module,

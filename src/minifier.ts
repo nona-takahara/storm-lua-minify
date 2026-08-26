@@ -50,6 +50,11 @@ import {
   WholeProgramObjectAnalysis,
   WholeProgramModule,
 } from "./wholeProgramObjects";
+import {
+  analyzeWholeProgramFields,
+  applyWholeProgramFieldRewrites,
+  WholeProgramFieldAnalysis,
+} from "./wholeProgramFields";
 
 export type { RuntimeProfile } from "./runtimeEnvironment";
 
@@ -97,6 +102,9 @@ export interface MinifierMode {
   foldConstants?: boolean;
   // 最適化候補の採否理由を収集する。既定offで、生成結果には影響しない。
   collectOptimizationDiagnostics?: boolean;
+  // EmmyLua由来のoptimizer factを変換根拠として信頼する単一のassumption契約。
+  // 省略時もannotationは候補metadataとして解析されるが、意味の根拠にはしない。
+  assumeAnnotations?: boolean;
 }
 
 const NO_RENAME: RenameResult = {
@@ -136,8 +144,10 @@ export class Minifier {
   private readonly diagnosticCollector?: OptimizationDiagnosticCollector;
   private readonly schedulerVariant?: "baseline" | "trial";
   private readonly functionRewriteVariant?: "baseline" | "trial";
+  private readonly fieldFactVariant?: "baseline" | "trial";
   private linkedAstGeneration = 0;
   private wholeProgramObjectsValue?: WholeProgramObjectAnalysis;
+  private wholeProgramFieldsValue?: WholeProgramFieldAnalysis;
 
   constructor(
     entryFilePath: string,
@@ -145,9 +155,11 @@ export class Minifier {
     mode: MinifierMode,
     schedulerVariant?: "baseline" | "trial",
     functionRewriteVariant?: "baseline" | "trial",
+    fieldFactVariant?: "baseline" | "trial",
   ) {
     this.schedulerVariant = schedulerVariant;
     this.functionRewriteVariant = functionRewriteVariant;
+    this.fieldFactVariant = fieldFactVariant;
     this.entryFilePath = entryFilePath;
     this.identifiersInUse = new Set<string>();
     this.moduleSourceText = new Map<string, string>();
@@ -178,7 +190,14 @@ export class Minifier {
     return this.wholeProgramObjectsValue;
   }
 
+  get wholeProgramFields(): WholeProgramFieldAnalysis | undefined {
+    return this.wholeProgramFieldsValue;
+  }
+
   parse(): SourceNode {
+    if (this.fieldFactVariant === undefined && this.fieldFactsEnabled()) {
+      return this.parseWithFieldFactSelection();
+    }
     if (
       this.functionRewriteVariant === undefined &&
       this.functionRewritesEnabled()
@@ -194,11 +213,12 @@ export class Minifier {
     return this.parseOnce();
   }
 
-  private parseWithFunctionRewriteSelection(): SourceNode {
+  private parseWithFieldFactSelection(): SourceNode {
     const baselineMinifier = new Minifier(
       this.entryFilePath,
       this.luaParseSettings,
       this.mode,
+      undefined,
       undefined,
       "baseline",
     );
@@ -212,7 +232,51 @@ export class Minifier {
         this.luaParseSettings,
         this.mode,
         undefined,
+        undefined,
         "trial",
+      );
+      trial = trialMinifier.parse();
+    } catch {
+      this.copyDiagnosticsFrom(baselineMinifier);
+      this.recordFinalFieldFactDecision("rejected", "trial-failed");
+      return this.adoptVariant(baselineMinifier, baseline);
+    }
+    const trialBytes = new TextEncoder().encode(trial.toString()).length;
+    if (trialBytes >= baselineBytes) {
+      this.copyDiagnosticsFrom(trialMinifier);
+      this.recordFinalFieldFactDecision("rejected", "final-output-not-shorter");
+      return this.adoptVariant(baselineMinifier, baseline);
+    }
+    this.copyDiagnosticsFrom(trialMinifier);
+    this.recordFinalFieldFactDecision(
+      "accepted",
+      "final-output-shorter",
+      baselineBytes - trialBytes,
+    );
+    return this.adoptVariant(trialMinifier, trial);
+  }
+
+  private parseWithFunctionRewriteSelection(): SourceNode {
+    const baselineMinifier = new Minifier(
+      this.entryFilePath,
+      this.luaParseSettings,
+      this.mode,
+      undefined,
+      "baseline",
+      this.fieldFactVariant,
+    );
+    const baseline = baselineMinifier.parse();
+    const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
+    let trialMinifier: Minifier;
+    let trial: SourceNode;
+    try {
+      trialMinifier = new Minifier(
+        this.entryFilePath,
+        this.luaParseSettings,
+        this.mode,
+        undefined,
+        "trial",
+        this.fieldFactVariant,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -245,6 +309,7 @@ export class Minifier {
       this.mode,
       "baseline",
       this.functionRewriteVariant,
+      this.fieldFactVariant,
     );
     const baseline = baselineMinifier.parseOnce();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -257,6 +322,7 @@ export class Minifier {
         this.mode,
         "trial",
         this.functionRewriteVariant,
+        this.fieldFactVariant,
       );
       trial = trialMinifier.parseOnce();
     } catch {
@@ -281,6 +347,7 @@ export class Minifier {
 
   private parseOnce(): SourceNode {
     this.link();
+    this.rewriteWholeProgramFieldsAll();
     this.foldConstantsAll();
     this.removeUnusedAll();
     this.rewriteFunctionsAll();
@@ -289,11 +356,18 @@ export class Minifier {
     this.rebuildIdentifiersInUse();
     this.computeGlobalRenames();
     this.transformAll();
-    if (this.functionRewritesEnabled()) {
+    if (this.functionRewritesEnabled() || this.fieldFactsEnabled()) {
       // fold/remove/schedule may have changed any module after method rewrites. Publish only a
       // snapshot rebuilt from the complete linked AST generation consumed by final Rename/Print.
       this.linkedAstGeneration++;
       this.wholeProgramObjectsValue = this.analyzeWholeProgramObjects();
+      this.wholeProgramFieldsValue = analyzeWholeProgramFields(
+        this.wholeProgramObjectsValue,
+        {
+          trustAnnotations: this.mode.assumeAnnotations === true,
+          metadataOf: (moduleName) => this.getSourceMetadata(moduleName),
+        },
+      );
     }
     this.renameAll();
 
@@ -309,6 +383,85 @@ export class Minifier {
     });
 
     return result;
+  }
+
+  private rewriteWholeProgramFieldsAll(): void {
+    if (this.fieldFactVariant === "baseline" || !this.fieldFactsEnabled())
+      return;
+    const objectAnalysis = this.analyzeWholeProgramObjects();
+    const fieldAnalysis = analyzeWholeProgramFields(objectAnalysis, {
+      trustAnnotations: this.mode.assumeAnnotations === true,
+      metadataOf: (moduleName) => this.getSourceMetadata(moduleName),
+    });
+    this.wholeProgramObjectsValue = objectAnalysis;
+    this.wholeProgramFieldsValue = fieldAnalysis;
+    fieldAnalysis.diagnostics.forEach((diagnostic) =>
+      this.diagnosticCollector?.record({
+        pass: "whole-program-constructor-fields",
+        moduleName: diagnostic.moduleName,
+        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        decision: diagnostic.reason === "field-fact" ? "accepted" : "rejected",
+        reason: diagnostic.reason,
+        candidateSize: 1,
+        sourceRange: diagnostic.sourceRange,
+      }),
+    );
+    const result = applyWholeProgramFieldRewrites(
+      objectAnalysis,
+      fieldAnalysis,
+      (moduleName) => this.getSourceMetadata(moduleName),
+    );
+    if (!result.changed) return;
+    this.linkOrder.forEach((moduleName) => {
+      const ast = this.moduleAST.get(moduleName);
+      if (!ast) throw new Error(moduleName + " is not found");
+      const passes = new PassOrchestrator(ast, resolveScopes(ast));
+      passes.runUntilStable("fold-constructor-field-constants", (resolved) => {
+        const facts = passes.analysis(
+          OPTIMIZER_FACTS_CACHE_KEY,
+          analyzeOptimizerFactsAtGeneration,
+        );
+        const changed = foldConstants(
+          ast,
+          resolved,
+          this.getSourceMetadata(moduleName),
+          facts,
+        );
+        return { changed, invalidatesResolve: changed };
+      });
+      this.moduleResolve.set(moduleName, passes.resolved);
+    });
+    this.linkedAstGeneration++;
+    this.wholeProgramObjectsValue = undefined;
+    this.wholeProgramFieldsValue = undefined;
+    this.diagnosticCollector?.record({
+      pass: "whole-program-constructor-field-rewrite",
+      moduleName: this.entryModule,
+      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      decision: "accepted",
+      reason: "field-rewrite-applied",
+      candidateSize: result.replacedReads + result.removedInitializers,
+    });
+    const recordRewrite = (
+      reason:
+        | "field-read-replaced"
+        | "dead-field-write"
+        | "field-write-effect-preserved",
+      count: number,
+    ) => {
+      if (count === 0) return;
+      this.diagnosticCollector?.record({
+        pass: "whole-program-constructor-field-rewrite",
+        moduleName: this.entryModule,
+        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        decision: "accepted",
+        reason,
+        candidateSize: count,
+      });
+    };
+    recordRewrite("field-read-replaced", result.replacedReads);
+    recordRewrite("dead-field-write", result.removedInitializers);
+    recordRewrite("field-write-effect-preserved", result.preservedEffects);
   }
 
   /** Function-summary consumers run before scheduling and final rename/print. */
@@ -642,6 +795,10 @@ export class Minifier {
     );
   }
 
+  private fieldFactsEnabled(): boolean {
+    return this.mode.effectAwareTransforms !== false;
+  }
+
   private copyDiagnosticsFrom(minifier: Minifier): void {
     minifier.optimizationDiagnostics.forEach((diagnostic) =>
       this.diagnosticCollector?.record(diagnostic),
@@ -663,6 +820,7 @@ export class Minifier {
     copyMap(minifier.moduleMetadata, this.moduleMetadata);
     this.linkedAstGeneration = minifier.linkedAstGeneration;
     this.wholeProgramObjectsValue = minifier.wholeProgramObjectsValue;
+    this.wholeProgramFieldsValue = minifier.wholeProgramFieldsValue;
     return output;
   }
 
@@ -692,6 +850,24 @@ export class Minifier {
   ): void {
     this.diagnosticCollector?.record({
       pass: "function-rewrite-final-cost",
+      decision,
+      reason,
+      candidateSize: 1,
+      estimatedByteSavings: byteSavings,
+      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      moduleName: this.entryModule,
+      sourceRange: [0, fs.readFileSync(this.entryFilePath, "utf8").length],
+    });
+  }
+
+  private recordFinalFieldFactDecision(
+    decision: "accepted" | "rejected",
+    reason:
+      "final-output-shorter" | "final-output-not-shorter" | "trial-failed",
+    byteSavings?: number,
+  ): void {
+    this.diagnosticCollector?.record({
+      pass: "constructor-field-final-cost",
       decision,
       reason,
       candidateSize: 1,
