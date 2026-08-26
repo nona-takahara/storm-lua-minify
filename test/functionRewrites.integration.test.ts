@@ -48,6 +48,33 @@ return first(1,sideEffect())
     expect(allowed.length).toBeLessThan(preserved.length);
   });
 
+  test("gates aggregate variants on Lua local-lifetime permission", () => {
+    const source =
+      "local function choose(enabled,value)if enabled then return value end return 0 end return choose(true,1)+choose(true,2)+choose(true,3)";
+    const preserved = minifyTemporaryLuaSource(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "lua53",
+      collectOptimizationDiagnostics: true,
+    });
+    const allowed = minifyTemporaryLuaSource(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "lua53",
+      allowLocalLifetimeChanges: true,
+      collectOptimizationDiagnostics: true,
+    });
+    expect(
+      preserved.minifier.optimizationDiagnostics.some(
+        (diagnostic) => diagnostic.pass === "aggregate-function-specialization",
+      ),
+    ).toBe(false);
+    expect(allowed.minifier.optimizationDiagnostics).toContainEqual(
+      expect.objectContaining({
+        pass: "aggregate-function-specialization",
+        reason: "variant-created",
+      }),
+    );
+  });
+
   test("inlines a closed single-use function and removes its declaration", () => {
     const source =
       "local function compute()return external()+1 end return compute()";
@@ -136,13 +163,13 @@ return first(1,sideEffect())
     );
   });
 
-  test("reports recursive, escaping, multi-use, and vararg rejection reasons", () => {
+  test("sends multi-use functions to aggregate specialization while reporting hard refusals", () => {
     const source = `
 local function recursive(value) if value then return recursive(false) end end
 local function escaping(value) return value end
 consume(escaping)
 local function shared(value) return value end
-publish(shared(1),shared(2))
+publish(shared(1),shared(1))
 local function variadic(...) return ... end
 return recursive(true),variadic(1)
 `;
@@ -159,9 +186,15 @@ return recursive(true),variadic(1)
       expect.arrayContaining([
         "recursive-function",
         "function-escape",
-        "multiple-call-sites",
         "vararg-function",
       ]),
+    );
+    expect(result.minifier.optimizationDiagnostics).toContainEqual(
+      expect.objectContaining({
+        pass: "aggregate-function-specialization",
+        decision: "accepted",
+        reason: "variant-created",
+      }),
     );
   });
 
@@ -208,5 +241,114 @@ return recursive(true),variadic(1)
         (diagnostic) => diagnostic.pass === "function-rewrite-final-cost",
       ),
     ).toBe(true);
+  });
+
+  test("specializes a profitable value group across multiple call sites", () => {
+    const source = `
+local function choose(enabled,value,fallback)
+  if enabled then return value end
+  return fallback
+end
+return choose(true,1,9)+choose(true,2,9)+choose(true,3,9)+choose(true,4,9)
+`;
+    const result = minifyTemporaryLuaSource(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "stormworks",
+      mergeLocals: false,
+      foldConstants: true,
+      collectOptimizationDiagnostics: true,
+    });
+    expect(result.minifier.optimizationDiagnostics).toContainEqual(
+      expect.objectContaining({
+        pass: "aggregate-function-specialization",
+        decision: "accepted",
+        reason: "variant-created",
+      }),
+    );
+    expect(result.minifier.optimizationDiagnostics).toContainEqual(
+      expect.objectContaining({
+        pass: "aggregate-specialization-final-cost",
+        decision: "accepted",
+        reason: "final-output-shorter",
+      }),
+    );
+  });
+
+  test("retains the original callable when an unspecialized call remains", () => {
+    const source = `
+local function choose(enabled,value)
+  if enabled then return value end
+  return 0
+end
+return choose(true,1)+choose(true,2)+choose(true,3)+choose(flag,4)
+`;
+    const result = minifyTemporaryLuaSource(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "stormworks",
+      mergeLocals: false,
+      foldConstants: true,
+      collectOptimizationDiagnostics: true,
+    });
+    expect(result.minifier.optimizationDiagnostics).toContainEqual(
+      expect.objectContaining({
+        pass: "aggregate-function-specialization",
+        reason: "variant-created",
+      }),
+    );
+    expect(result.code).toContain("function");
+    expect(result.code).toContain("flag");
+  });
+
+  test("preserves a proven same-module capture binding", () => {
+    const source = `
+local captured=external()
+local function choose(enabled,value)
+  if enabled then return captured+value end
+  return value
+end
+return choose(true,1)+choose(true,2)+choose(true,3)
+`;
+    const result = minifyTemporaryLuaSource(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "stormworks",
+      mergeLocals: false,
+      collectOptimizationDiagnostics: true,
+    });
+    expect(result.minifier.optimizationDiagnostics).toContainEqual(
+      expect.objectContaining({
+        pass: "aggregate-function-specialization",
+        decision: "accepted",
+        reason: "variant-created",
+      }),
+    );
+    expect(result.code.match(/external\(\)/g)).toHaveLength(1);
+  });
+
+  test("keeps callee and call-site provenance in a specialized variant", async () => {
+    const source = [
+      "local function choose(enabled)",
+      "  if enabled then return external() end",
+      "  return fallback()",
+      "end",
+      "return choose(true)+choose(true)+choose(true)",
+    ].join("\n");
+    const result = minifyTemporaryLuaSource(source, {
+      moduleLikeLua: false,
+      runtimeProfile: "stormworks",
+      mergeLocals: false,
+      collectOptimizationDiagnostics: true,
+    });
+    const offset = result.code.indexOf("external");
+    expect(offset).toBeGreaterThanOrEqual(0);
+    const before = result.code.slice(0, offset).split("\n");
+    await SourceMapConsumer.with(result.map, null, (consumer) => {
+      const origin = consumer.originalPositionFor({
+        line: before.length,
+        column: before.at(-1)?.length ?? 0,
+      });
+      expect(origin.source).toBe("main.lua");
+      expect(origin.line).toBe(2);
+      expect(origin.name).toBe("external");
+    });
   });
 });

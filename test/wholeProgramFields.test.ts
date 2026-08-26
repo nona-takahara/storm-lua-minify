@@ -205,6 +205,53 @@ return value.enabled
     );
   });
 
+  test("connects a stable callback field call to aggregate specialization", () => {
+    const result = minifyTemporaryLuaProject(
+      {
+        "object.lua": objectModule,
+        "class.lua": `local Object=require("object") local Class={} function Class.new(callback) local self=Object.create_instance({},Class) self.callback=callback return self end function Class:run(enabled) return self.callback(enabled)+self.callback(enabled)+self.callback(enabled) end return Class`,
+        "main.lua": `local Class=require("class") local function callback(enabled) if enabled then return 1 end return 2 end local value=Class.new(callback) return value:run(true)`,
+      },
+      {
+        moduleLikeLua: true,
+        runtimeProfile: "stormworks",
+        mergeLocals: false,
+        effectAwareLocalHoist: false,
+        effectAwareTableReads: false,
+        foldConstants: true,
+        collectOptimizationDiagnostics: true,
+      },
+    );
+    expect(result.minifier.optimizationDiagnostics).toContainEqual(
+      expect.objectContaining({
+        pass: "aggregate-function-specialization",
+        decision: "accepted",
+        reason: "variant-created",
+      }),
+    );
+    expect(result.minifier.optimizationDiagnostics).toContainEqual(
+      expect.objectContaining({
+        pass: "aggregate-function-specialization",
+        decision: "accepted",
+        reason: "dead-field-write",
+      }),
+    );
+  });
+
+  test("reports callback reassignment as a conservative aggregate plan", () => {
+    const result = minify(
+      `local Class=require("class") local function callback() return 1 end local value=Class.new(callback) value.callback=other return value.callback()`,
+      "self.callback=enabled",
+    );
+    expect(result.minifier.optimizationDiagnostics).toContainEqual(
+      expect.objectContaining({
+        pass: "aggregate-function-specialization",
+        decision: "rejected",
+        reason: "callback-reassignment",
+      }),
+    );
+  });
+
   test("publishes an observable empty-table identity without replacing it", () => {
     const result = minify(
       `local Class=require("class") local cache={} local value=Class.new(cache) return value.cache==cache`,

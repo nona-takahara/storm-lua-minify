@@ -1,6 +1,11 @@
 import Parser from "luaparse";
 import { walkBlockDeep } from "./astWalk";
-import { Callable } from "./callGraph";
+import {
+  CallGraphAnalysis,
+  CallSite,
+  Callable,
+  combineCallGraphs,
+} from "./callGraph";
 import { SourceMetadata } from "./sourceMetadata";
 import { EmmyLuaDirective } from "./sourceMetadata";
 import { Symbol } from "./resolver";
@@ -55,6 +60,9 @@ export interface WholeProgramFieldDiagnostic {
 
 export interface WholeProgramFieldAnalysis {
   readonly generation: number;
+  /** #83 method edges plus stable function-valued field callback edges. */
+  readonly callGraph: CallGraphAnalysis;
+  readonly resolvedCallbacks: readonly ResolvedFieldCallbackCall[];
   readonly facts: readonly ProgramFieldFact[];
   readonly diagnostics: readonly WholeProgramFieldDiagnostic[];
   readonly annotationFacts: readonly AnnotationFact[];
@@ -63,6 +71,12 @@ export interface WholeProgramFieldAnalysis {
     field: string,
   ): ProgramFieldFact | undefined;
   factOfRead(read: Parser.MemberExpression): ProgramFieldFact | undefined;
+}
+
+export interface ResolvedFieldCallbackCall {
+  readonly call: CallSite;
+  readonly field: ProgramFieldFact;
+  readonly target: Callable;
 }
 
 export interface AnnotationFact {
@@ -434,6 +448,33 @@ export function analyzeWholeProgramFields(
       },
     });
   });
+  // A resolved method edge already supplies the exact receiver allocation.
+  // Index its parameter-zero field reads directly so callback calls do not
+  // depend on recovering the owning callable from a module-local scan.
+  objects.resolvedMethods.forEach((method) => {
+    const module = objects.modules.find((candidate) =>
+      candidate.analysis.callGraph.functions.includes(method.target),
+    );
+    const receiver = method.target.parameters[0];
+    if (!module) return;
+    method.target.declaration.body.forEach((statement) => {
+      walkBlockDeep([statement], {
+        onExpression: (expression) => {
+          if (
+            expression.type !== "MemberExpression" ||
+            expression.indexer !== "." ||
+            expression.base.type !== "Identifier" ||
+            module.resolved.symbolOf(expression.base) !== receiver
+          )
+            return;
+          const fact = facts.get(
+            `${method.object.id}\0${expression.identifier.name}`,
+          );
+          if (fact && usable(fact)) readFacts.set(expression, fact);
+        },
+      });
+    });
+  });
 
   const diagnostics: WholeProgramFieldDiagnostic[] = [];
   facts.forEach((fact) => {
@@ -452,8 +493,33 @@ export function analyzeWholeProgramFields(
     );
   });
   const publicFacts: ProgramFieldFact[] = [...facts.values()];
+  const resolvedCallbacks: ResolvedFieldCallbackCall[] = [];
+  const callbackTargets = new Map<CallSite, Callable>();
+  objects.callGraph.calls.forEach((call) => {
+    if (
+      call.call.type !== "CallExpression" ||
+      call.call.base.type !== "MemberExpression" ||
+      call.call.base.indexer !== "."
+    )
+      return;
+    const field = readFacts.get(call.call.base);
+    if (!field || field.value?.kind !== "function") return;
+    callbackTargets.set(call, field.value.callable);
+    resolvedCallbacks.push({
+      call,
+      field,
+      target: field.value.callable,
+    });
+  });
+  const callGraph = combineCallGraphs(
+    [objects.callGraph],
+    callbackTargets,
+    objects.generation,
+  );
   return {
     generation: objects.generation,
+    callGraph,
+    resolvedCallbacks,
     facts: publicFacts,
     diagnostics,
     annotationFacts,

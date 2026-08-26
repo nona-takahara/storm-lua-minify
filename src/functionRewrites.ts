@@ -729,18 +729,36 @@ export function inlineTailCallFunctions(
         candidate.call.base === symbol.references[0],
     );
     if (!site || site.call.type !== "CallExpression") return;
+    const surplusActuals = Math.max(
+      0,
+      site.call.arguments.length - declaration.parameters.length,
+    );
     if (
-      ownedLocalCount(resolved, functionScope) >
+      ownedLocalCount(resolved, functionScope) + surplusActuals >
       options.maxIntroducedLocalsAt(site.owner)
     )
       return;
 
     const body: Parser.Statement[] = [];
     let copiedParameters: Parser.Identifier[] = [];
-    if (declaration.parameters.length > 0) {
+    if (site.call.arguments.length > 0) {
       copiedParameters = declaration.parameters.map((parameter) =>
         structuredClone(parameter as Parser.Identifier),
       );
+      const unavailable = new Set([
+        ...resolved.symbols.map((candidate) => candidate.name),
+        ...resolved.globals.keys(),
+      ]);
+      while (copiedParameters.length < site.call.arguments.length) {
+        let index = copiedParameters.length;
+        let name = `__stormDiscard${String(index)}`;
+        while (unavailable.has(name)) {
+          index++;
+          name = `__stormDiscard${String(index)}`;
+        }
+        unavailable.add(name);
+        copiedParameters.push({ type: "Identifier", name });
+      }
       const binding: Parser.LocalStatement = {
         type: "LocalStatement",
         variables: copiedParameters,
@@ -754,7 +772,10 @@ export function inlineTailCallFunctions(
     );
     alphaConvertOwnedCopies(
       [...declaration.parameters, ...declaration.body],
-      [...copiedParameters, ...copiedBody],
+      [
+        ...copiedParameters.slice(0, declaration.parameters.length),
+        ...copiedBody,
+      ],
       resolved,
       functionScope,
     );

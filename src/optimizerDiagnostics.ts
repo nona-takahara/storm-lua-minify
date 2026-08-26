@@ -43,7 +43,6 @@ export type OptimizationDiagnosticReason =
   | "parameter-escape"
   | "external-contract-used"
   | "function-rewrite-applied"
-  | "multiple-call-sites"
   | "function-escape"
   | "recursive-function"
   | "vararg-function"
@@ -64,7 +63,12 @@ export type OptimizationDiagnosticReason =
   | "multiple-values"
   | "field-read-replaced"
   | "dead-field-write"
-  | "field-write-effect-preserved";
+  | "field-write-effect-preserved"
+  | "variant-created"
+  | "dynamic-dispatch"
+  | "callback-reassignment"
+  | "multiple-callback-storage"
+  | "unknown-capture";
 
 export interface OptimizationDiagnostic {
   readonly pass: string;
