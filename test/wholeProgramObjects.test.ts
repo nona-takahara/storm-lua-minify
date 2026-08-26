@@ -360,4 +360,39 @@ return Class
       );
     expect(method?.parameters).toHaveLength(2);
   });
+
+  test("specializes resolved method sites while preserving self and surplus effects", () => {
+    const result = minifyTemporaryLuaProject(
+      {
+        "object.lua": objectModule,
+        "class.lua": `local Object=require("object") local Class={} function Class.new() local self=Object.create_instance({},Class) self.value=7 return self end function Class:read(enabled,fallback) if enabled then return self.value end return fallback end return Class`,
+        "main.lua": `local Class=require("class") local value=Class.new() return ${Array.from({ length: 12 }, () => "value:read(true,side())").join("+")}`,
+      },
+      {
+        moduleLikeLua: true,
+        runtimeProfile: "stormworks",
+        mergeLocals: false,
+        effectAwareLocalHoist: false,
+        effectAwareTableReads: false,
+        globalAlias: false,
+        foldConstants: true,
+        collectOptimizationDiagnostics: true,
+      },
+    );
+    expect(result.minifier.optimizationDiagnostics).toContainEqual(
+      expect.objectContaining({
+        pass: "aggregate-function-specialization",
+        decision: "accepted",
+        reason: "variant-created",
+      }),
+    );
+    expect(result.minifier.optimizationDiagnostics).toContainEqual(
+      expect.objectContaining({
+        pass: "aggregate-specialization-final-cost",
+        decision: "accepted",
+        reason: "final-output-shorter",
+      }),
+    );
+    expect(result.code.match(/side\(\)/g)).toHaveLength(12);
+  });
 });

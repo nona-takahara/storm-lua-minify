@@ -55,6 +55,7 @@ import {
   applyWholeProgramFieldRewrites,
   WholeProgramFieldAnalysis,
 } from "./wholeProgramFields";
+import { applyAggregateSpecialization } from "./aggregateSpecialization";
 
 export type { RuntimeProfile } from "./runtimeEnvironment";
 
@@ -145,6 +146,7 @@ export class Minifier {
   private readonly schedulerVariant?: "baseline" | "trial";
   private readonly functionRewriteVariant?: "baseline" | "trial";
   private readonly fieldFactVariant?: "baseline" | "trial";
+  private readonly aggregateSpecializationVariant?: "baseline" | "trial";
   private linkedAstGeneration = 0;
   private wholeProgramObjectsValue?: WholeProgramObjectAnalysis;
   private wholeProgramFieldsValue?: WholeProgramFieldAnalysis;
@@ -156,10 +158,12 @@ export class Minifier {
     schedulerVariant?: "baseline" | "trial",
     functionRewriteVariant?: "baseline" | "trial",
     fieldFactVariant?: "baseline" | "trial",
+    aggregateSpecializationVariant?: "baseline" | "trial",
   ) {
     this.schedulerVariant = schedulerVariant;
     this.functionRewriteVariant = functionRewriteVariant;
     this.fieldFactVariant = fieldFactVariant;
+    this.aggregateSpecializationVariant = aggregateSpecializationVariant;
     this.entryFilePath = entryFilePath;
     this.identifiersInUse = new Set<string>();
     this.moduleSourceText = new Map<string, string>();
@@ -199,6 +203,12 @@ export class Minifier {
       return this.parseWithFieldFactSelection();
     }
     if (
+      this.aggregateSpecializationVariant === undefined &&
+      this.functionRewritesEnabled()
+    ) {
+      return this.parseWithAggregateSpecializationSelection();
+    }
+    if (
       this.functionRewriteVariant === undefined &&
       this.functionRewritesEnabled()
     ) {
@@ -221,6 +231,7 @@ export class Minifier {
       undefined,
       undefined,
       "baseline",
+      this.aggregateSpecializationVariant,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -234,6 +245,7 @@ export class Minifier {
         undefined,
         undefined,
         "trial",
+        this.aggregateSpecializationVariant,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -256,6 +268,57 @@ export class Minifier {
     return this.adoptVariant(trialMinifier, trial);
   }
 
+  private parseWithAggregateSpecializationSelection(): SourceNode {
+    const baselineMinifier = new Minifier(
+      this.entryFilePath,
+      this.luaParseSettings,
+      this.mode,
+      undefined,
+      undefined,
+      this.fieldFactVariant,
+      "baseline",
+    );
+    const baseline = baselineMinifier.parse();
+    const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
+    let trialMinifier: Minifier;
+    let trial: SourceNode;
+    try {
+      trialMinifier = new Minifier(
+        this.entryFilePath,
+        this.luaParseSettings,
+        this.mode,
+        undefined,
+        undefined,
+        this.fieldFactVariant,
+        "trial",
+      );
+      trial = trialMinifier.parse();
+    } catch {
+      this.copyDiagnosticsFrom(baselineMinifier);
+      this.recordFinalAggregateSpecializationDecision(
+        "rejected",
+        "trial-failed",
+      );
+      return this.adoptVariant(baselineMinifier, baseline);
+    }
+    const trialBytes = new TextEncoder().encode(trial.toString()).length;
+    if (trialBytes >= baselineBytes) {
+      this.copyDiagnosticsFrom(trialMinifier);
+      this.recordFinalAggregateSpecializationDecision(
+        "rejected",
+        "final-output-not-shorter",
+      );
+      return this.adoptVariant(baselineMinifier, baseline);
+    }
+    this.copyDiagnosticsFrom(trialMinifier);
+    this.recordFinalAggregateSpecializationDecision(
+      "accepted",
+      "final-output-shorter",
+      baselineBytes - trialBytes,
+    );
+    return this.adoptVariant(trialMinifier, trial);
+  }
+
   private parseWithFunctionRewriteSelection(): SourceNode {
     const baselineMinifier = new Minifier(
       this.entryFilePath,
@@ -264,6 +327,7 @@ export class Minifier {
       undefined,
       "baseline",
       this.fieldFactVariant,
+      this.aggregateSpecializationVariant,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -277,6 +341,7 @@ export class Minifier {
         undefined,
         "trial",
         this.fieldFactVariant,
+        this.aggregateSpecializationVariant,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -310,6 +375,7 @@ export class Minifier {
       "baseline",
       this.functionRewriteVariant,
       this.fieldFactVariant,
+      this.aggregateSpecializationVariant,
     );
     const baseline = baselineMinifier.parseOnce();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -323,6 +389,7 @@ export class Minifier {
         "trial",
         this.functionRewriteVariant,
         this.fieldFactVariant,
+        this.aggregateSpecializationVariant,
       );
       trial = trialMinifier.parseOnce();
     } catch {
@@ -347,10 +414,11 @@ export class Minifier {
 
   private parseOnce(): SourceNode {
     this.link();
-    this.rewriteWholeProgramFieldsAll();
-    this.foldConstantsAll();
-    this.removeUnusedAll();
+    // #85 consumes #84 function-valued field facts before field DCE can remove
+    // callback storage. The field pass then sees specialized calls and includes
+    // storage/wrapper cleanup in the same final-output trial.
     this.rewriteFunctionsAll();
+    this.rewriteWholeProgramFieldsAll();
     this.foldConstantsAll();
     this.removeUnusedAll();
     this.rebuildIdentifiersInUse();
@@ -472,60 +540,117 @@ export class Minifier {
     )
       return;
 
-    const initialWholeProgram = this.analyzeWholeProgramObjects();
-    const functionsByModule = new Map(
-      initialWholeProgram.modules.map((module) => [
-        module.name,
-        new Set(module.analysis.callGraph.functions),
-      ]),
+    let initialWholeProgram = this.analyzeWholeProgramObjects();
+    this.recordWholeProgramObjectDiagnostics(initialWholeProgram);
+    const initiallyResolvedMethodDeclarations = new Set(
+      initialWholeProgram.resolvedMethods.map(
+        (method) => method.target.declaration,
+      ),
     );
-    const resolvedMethodTargets = new Set(
-      initialWholeProgram.resolvedMethods.map((method) => method.target),
-    );
-    const modulesWithPrunedParameters = new Set<string>();
-    this.linkOrder.forEach((moduleName) => {
-      const functions = functionsByModule.get(moduleName);
-      if (!functions) return;
-      const result = pruneTrailingUnusedParameters(
-        initialWholeProgram.callGraph,
-        this.getSourceMetadata(moduleName),
-        (callable) =>
-          functions.has(callable) &&
-          (callable.declaration.identifier?.type !== "MemberExpression" ||
-            callable.declaration.identifier.indexer !== ":" ||
-            resolvedMethodTargets.has(callable)),
+    if (this.aggregateSpecializationVariant !== "baseline") {
+      const initialFieldFacts = analyzeWholeProgramFields(initialWholeProgram, {
+        trustAnnotations: this.mode.assumeAnnotations === true,
+        metadataOf: (moduleName) => this.getSourceMetadata(moduleName),
+      });
+      const specialization = applyAggregateSpecialization(
+        initialWholeProgram,
+        initialFieldFacts,
+        this.linkOrder.map((name) => {
+          const chunk = this.moduleAST.get(name);
+          const resolved = this.moduleResolve.get(name);
+          if (!chunk || !resolved) throw new Error(name + " is not found");
+          const resources = analyzeLocalResourceUsage(chunk);
+          const runtime = runtimeEnvironmentOf(
+            this.mode.runtimeProfile ?? "lua53",
+          );
+          return {
+            name,
+            chunk,
+            resolved,
+            metadata: this.getSourceMetadata(name),
+            maxIntroducedLocalsAt: (statement: Parser.Statement) => {
+              const active = resources.activeLocalsBefore(statement);
+              if (active === undefined) return 0;
+              return Math.max(
+                0,
+                Math.min(
+                  runtime.resources.maxActiveLocalsPerFunction - active,
+                  runtime.resources.maxRegistersPerFunction - active,
+                ),
+              );
+            },
+          };
+        }),
       );
-      if (!result.changed) return;
-      modulesWithPrunedParameters.add(moduleName);
-      this.diagnosticCollector?.record({
-        pass: "prune-trailing-unused-parameters",
-        moduleName,
-        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
-        decision: "accepted",
-        reason: "function-rewrite-applied",
-        candidateSize: result.prunedParameters,
-        sourceRange: sourceRangeOf(this.moduleAST.get(moduleName) ?? {}),
-      });
-      if (result.prunedMethodParameters > 0)
+      specialization.diagnostics.forEach((diagnostic) => {
+        const module = initialWholeProgram.modules.find((candidate) =>
+          candidate.analysis.callGraph.functions.includes(diagnostic.callable),
+        );
         this.diagnosticCollector?.record({
-          pass: "whole-program-method-parameter-pruning",
-          moduleName,
+          pass: "aggregate-function-specialization",
+          moduleName: module?.name,
           runtimeProfile: this.mode.runtimeProfile ?? "lua53",
-          decision: "accepted",
-          reason: "function-rewrite-applied",
-          candidateSize: result.prunedMethodParameters,
-          sourceRange: sourceRangeOf(this.moduleAST.get(moduleName) ?? {}),
+          decision:
+            diagnostic.reason === "variant-created" ? "accepted" : "rejected",
+          reason: diagnostic.reason,
+          candidateSize: diagnostic.count,
+          sourceRange: sourceRangeOf(diagnostic.callable.declaration),
         });
-    });
-    if (modulesWithPrunedParameters.size > 0) {
-      modulesWithPrunedParameters.forEach((moduleName) => {
-        const ast = this.moduleAST.get(moduleName);
-        if (!ast) throw new Error(moduleName + " is not found");
-        this.moduleResolve.set(moduleName, resolveScopes(ast));
       });
-      this.linkedAstGeneration++;
-      this.wholeProgramObjectsValue = undefined;
+      if (specialization.changed) {
+        this.linkOrder.forEach((moduleName) => {
+          const ast = this.moduleAST.get(moduleName);
+          if (!ast) throw new Error(moduleName + " is not found");
+          this.moduleResolve.set(moduleName, resolveScopes(ast));
+        });
+        this.linkedAstGeneration++;
+        this.wholeProgramObjectsValue = undefined;
+        this.wholeProgramFieldsValue = undefined;
+        initialWholeProgram = this.analyzeWholeProgramObjects();
+        const specializedFields = analyzeWholeProgramFields(
+          initialWholeProgram,
+          {
+            trustAnnotations: this.mode.assumeAnnotations === true,
+            metadataOf: (moduleName) => this.getSourceMetadata(moduleName),
+          },
+        );
+        const downstream = applyWholeProgramFieldRewrites(
+          initialWholeProgram,
+          specializedFields,
+          (moduleName) => this.getSourceMetadata(moduleName),
+        );
+        if (downstream.removedInitializers > 0)
+          this.diagnosticCollector?.record({
+            pass: "aggregate-function-specialization",
+            moduleName: this.entryModule,
+            runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+            decision: "accepted",
+            reason: "dead-field-write",
+            candidateSize: downstream.removedInitializers,
+          });
+        if (downstream.changed) {
+          this.linkOrder.forEach((moduleName) => {
+            const ast = this.moduleAST.get(moduleName);
+            if (!ast) throw new Error(moduleName + " is not found");
+            this.moduleResolve.set(moduleName, resolveScopes(ast));
+          });
+          this.linkedAstGeneration++;
+          this.wholeProgramObjectsValue = undefined;
+          this.wholeProgramFieldsValue = undefined;
+          initialWholeProgram = this.analyzeWholeProgramObjects();
+        }
+      }
     }
+    const resolvedMethodDeclarations = new Set([
+      ...initiallyResolvedMethodDeclarations,
+      ...initialWholeProgram.resolvedMethods.map(
+        (method) => method.target.declaration,
+      ),
+    ]);
+    initialWholeProgram = this.pruneWholeProgramParameters(
+      initialWholeProgram,
+      resolvedMethodDeclarations,
+    );
 
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
@@ -584,9 +709,7 @@ export class Minifier {
             ? "vararg-function"
             : callable.symbol.references.length > calls
               ? "function-escape"
-              : calls > 1
-                ? "multiple-call-sites"
-                : undefined;
+              : undefined;
         if (!reason) return;
         this.diagnosticCollector?.record({
           pass: "function-rewrite",
@@ -736,6 +859,63 @@ export class Minifier {
     this.recordWholeProgramObjectDiagnostics(this.wholeProgramObjectsValue);
   }
 
+  private pruneWholeProgramParameters(
+    analysis: WholeProgramObjectAnalysis,
+    resolvedMethodDeclarations: ReadonlySet<Parser.FunctionDeclaration>,
+  ): WholeProgramObjectAnalysis {
+    const functionsByModule = new Map(
+      analysis.modules.map((module) => [
+        module.name,
+        new Set(module.analysis.callGraph.functions),
+      ]),
+    );
+    const changedModules = new Set<string>();
+    this.linkOrder.forEach((moduleName) => {
+      const functions = functionsByModule.get(moduleName);
+      if (!functions) return;
+      const result = pruneTrailingUnusedParameters(
+        analysis.callGraph,
+        this.getSourceMetadata(moduleName),
+        (callable) =>
+          functions.has(callable) &&
+          (callable.declaration.identifier?.type !== "MemberExpression" ||
+            callable.declaration.identifier.indexer !== ":" ||
+            resolvedMethodDeclarations.has(callable.declaration)),
+      );
+      if (!result.changed) return;
+      changedModules.add(moduleName);
+      this.diagnosticCollector?.record({
+        pass: "prune-trailing-unused-parameters",
+        moduleName,
+        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        decision: "accepted",
+        reason: "function-rewrite-applied",
+        candidateSize: result.prunedParameters,
+        sourceRange: sourceRangeOf(this.moduleAST.get(moduleName) ?? {}),
+      });
+      if (result.prunedMethodParameters > 0)
+        this.diagnosticCollector?.record({
+          pass: "whole-program-method-parameter-pruning",
+          moduleName,
+          runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+          decision: "accepted",
+          reason: "function-rewrite-applied",
+          candidateSize: result.prunedMethodParameters,
+          sourceRange: sourceRangeOf(this.moduleAST.get(moduleName) ?? {}),
+        });
+    });
+    if (changedModules.size === 0) return analysis;
+    changedModules.forEach((moduleName) => {
+      const ast = this.moduleAST.get(moduleName);
+      if (!ast) throw new Error(moduleName + " is not found");
+      this.moduleResolve.set(moduleName, resolveScopes(ast));
+    });
+    this.linkedAstGeneration++;
+    this.wholeProgramObjectsValue = undefined;
+    this.wholeProgramFieldsValue = undefined;
+    return this.analyzeWholeProgramObjects();
+  }
+
   private analyzeWholeProgramObjects(): WholeProgramObjectAnalysis {
     const modules: WholeProgramModule[] = this.linkOrder.map((name) => {
       const chunk = this.moduleAST.get(name);
@@ -850,6 +1030,24 @@ export class Minifier {
   ): void {
     this.diagnosticCollector?.record({
       pass: "function-rewrite-final-cost",
+      decision,
+      reason,
+      candidateSize: 1,
+      estimatedByteSavings: byteSavings,
+      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      moduleName: this.entryModule,
+      sourceRange: [0, fs.readFileSync(this.entryFilePath, "utf8").length],
+    });
+  }
+
+  private recordFinalAggregateSpecializationDecision(
+    decision: "accepted" | "rejected",
+    reason:
+      "final-output-shorter" | "final-output-not-shorter" | "trial-failed",
+    byteSavings?: number,
+  ): void {
+    this.diagnosticCollector?.record({
+      pass: "aggregate-specialization-final-cost",
       decision,
       reason,
       candidateSize: 1,
