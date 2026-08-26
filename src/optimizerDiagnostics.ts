@@ -47,7 +47,15 @@ export type OptimizationDiagnosticReason =
   | "function-escape"
   | "recursive-function"
   | "vararg-function"
-  | "unused-function";
+  | "unused-function"
+  | "resolved-method-target"
+  | "instance-escape"
+  | "prototype-escape"
+  | "method-field-mutation"
+  | "metatable-mutation"
+  | "multiple-targets"
+  | "dynamic-module-boundary"
+  | "external-module-boundary";
 
 export interface OptimizationDiagnostic {
   readonly pass: string;

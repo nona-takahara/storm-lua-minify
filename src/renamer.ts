@@ -77,9 +77,7 @@ export function assignRenames(
   keepNames.forEach((symbol) => unavailableNames.add(symbol.name));
   const variables = resolveResult.symbols.filter(
     (symbol) =>
-      symbol.kind !== "label" &&
-      symbol.name !== "self" &&
-      !keepNames.has(symbol),
+      symbol.kind !== "label" && !symbol.implicit && !keepNames.has(symbol),
   );
   const variableGraph = buildVariableInterference(
     chunk,
@@ -367,6 +365,16 @@ function validateBindings(
     },
   });
   original.symbols.forEach((symbol) => {
+    if (symbol.implicit) {
+      symbol.references.forEach((identifier) => {
+        const rebound = recolored.symbolOf(identifier);
+        if (!rebound?.implicit || rebound.name !== symbol.name)
+          throw new Error(
+            `Identifier coloring changed implicit binding for symbol ${String(symbol.id)}`,
+          );
+      });
+      return;
+    }
     [symbol.declaration, ...symbol.references].forEach((identifier) => {
       if (recolored.symbolOf(identifier)?.declaration !== symbol.declaration)
         throw new Error(

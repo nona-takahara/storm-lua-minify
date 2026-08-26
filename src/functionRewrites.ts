@@ -9,6 +9,7 @@ import { copyNodeOrigin } from "./generatedNode";
 export interface FunctionRewriteResult {
   readonly changed: boolean;
   readonly prunedParameters: number;
+  readonly prunedMethodParameters: number;
 }
 
 export interface InlineRewriteResult {
@@ -42,10 +43,15 @@ type PrimitiveLiteral =
 export function pruneTrailingUnusedParameters(
   callGraph: CallGraphAnalysis,
   metadata: SourceMetadata,
+  canRewrite: (
+    callable: CallGraphAnalysis["functions"][number],
+  ) => boolean = () => true,
 ): FunctionRewriteResult {
   let prunedParameters = 0;
+  let prunedMethodParameters = 0;
 
   callGraph.functions.forEach((callable) => {
+    if (!canRewrite(callable)) return;
     const declaration = callable.declaration;
     if (metadata.annotationsOf(declaration).keep) return;
 
@@ -61,13 +67,20 @@ export function pruneTrailingUnusedParameters(
     }
 
     if (retained === declaration.parameters.length) return;
-    prunedParameters += declaration.parameters.length - retained;
+    const removed = declaration.parameters.length - retained;
+    prunedParameters += removed;
+    if (
+      declaration.identifier?.type === "MemberExpression" &&
+      declaration.identifier.indexer === ":"
+    )
+      prunedMethodParameters += removed;
     declaration.parameters = declaration.parameters.slice(0, retained);
   });
 
   return {
     changed: prunedParameters > 0,
     prunedParameters,
+    prunedMethodParameters,
   };
 }
 

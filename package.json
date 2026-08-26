@@ -36,6 +36,7 @@
     "format:check": "prettier --check .",
     "verify:lua-budget": "node scripts/verify-lua-resource-budget.cjs",
     "report:optimizer": "pnpm run build && node scripts/report-optimizer-diagnostics.cjs",
+    "report:whole-program-objects": "pnpm run build && node scripts/report-whole-program-objects.cjs",
     "verify:effect-semantics": "pnpm run build && node scripts/verify-effect-semantics.cjs",
     "prepack": "pnpm run build"
   },

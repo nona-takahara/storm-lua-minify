@@ -68,14 +68,66 @@ run((function() print("first") return 1 end)(),(function() print("second") retur
 const directory = fs.mkdtempSync(
   path.join(os.tmpdir(), "storm-effect-semantics-"),
 );
-function execute(file) {
-  const result = spawnSync(lua, [file], { encoding: "utf8" });
+function execute(file, cwd) {
+  const result = spawnSync(lua, [file], { encoding: "utf8", cwd });
   if (result.error) throw result.error;
   return {
     status: result.status,
     stdout: result.stdout,
     stderr: result.stderr,
   };
+}
+
+function verifyWholeProgramMethodFixture() {
+  const fixtureDirectory = path.join(directory, "whole-program-method");
+  fs.mkdirSync(fixtureDirectory);
+  const sources = {
+    "object.lua": `
+local Object={}
+function Object.create_instance(target,prototype)
+  for key,value in pairs(prototype) do
+    if key~="new" and type(value)=="function" then target[key]=value end
+  end
+  return target
+end
+return Object
+`,
+    "class.lua": `
+local Object=require("object")
+local Class={}
+function Class.new() return Object.create_instance({},Class) end
+function Class:method(value,unused) self.value=value return self.value end
+return Class
+`,
+    "main.lua": `
+local Class=require("class")
+local log={}
+local function mark(label,value) log[#log+1]=label return value end
+local function receiver() return mark("receiver",Class.new()) end
+local result=receiver():method(mark("value",7),mark("unused",9))
+print(result,table.concat(log,","))
+`,
+  };
+  Object.entries(sources).forEach(([name, source]) =>
+    fs.writeFileSync(path.join(fixtureDirectory, name), source),
+  );
+  const entry = path.join(fixtureDirectory, "main.lua");
+  const minifiedFile = path.join(fixtureDirectory, "main.min.lua");
+  const code = new Minifier(
+    entry,
+    { luaVersion: "5.3" },
+    { moduleLikeLua: true, runtimeProfile: "stormworks" },
+  )
+    .parse()
+    .toStringWithSourceMap({ file: path.basename(minifiedFile) }).code;
+  fs.writeFileSync(minifiedFile, code);
+  const original = execute(entry, fixtureDirectory);
+  const minified = execute(minifiedFile, fixtureDirectory);
+  if (JSON.stringify(original) !== JSON.stringify(minified)) {
+    throw new Error(
+      `semantic mismatch in whole-program method fixture\noriginal=${JSON.stringify(original)}\nminified=${JSON.stringify(minified)}\ncode=${code}`,
+    );
+  }
 }
 
 try {
@@ -99,8 +151,9 @@ try {
       );
     }
   });
+  verifyWholeProgramMethodFixture();
   process.stdout.write(
-    `${lua}: ${String(fixtures.length)} effect-aware fixtures matched exactly\n`,
+    `${lua}: ${String(fixtures.length + 1)} effect-aware fixtures matched exactly\n`,
   );
 } finally {
   fs.rmSync(directory, { recursive: true, force: true });

@@ -45,6 +45,11 @@ import {
   inlineTailCallFunctions,
   pruneTrailingUnusedParameters,
 } from "./functionRewrites";
+import {
+  analyzeWholeProgramObjects,
+  WholeProgramObjectAnalysis,
+  WholeProgramModule,
+} from "./wholeProgramObjects";
 
 export type { RuntimeProfile } from "./runtimeEnvironment";
 
@@ -131,6 +136,8 @@ export class Minifier {
   private readonly diagnosticCollector?: OptimizationDiagnosticCollector;
   private readonly schedulerVariant?: "baseline" | "trial";
   private readonly functionRewriteVariant?: "baseline" | "trial";
+  private linkedAstGeneration = 0;
+  private wholeProgramObjectsValue?: WholeProgramObjectAnalysis;
 
   constructor(
     entryFilePath: string,
@@ -165,6 +172,10 @@ export class Minifier {
 
   get optimizationDiagnostics(): readonly OptimizationDiagnostic[] {
     return this.diagnosticCollector?.diagnostics ?? [];
+  }
+
+  get wholeProgramObjects(): WholeProgramObjectAnalysis | undefined {
+    return this.wholeProgramObjectsValue;
   }
 
   parse(): SourceNode {
@@ -278,6 +289,12 @@ export class Minifier {
     this.rebuildIdentifiersInUse();
     this.computeGlobalRenames();
     this.transformAll();
+    if (this.functionRewritesEnabled()) {
+      // fold/remove/schedule may have changed any module after method rewrites. Publish only a
+      // snapshot rebuilt from the complete linked AST generation consumed by final Rename/Print.
+      this.linkedAstGeneration++;
+      this.wholeProgramObjectsValue = this.analyzeWholeProgramObjects();
+    }
     this.renameAll();
 
     const result = this.mode.moduleLikeLua
@@ -301,6 +318,61 @@ export class Minifier {
       !this.functionRewritesEnabled()
     )
       return;
+
+    const initialWholeProgram = this.analyzeWholeProgramObjects();
+    const functionsByModule = new Map(
+      initialWholeProgram.modules.map((module) => [
+        module.name,
+        new Set(module.analysis.callGraph.functions),
+      ]),
+    );
+    const resolvedMethodTargets = new Set(
+      initialWholeProgram.resolvedMethods.map((method) => method.target),
+    );
+    const modulesWithPrunedParameters = new Set<string>();
+    this.linkOrder.forEach((moduleName) => {
+      const functions = functionsByModule.get(moduleName);
+      if (!functions) return;
+      const result = pruneTrailingUnusedParameters(
+        initialWholeProgram.callGraph,
+        this.getSourceMetadata(moduleName),
+        (callable) =>
+          functions.has(callable) &&
+          (callable.declaration.identifier?.type !== "MemberExpression" ||
+            callable.declaration.identifier.indexer !== ":" ||
+            resolvedMethodTargets.has(callable)),
+      );
+      if (!result.changed) return;
+      modulesWithPrunedParameters.add(moduleName);
+      this.diagnosticCollector?.record({
+        pass: "prune-trailing-unused-parameters",
+        moduleName,
+        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        decision: "accepted",
+        reason: "function-rewrite-applied",
+        candidateSize: result.prunedParameters,
+        sourceRange: sourceRangeOf(this.moduleAST.get(moduleName) ?? {}),
+      });
+      if (result.prunedMethodParameters > 0)
+        this.diagnosticCollector?.record({
+          pass: "whole-program-method-parameter-pruning",
+          moduleName,
+          runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+          decision: "accepted",
+          reason: "function-rewrite-applied",
+          candidateSize: result.prunedMethodParameters,
+          sourceRange: sourceRangeOf(this.moduleAST.get(moduleName) ?? {}),
+        });
+    });
+    if (modulesWithPrunedParameters.size > 0) {
+      modulesWithPrunedParameters.forEach((moduleName) => {
+        const ast = this.moduleAST.get(moduleName);
+        if (!ast) throw new Error(moduleName + " is not found");
+        this.moduleResolve.set(moduleName, resolveScopes(ast));
+      });
+      this.linkedAstGeneration++;
+      this.wholeProgramObjectsValue = undefined;
+    }
 
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
@@ -372,24 +444,6 @@ export class Minifier {
           candidateSize: 1,
           sourceRange: sourceRangeOf(callable.declaration),
         });
-      });
-      passes.run("prune-trailing-unused-parameters", () => {
-        const analysis = passes.analysis(
-          OPTIMIZER_ANALYSIS_CACHE_KEY,
-          analyzeOptimizerAtGeneration,
-        );
-        const result = pruneTrailingUnusedParameters(
-          analysis.interprocedural.callGraph,
-          this.getSourceMetadata(moduleName),
-        );
-        recordAccepted(
-          "prune-trailing-unused-parameters",
-          result.prunedParameters,
-        );
-        return {
-          changed: result.changed,
-          invalidatesResolve: result.changed,
-        };
       });
       passes.run("inline-closed-single-use-functions", (currentResolve) => {
         const analysis = passes.analysis(
@@ -520,7 +574,49 @@ export class Minifier {
         };
       });
       this.moduleResolve.set(moduleName, passes.resolved);
+      if (passes.astGeneration > 0) {
+        this.linkedAstGeneration += passes.astGeneration;
+        this.wholeProgramObjectsValue = undefined;
+      }
     });
+    this.wholeProgramObjectsValue = this.analyzeWholeProgramObjects();
+    this.recordWholeProgramObjectDiagnostics(this.wholeProgramObjectsValue);
+  }
+
+  private analyzeWholeProgramObjects(): WholeProgramObjectAnalysis {
+    const modules: WholeProgramModule[] = this.linkOrder.map((name) => {
+      const chunk = this.moduleAST.get(name);
+      const resolved = this.moduleResolve.get(name);
+      if (!chunk || !resolved) throw new Error(name + " is not found");
+      return {
+        name,
+        chunk,
+        resolved,
+        analysis: analyzeOptimizer(chunk, resolved, {
+          generation: this.linkedAstGeneration,
+        }),
+      };
+    });
+    return analyzeWholeProgramObjects(modules, this.linkedAstGeneration);
+  }
+
+  private recordWholeProgramObjectDiagnostics(
+    analysis: WholeProgramObjectAnalysis,
+  ): void {
+    analysis.diagnostics.forEach((diagnostic) =>
+      this.diagnosticCollector?.record({
+        pass: "whole-program-method-resolution",
+        moduleName: diagnostic.moduleName,
+        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        decision:
+          diagnostic.reason === "resolved-method-target"
+            ? "accepted"
+            : "rejected",
+        reason: diagnostic.reason,
+        candidateSize: 1,
+        sourceRange: diagnostic.sourceRange,
+      }),
+    );
   }
 
   private requiresSchedulerSelection(): boolean {
@@ -565,6 +661,8 @@ export class Minifier {
     copyMap(minifier.renameCache, this.renameCache);
     this.globalRenames = new Map(minifier.globalRenames);
     copyMap(minifier.moduleMetadata, this.moduleMetadata);
+    this.linkedAstGeneration = minifier.linkedAstGeneration;
+    this.wholeProgramObjectsValue = minifier.wholeProgramObjectsValue;
     return output;
   }
 
