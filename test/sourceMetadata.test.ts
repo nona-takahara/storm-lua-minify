@@ -55,6 +55,46 @@ function onTick() end`;
   });
 });
 
+test("owns the constructor-field EmmyLua subset and keeps other directives as metadata", () => {
+  const code = `---@class Derived: Base
+---@field state "idle"|"active"
+---@param callback fun(value: boolean)
+---@return Derived
+---@diagnostic disable-next-line: undefined-global
+local Derived = make_class()`;
+  const { chunk, metadata: result } = metadata(code);
+  assert.deepEqual(
+    result.emmyLuaOf(chunk.body[0]).map((directive) => {
+      const value: Record<string, unknown> = { ...directive };
+      delete value.comment;
+      return value;
+    }),
+    [
+      { kind: "class", name: "Derived", base: "Base" },
+      { kind: "field", name: "state", valueType: '"idle"|"active"' },
+      {
+        kind: "param",
+        name: "callback",
+        valueType: "fun(value: boolean)",
+      },
+      { kind: "return", valueType: "Derived" },
+      {
+        kind: "other",
+        directive: "diagnostic",
+        value: "disable-next-line: undefined-global",
+      },
+    ],
+  );
+});
+
+test("does not attach EmmyLua metadata across a blank line", () => {
+  const code = `---@type true
+
+local flag = false`;
+  const { chunk, metadata: result } = metadata(code);
+  assert.deepEqual(result.emmyLuaOf(chunk.body[0]), []);
+});
+
 test("does not attach an annotation across a blank line", () => {
   const code = `--@storm keep
 

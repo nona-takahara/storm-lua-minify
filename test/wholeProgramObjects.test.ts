@@ -55,6 +55,10 @@ return Class
     });
 
     expect(analysis.resolvedMethods).toHaveLength(1);
+    expect(analysis.resolvedConstructors).toHaveLength(1);
+    expect(analysis.resolvedConstructors[0].object).toBe(
+      analysis.resolvedMethods[0].object,
+    );
     expect(
       analysis.resolvedMethods[0].target.declaration.parameters,
     ).toHaveLength(2);

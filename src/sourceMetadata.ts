@@ -6,6 +6,48 @@ export interface StormAnnotations {
   readonly exported: boolean;
 }
 
+export type EmmyLuaDirective =
+  | {
+      readonly kind: "class";
+      readonly name: string;
+      readonly base?: string;
+      readonly comment: Comment;
+    }
+  | {
+      readonly kind: "field";
+      readonly name: string;
+      readonly valueType: string;
+      readonly comment: Comment;
+    }
+  | {
+      readonly kind: "param";
+      readonly name: string;
+      readonly valueType: string;
+      readonly comment: Comment;
+    }
+  | {
+      readonly kind: "return" | "type";
+      readonly valueType: string;
+      readonly comment: Comment;
+    }
+  | {
+      readonly kind: "alias";
+      readonly name: string;
+      readonly valueType: string;
+      readonly comment: Comment;
+    }
+  | {
+      readonly kind: "enum";
+      readonly name: string;
+      readonly comment: Comment;
+    }
+  | {
+      readonly kind: "other";
+      readonly directive: string;
+      readonly value: string;
+      readonly comment: Comment;
+    };
+
 const NONE: StormAnnotations = {
   keep: false,
   keepName: false,
@@ -74,6 +116,65 @@ function parseAnnotations(comments: readonly Comment[]): StormAnnotations {
   return { keep, keepName, exported };
 }
 
+function parseEmmyLua(comments: readonly Comment[]): EmmyLuaDirective[] {
+  const directives: EmmyLuaDirective[] = [];
+  comments.forEach((comment) => {
+    for (const match of comment.raw.matchAll(/---@([\w-]+)\s*([^\r\n]*)/g)) {
+      const directive = match[1];
+      const value = match[2].trim();
+      if (directive === "class") {
+        const parsed = /^([^\s:]+)(?:\s*:\s*([^\s]+))?/.exec(value);
+        if (parsed)
+          directives.push({
+            kind: "class",
+            name: parsed[1],
+            ...(parsed[2] ? { base: parsed[2] } : {}),
+            comment,
+          });
+      } else if (directive === "field") {
+        const parsed =
+          /^(?:(?:public|protected|private|package)\s+)?(?:\([^)]*\)\s*)?([^\s]+)\s+(.+)$/.exec(
+            value,
+          );
+        if (parsed)
+          directives.push({
+            kind: "field",
+            name: parsed[1],
+            valueType: parsed[2].trim(),
+            comment,
+          });
+      } else if (directive === "param") {
+        const parsed = /^(\S+)\s+(.+)$/.exec(value);
+        if (parsed)
+          directives.push({
+            kind: "param",
+            name: parsed[1],
+            valueType: parsed[2].trim(),
+            comment,
+          });
+      } else if (directive === "return" || directive === "type") {
+        if (value)
+          directives.push({ kind: directive, valueType: value, comment });
+      } else if (directive === "alias") {
+        const parsed = /^(\S+)\s+(.+)$/.exec(value);
+        if (parsed)
+          directives.push({
+            kind: "alias",
+            name: parsed[1],
+            valueType: parsed[2].trim(),
+            comment,
+          });
+      } else if (directive === "enum") {
+        const name = value.split(/\s+/)[0];
+        if (name) directives.push({ kind: "enum", name, comment });
+      } else {
+        directives.push({ kind: "other", directive, value, comment });
+      }
+    }
+  });
+  return directives;
+}
+
 export function isPreservedComment(comment: Comment): boolean {
   return comment.raw.includes("--#") || comment.raw.includes("[[#");
 }
@@ -86,6 +187,10 @@ export class SourceMetadata {
   private readonly annotations = new WeakMap<
     Parser.Statement,
     StormAnnotations
+  >();
+  private readonly emmyLua = new WeakMap<
+    Parser.Statement,
+    readonly EmmyLuaDirective[]
   >();
   private readonly afterModule: Comment[] = [];
   private readonly statementOfIdentifier = new WeakMap<
@@ -138,6 +243,7 @@ export class SourceMetadata {
       const first = group[0];
       const last = group[group.length - 1];
       const groupAnnotations = parseAnnotations(group);
+      const groupEmmyLua = parseEmmyLua(group);
       const preceding = [...statements]
         .reverse()
         .find(
@@ -177,6 +283,8 @@ export class SourceMetadata {
           ) {
             this.annotations.set(following, groupAnnotations);
           }
+          if (groupEmmyLua.length > 0)
+            this.emmyLua.set(following, groupEmmyLua);
         } else {
           this.detachedBefore.set(following, [
             ...(this.detachedBefore.get(following) ?? []),
@@ -196,6 +304,17 @@ export class SourceMetadata {
   annotationsOfIdentifier(identifier: Parser.Identifier): StormAnnotations {
     const statement = this.statementOfIdentifier.get(identifier);
     return statement ? this.annotationsOf(statement) : NONE;
+  }
+
+  emmyLuaOf(statement: Parser.Statement): readonly EmmyLuaDirective[] {
+    return this.emmyLua.get(statement) ?? [];
+  }
+
+  emmyLuaOfIdentifier(
+    identifier: Parser.Identifier,
+  ): readonly EmmyLuaDirective[] {
+    const statement = this.statementOfIdentifier.get(identifier);
+    return statement ? this.emmyLuaOf(statement) : [];
   }
 
   beforeOf(statement: Parser.Statement): readonly Comment[] {
@@ -237,6 +356,8 @@ export class SourceMetadata {
     if (combined.keep || combined.keepName || combined.exported) {
       this.annotations.set(target, combined);
     }
+    const emmyLua = sources.flatMap((statement) => this.emmyLuaOf(statement));
+    if (emmyLua.length > 0) this.emmyLua.set(target, emmyLua);
   }
 
   /**
@@ -265,6 +386,10 @@ export class SourceMetadata {
       replacements.forEach((statement) =>
         this.annotations.set(statement, annotations),
       );
+    }
+    const emmyLua = this.emmyLua.get(source);
+    if (emmyLua) {
+      replacements.forEach((statement) => this.emmyLua.set(statement, emmyLua));
     }
   }
 

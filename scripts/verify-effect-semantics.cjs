@@ -130,6 +130,36 @@ print(result,table.concat(log,","))
   }
 }
 
+function verifyWholeProgramFieldFixture() {
+  const fixtureDirectory = path.join(directory, "whole-program-fields");
+  fs.mkdirSync(fixtureDirectory);
+  const sources = {
+    "object.lua": `local Object={} function Object.create_instance(target,prototype) for key,value in pairs(prototype) do target[key]=value end return target end return Object`,
+    "class.lua": `local Object=require("object") local Class={} function Class.new(flag) local self=Object.create_instance({},Class) self.flag=flag self.unused=mark("initializer") return self end return Class`,
+    "main.lua": `local log={} function mark(value) log[#log+1]=value return value end local Class=require("class") local first=Class.new(true) local second=Class.new(false) if first.flag then mark("first") end if second.flag then mark("wrong") else mark("second") end print(table.concat(log,","))`,
+  };
+  Object.entries(sources).forEach(([name, source]) =>
+    fs.writeFileSync(path.join(fixtureDirectory, name), source),
+  );
+  const entry = path.join(fixtureDirectory, "main.lua");
+  const minifiedFile = path.join(fixtureDirectory, "main.min.lua");
+  const code = new Minifier(
+    entry,
+    { luaVersion: "5.3" },
+    { moduleLikeLua: true, runtimeProfile: "stormworks" },
+  )
+    .parse()
+    .toStringWithSourceMap({ file: path.basename(minifiedFile) }).code;
+  fs.writeFileSync(minifiedFile, code);
+  const original = execute(entry, fixtureDirectory);
+  const minified = execute(minifiedFile, fixtureDirectory);
+  if (JSON.stringify(original) !== JSON.stringify(minified)) {
+    throw new Error(
+      `semantic mismatch in whole-program field fixture\noriginal=${JSON.stringify(original)}\nminified=${JSON.stringify(minified)}\ncode=${code}`,
+    );
+  }
+}
+
 try {
   fixtures.forEach((source, index) => {
     const sourceFile = path.join(directory, `source-${String(index)}.lua`);
@@ -152,8 +182,9 @@ try {
     }
   });
   verifyWholeProgramMethodFixture();
+  verifyWholeProgramFieldFixture();
   process.stdout.write(
-    `${lua}: ${String(fixtures.length + 1)} effect-aware fixtures matched exactly\n`,
+    `${lua}: ${String(fixtures.length + 2)} effect-aware fixtures matched exactly\n`,
   );
 } finally {
   fs.rmSync(directory, { recursive: true, force: true });

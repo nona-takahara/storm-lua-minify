@@ -55,7 +55,16 @@ export type OptimizationDiagnosticReason =
   | "metatable-mutation"
   | "multiple-targets"
   | "dynamic-module-boundary"
-  | "external-module-boundary";
+  | "external-module-boundary"
+  | "field-fact"
+  | "field-rewrite-applied"
+  | "field-reassignment"
+  | "unknown-call"
+  | "contradictory-annotation"
+  | "multiple-values"
+  | "field-read-replaced"
+  | "dead-field-write"
+  | "field-write-effect-preserved";
 
 export interface OptimizationDiagnostic {
   readonly pass: string;
