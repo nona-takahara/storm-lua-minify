@@ -69,9 +69,11 @@ import {
   ResolvedMinifierMode,
   resolveMinifierMode,
 } from "./options";
+import { CompilationProgress } from "./progress";
 
 export type { RuntimeProfile } from "./runtimeEnvironment";
 export type { MinifierMode } from "./options";
+export type { CompilationProgress } from "./progress";
 
 const NO_RENAME: RenameResult = {
   nameOf: () => undefined,
@@ -114,6 +116,7 @@ export class Minifier {
   private readonly aggregateSpecializationVariant?: "baseline" | "trial";
   private readonly exportDceVariant?: "baseline" | "trial";
   private readonly fieldRenameVariant?: "baseline" | "trial";
+  private readonly progress?: CompilationProgress;
   private linkedAstGeneration = 0;
   private wholeProgramObjectsValue?: WholeProgramObjectAnalysis;
   private wholeProgramFieldsValue?: WholeProgramFieldAnalysis;
@@ -125,19 +128,27 @@ export class Minifier {
     entryFilePath: string,
     luaParseSettings: Partial<Options>,
     mode: MinifierMode,
-    schedulerVariant?: "baseline" | "trial",
+    schedulerVariantOrProgress?: "baseline" | "trial" | CompilationProgress,
     functionRewriteVariant?: "baseline" | "trial",
     fieldFactVariant?: "baseline" | "trial",
     aggregateSpecializationVariant?: "baseline" | "trial",
     exportDceVariant?: "baseline" | "trial",
     fieldRenameVariant?: "baseline" | "trial",
+    progress?: CompilationProgress,
   ) {
-    this.schedulerVariant = schedulerVariant;
+    this.schedulerVariant =
+      typeof schedulerVariantOrProgress === "string"
+        ? schedulerVariantOrProgress
+        : undefined;
     this.functionRewriteVariant = functionRewriteVariant;
     this.fieldFactVariant = fieldFactVariant;
     this.aggregateSpecializationVariant = aggregateSpecializationVariant;
     this.exportDceVariant = exportDceVariant;
     this.fieldRenameVariant = fieldRenameVariant;
+    this.progress =
+      typeof schedulerVariantOrProgress === "object"
+        ? schedulerVariantOrProgress
+        : progress;
     this.entryFilePath = entryFilePath;
     this.identifiersInUse = new Set<string>();
     this.moduleSourceText = new Map<string, string>();
@@ -212,6 +223,8 @@ export class Minifier {
   }
 
   private parseWithFieldRenameSelection(): SourceNode {
+    this.progress?.addSteps(2);
+    this.progress?.startStep("Evaluate field renaming baseline");
     const baselineMinifier = new Minifier(
       this.entryFilePath,
       this.luaParseSettings,
@@ -222,12 +235,14 @@ export class Minifier {
       undefined,
       undefined,
       "baseline",
+      this.progress,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
     let trialMinifier: Minifier;
     let trial: SourceNode;
     try {
+      this.progress?.startStep("Evaluate field renaming trial");
       trialMinifier = new Minifier(
         this.entryFilePath,
         this.luaParseSettings,
@@ -238,6 +253,7 @@ export class Minifier {
         undefined,
         undefined,
         "trial",
+        this.progress,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -264,9 +280,11 @@ export class Minifier {
   }
 
   private parseWithExportDceSelection(): SourceNode {
+    this.progress?.addSteps(1);
     let trialMinifier: Minifier;
     let trial: SourceNode;
     try {
+      this.progress?.startStep("Evaluate unused export removal trial");
       trialMinifier = new Minifier(
         this.entryFilePath,
         this.luaParseSettings,
@@ -277,9 +295,12 @@ export class Minifier {
         undefined,
         "trial",
         this.fieldRenameVariant,
+        this.progress,
       );
       trial = trialMinifier.parse();
     } catch {
+      this.progress?.addSteps(1);
+      this.progress?.startStep("Evaluate unused export removal baseline");
       const baselineMinifier = new Minifier(
         this.entryFilePath,
         this.luaParseSettings,
@@ -290,6 +311,7 @@ export class Minifier {
         undefined,
         "baseline",
         this.fieldRenameVariant,
+        this.progress,
       );
       const baseline = baselineMinifier.parse();
       this.copyDiagnosticsFrom(baselineMinifier);
@@ -301,6 +323,8 @@ export class Minifier {
       this.recordFinalExportDceDecision("rejected", "final-output-not-shorter");
       return this.adoptVariant(trialMinifier, trial);
     }
+    this.progress?.addSteps(1);
+    this.progress?.startStep("Evaluate unused export removal baseline");
     const baselineMinifier = new Minifier(
       this.entryFilePath,
       this.luaParseSettings,
@@ -311,6 +335,7 @@ export class Minifier {
       undefined,
       "baseline",
       this.fieldRenameVariant,
+      this.progress,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -330,6 +355,8 @@ export class Minifier {
   }
 
   private parseWithFieldFactSelection(): SourceNode {
+    this.progress?.addSteps(2);
+    this.progress?.startStep("Evaluate field optimization baseline");
     const baselineMinifier = new Minifier(
       this.entryFilePath,
       this.luaParseSettings,
@@ -340,12 +367,14 @@ export class Minifier {
       this.aggregateSpecializationVariant,
       this.exportDceVariant,
       this.fieldRenameVariant,
+      this.progress,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
     let trialMinifier: Minifier;
     let trial: SourceNode;
     try {
+      this.progress?.startStep("Evaluate field optimization trial");
       trialMinifier = new Minifier(
         this.entryFilePath,
         this.luaParseSettings,
@@ -356,6 +385,7 @@ export class Minifier {
         this.aggregateSpecializationVariant,
         this.exportDceVariant,
         this.fieldRenameVariant,
+        this.progress,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -379,6 +409,8 @@ export class Minifier {
   }
 
   private parseWithAggregateSpecializationSelection(): SourceNode {
+    this.progress?.addSteps(2);
+    this.progress?.startStep("Evaluate function specialization baseline");
     const baselineMinifier = new Minifier(
       this.entryFilePath,
       this.luaParseSettings,
@@ -389,12 +421,14 @@ export class Minifier {
       "baseline",
       this.exportDceVariant,
       this.fieldRenameVariant,
+      this.progress,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
     let trialMinifier: Minifier;
     let trial: SourceNode;
     try {
+      this.progress?.startStep("Evaluate function specialization trial");
       trialMinifier = new Minifier(
         this.entryFilePath,
         this.luaParseSettings,
@@ -405,6 +439,7 @@ export class Minifier {
         "trial",
         this.exportDceVariant,
         this.fieldRenameVariant,
+        this.progress,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -434,6 +469,8 @@ export class Minifier {
   }
 
   private parseWithFunctionRewriteSelection(): SourceNode {
+    this.progress?.addSteps(2);
+    this.progress?.startStep("Evaluate function rewrites baseline");
     const baselineMinifier = new Minifier(
       this.entryFilePath,
       this.luaParseSettings,
@@ -444,12 +481,14 @@ export class Minifier {
       this.aggregateSpecializationVariant,
       this.exportDceVariant,
       this.fieldRenameVariant,
+      this.progress,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
     let trialMinifier: Minifier;
     let trial: SourceNode;
     try {
+      this.progress?.startStep("Evaluate function rewrites trial");
       trialMinifier = new Minifier(
         this.entryFilePath,
         this.luaParseSettings,
@@ -460,6 +499,7 @@ export class Minifier {
         this.aggregateSpecializationVariant,
         this.exportDceVariant,
         this.fieldRenameVariant,
+        this.progress,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -486,6 +526,8 @@ export class Minifier {
   }
 
   private parseWithSchedulerSelection(): SourceNode {
+    this.progress?.addSteps(2);
+    this.progress?.startStep("Evaluate statement scheduling baseline");
     const baselineMinifier = new Minifier(
       this.entryFilePath,
       this.luaParseSettings,
@@ -496,12 +538,14 @@ export class Minifier {
       this.aggregateSpecializationVariant,
       this.exportDceVariant,
       this.fieldRenameVariant,
+      this.progress,
     );
     const baseline = baselineMinifier.parseOnce();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
     let trialMinifier: Minifier;
     let trial: SourceNode;
     try {
+      this.progress?.startStep("Evaluate statement scheduling trial");
       trialMinifier = new Minifier(
         this.entryFilePath,
         this.luaParseSettings,
@@ -512,6 +556,7 @@ export class Minifier {
         this.aggregateSpecializationVariant,
         this.exportDceVariant,
         this.fieldRenameVariant,
+        this.progress,
       );
       trial = trialMinifier.parseOnce();
     } catch {
@@ -535,18 +580,36 @@ export class Minifier {
   }
 
   private parseOnce(): SourceNode {
+    this.progress?.addSteps(11);
+    this.progress?.startStep("Load and parse modules");
     this.link();
+    this.progress?.tick();
     // #85 consumes #84 function-valued field facts before field DCE can remove
     // callback storage. The field pass then sees specialized calls and includes
     // storage/wrapper cleanup in the same final-output trial.
+    this.progress?.startStep("Rewrite functions");
     this.rewriteFunctionsAll();
+    this.progress?.tick();
+    this.progress?.startStep("Analyze and rewrite fields");
     this.rewriteWholeProgramFieldsAll();
+    this.progress?.tick();
+    this.progress?.startStep("Fold constants");
     this.foldConstantsAll();
+    this.progress?.tick();
+    this.progress?.startStep("Remove unused exports");
     this.rewriteWholeProgramExportsAll();
+    this.progress?.tick();
+    this.progress?.startStep("Remove unused code");
     this.removeUnusedAll();
+    this.progress?.tick();
+    this.progress?.startStep("Plan global names");
     this.rebuildIdentifiersInUse();
     this.computeGlobalRenames();
+    this.progress?.tick();
+    this.progress?.startStep("Transform statements");
     this.transformAll();
+    this.progress?.tick();
+    this.progress?.startStep("Finalize whole-program analyses");
     if (
       this.functionRewritesEnabled() ||
       this.fieldFactsEnabled() ||
@@ -581,8 +644,12 @@ export class Minifier {
         );
       }
     }
+    this.progress?.tick();
+    this.progress?.startStep("Rename identifiers");
     this.renameAll();
+    this.progress?.tick();
 
+    this.progress?.startStep("Generate Lua and source map");
     const result = this.mode.requireWrapper
       ? this.printModuleWithRequireWrapper()
       : this.printModule(this.entryModule);
@@ -592,6 +659,7 @@ export class Minifier {
       if (fileName) {
         result.setSourceContent(fileName, v);
       }
+      this.progress?.tick();
     });
 
     return result;
@@ -1104,6 +1172,7 @@ export class Minifier {
         this.wholeProgramFieldsValue = undefined;
         this.wholeProgramExportsValue = undefined;
       }
+      this.progress?.tick();
     });
     this.wholeProgramObjectsValue = this.analyzeWholeProgramObjects();
     this.recordWholeProgramObjectDiagnostics(this.wholeProgramObjectsValue);
@@ -1172,7 +1241,7 @@ export class Minifier {
       const chunk = this.moduleAST.get(name);
       const resolved = this.moduleResolve.get(name);
       if (!chunk || !resolved) throw new Error(name + " is not found");
-      return {
+      const module = {
         name,
         chunk,
         resolved,
@@ -1180,6 +1249,8 @@ export class Minifier {
           generation: this.linkedAstGeneration,
         }),
       };
+      this.progress?.tick();
+      return module;
     });
     return analyzeWholeProgramObjects(modules, this.linkedAstGeneration);
   }
@@ -1511,6 +1582,7 @@ export class Minifier {
         );
       this.renameCache.set(moduleName, result);
       result.usedNames.forEach((name) => this.identifiersInUse.add(name));
+      this.progress?.tick();
     });
   }
 
@@ -1738,6 +1810,7 @@ export class Minifier {
           plannedIdentifiersInUse.add(name),
         );
       }
+      this.progress?.tick();
     });
   }
 
@@ -1849,6 +1922,7 @@ export class Minifier {
           return { changed, invalidatesResolve: changed };
         });
       this.moduleResolve.set(moduleName, passes.resolved);
+      this.progress?.tick();
     });
   }
 
@@ -1889,6 +1963,7 @@ export class Minifier {
         return { changed, invalidatesResolve: changed };
       });
       this.moduleResolve.set(moduleName, passes.resolved);
+      this.progress?.tick();
     });
   }
 
@@ -1958,6 +2033,7 @@ export class Minifier {
       visiting.delete(moduleName);
       stack.pop();
       this.linkOrder.push(moduleName);
+      this.progress?.tick();
     };
 
     visit(this.entryModule);

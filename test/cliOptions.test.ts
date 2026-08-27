@@ -37,6 +37,12 @@ describe("v1 option hierarchy", () => {
     ).toThrow();
   });
 
+  test("supports explicit progress overrides without materializing a default", () => {
+    expect(optionsOf()).not.toHaveProperty("progress");
+    expect(optionsOf("--progress")).toMatchObject({ progress: true });
+    expect(optionsOf("--no-progress")).toMatchObject({ progress: false });
+  });
+
   test("collects repeated global exclusions without consuming input files", () => {
     const program = createCliProgram();
     program.parse(

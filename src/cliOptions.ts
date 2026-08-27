@@ -54,6 +54,8 @@ export function createCliProgram(): Command {
         .default(undefined),
     );
 
+  addBooleanSwitch(command, "progress", "Show compilation progress");
+
   addBooleanSwitch(
     command,
     "require-wrapper",
