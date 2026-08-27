@@ -183,12 +183,15 @@ EmmyLuaの`class`／継承、`field`、`param`／`return`／`type`、`alias`／`
 ```
 pnpm ci
 pnpm run build
+pnpm run test:smoke     # 配布CLIの最小動作を5秒タイムアウトで確認
 pnpm test
 pnpm run verify:lua-budget       # Windowsのluac53で49/50/51境界を確認
 pnpm run verify:effect-semantics # Windowsのlua53で変換前後を差分実行
 pnpm run report:optimizer        # 候補・拒否理由・最終byte比較をJSON出力
 pnpm run report:whole-program-exports -- <entry.lua> # module export到達性と最終byte比較
 ```
+
+テストは、内部の解析・変換境界を直接観測するホワイトボックステスト、公開された入力と出力を仕様として記述する契約テスト、配布CLIが起動してLuaとSource Mapを生成できることだけを先に確かめるスモークテストに分けています。通常の`pnpm test`は前二者を実行し、`pnpm run test:smoke`はビルド後にスモークテストだけを実行します。CIではスモークテストが成功した場合に限り、lint・format・全テストへ進みます。
 
 optimizerの文移動とlocal宣言packingは、共通のCFG・liveness・文間依存DAGを使います。通常のminifyでもschedulerなしのbaselineとschedulerありのtrialを別々の`Minifier`で最終Rename／Printまで評価し、trialがUTF-8 byte数で厳密に短い場合だけ採用します。同長・増加・trial失敗時は、AST、Resolve、SourceMetadata、Source Mapを共有していないbaselineへ戻ります。
 

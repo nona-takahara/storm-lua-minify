@@ -1,25 +1,18 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import Parser from "luaparse";
-import { resolveScopes } from "../src/resolver";
-import { analyzeOptimizer } from "../src/optimizerAnalysis";
 import {
   applyStatementSchedule,
   planStatementSchedule,
 } from "../src/statementScheduler";
+import { analyzeLua } from "./lib/optimizerHarness";
 
 // Transformパス（#9）の単体テスト。連続するlocal宣言のまとめ上げと、
 // 3つのハザード（参照順序・複数値展開・SLモードのrequire splice保持）に対する
 // 回帰防止を検証する。
 
-function parse(code: string): Parser.Chunk {
-  return Parser.parse(code, { luaVersion: "5.3" });
-}
-
 function merge(code: string, preserveRequireSplice = false): Parser.Chunk {
-  const chunk = parse(code);
-  const resolved = resolveScopes(chunk);
-  const analysis = analyzeOptimizer(chunk, resolved);
+  const { chunk, resolved, analysis } = analyzeLua(code);
   applyStatementSchedule(
     planStatementSchedule(chunk, resolved, {
       facts: analysis.facts,
@@ -211,16 +204,14 @@ test("merging recurses into nested blocks", () => {
 });
 
 test("merging preserves node identity so resolveResult.symbolOf keeps working after the merge", () => {
-  const chunk = parse(`
+  const { chunk, resolved, analysis } = analyzeLua(`
     local a = 1
     local b = 2
     print(a, b)
   `);
-  const resolved = resolveScopes(chunk);
   const aSymbolBefore = resolved.symbolOf(
     (chunk.body[0] as Parser.LocalStatement).variables[0],
   );
-  const analysis = analyzeOptimizer(chunk, resolved);
   applyStatementSchedule(
     planStatementSchedule(chunk, resolved, {
       facts: analysis.facts,
