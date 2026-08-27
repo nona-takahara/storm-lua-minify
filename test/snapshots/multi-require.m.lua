@@ -6,7 +6,7 @@ return
 package.loaded[m]end
 if
 m=="common"then
-r=(function()return{value=42}end)()end
+r=(function()return{a=42}end)()end
 package.loaded[m]=package.loaded[m]or
 r
 or
@@ -14,4 +14,4 @@ true
 return
 package.loaded[m]end
 local
-a,b=require("common"),require("common")print(a.value,b.value)
+a,b=require("common"),require("common")print(a.a,b.a)

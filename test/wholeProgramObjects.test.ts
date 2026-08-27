@@ -407,8 +407,10 @@ return Class
     expect(result.minifier.optimizationDiagnostics).toContainEqual(
       expect.objectContaining({
         pass: "aggregate-specialization-final-cost",
-        decision: "accepted",
-        reason: "final-output-shorter",
+        // #91 shortens the repeated dispatch keys after specialization. The
+        // isolated aggregate trial is therefore no longer strictly shorter.
+        decision: "rejected",
+        reason: "final-output-not-shorter",
       }),
     );
     expect(result.code.match(/side\(\)/g)).toHaveLength(12);

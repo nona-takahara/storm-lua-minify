@@ -202,6 +202,36 @@ function verifyWholeProgramExportFixture(moduleLikeLua) {
   }
 }
 
+function verifyFieldRenameFixture() {
+  const fixtureDirectory = path.join(directory, "whole-program-field-renames");
+  fs.mkdirSync(fixtureDirectory);
+  const source = `
+local source={long_field_name=3,second_field_name=4}
+local target={}
+for key,value in next,source do target[key]=source[key] end
+print(target.long_field_name,target["second_field_name"])
+for key,value in pairs(source) do print(key,value) end
+`;
+  const entry = path.join(fixtureDirectory, "main.lua");
+  const minifiedFile = path.join(fixtureDirectory, "main.min.lua");
+  fs.writeFileSync(entry, source);
+  const code = new Minifier(
+    entry,
+    { luaVersion: "5.3" },
+    { moduleLikeLua: false, runtimeProfile: "stormworks" },
+  )
+    .parse()
+    .toStringWithSourceMap({ file: path.basename(minifiedFile) }).code;
+  fs.writeFileSync(minifiedFile, code);
+  const original = execute(entry, fixtureDirectory);
+  const minified = execute(minifiedFile, fixtureDirectory);
+  if (JSON.stringify(original) !== JSON.stringify(minified)) {
+    throw new Error(
+      `semantic mismatch in field rename fixture\noriginal=${JSON.stringify(original)}\nminified=${JSON.stringify(minified)}\ncode=${code}`,
+    );
+  }
+}
+
 try {
   fixtures.forEach((source, index) => {
     const sourceFile = path.join(directory, `source-${String(index)}.lua`);
@@ -227,8 +257,9 @@ try {
   verifyWholeProgramFieldFixture();
   verifyWholeProgramExportFixture(true);
   verifyWholeProgramExportFixture(false);
+  verifyFieldRenameFixture();
   process.stdout.write(
-    `${lua}: ${String(fixtures.length + 4)} effect-aware fixtures matched exactly\n`,
+    `${lua}: ${String(fixtures.length + 5)} effect-aware fixtures matched exactly\n`,
   );
 } finally {
   fs.rmSync(directory, { recursive: true, force: true });

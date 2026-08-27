@@ -61,6 +61,10 @@ import {
   applyWholeProgramExportDce,
   WholeProgramExportAnalysis,
 } from "./wholeProgramExports";
+import {
+  planWholeProgramFieldRenames,
+  WholeProgramFieldRenamePlan,
+} from "./wholeProgramFieldRenames";
 
 export type { RuntimeProfile } from "./runtimeEnvironment";
 
@@ -153,10 +157,12 @@ export class Minifier {
   private readonly fieldFactVariant?: "baseline" | "trial";
   private readonly aggregateSpecializationVariant?: "baseline" | "trial";
   private readonly exportDceVariant?: "baseline" | "trial";
+  private readonly fieldRenameVariant?: "baseline" | "trial";
   private linkedAstGeneration = 0;
   private wholeProgramObjectsValue?: WholeProgramObjectAnalysis;
   private wholeProgramFieldsValue?: WholeProgramFieldAnalysis;
   private wholeProgramExportsValue?: WholeProgramExportAnalysis;
+  private wholeProgramFieldRenamesValue?: WholeProgramFieldRenamePlan;
   private exportDceChanged = false;
 
   constructor(
@@ -168,12 +174,14 @@ export class Minifier {
     fieldFactVariant?: "baseline" | "trial",
     aggregateSpecializationVariant?: "baseline" | "trial",
     exportDceVariant?: "baseline" | "trial",
+    fieldRenameVariant?: "baseline" | "trial",
   ) {
     this.schedulerVariant = schedulerVariant;
     this.functionRewriteVariant = functionRewriteVariant;
     this.fieldFactVariant = fieldFactVariant;
     this.aggregateSpecializationVariant = aggregateSpecializationVariant;
     this.exportDceVariant = exportDceVariant;
+    this.fieldRenameVariant = fieldRenameVariant;
     this.entryFilePath = entryFilePath;
     this.identifiersInUse = new Set<string>();
     this.moduleSourceText = new Map<string, string>();
@@ -212,7 +220,14 @@ export class Minifier {
     return this.wholeProgramExportsValue;
   }
 
+  get wholeProgramFieldRenames(): WholeProgramFieldRenamePlan | undefined {
+    return this.wholeProgramFieldRenamesValue;
+  }
+
   parse(): SourceNode {
+    if (this.fieldRenameVariant === undefined && this.fieldRenamesEnabled()) {
+      return this.parseWithFieldRenameSelection();
+    }
     if (this.exportDceVariant === undefined && this.exportDceEnabled()) {
       return this.parseWithExportDceSelection();
     }
@@ -240,6 +255,58 @@ export class Minifier {
     return this.parseOnce();
   }
 
+  private parseWithFieldRenameSelection(): SourceNode {
+    const baselineMinifier = new Minifier(
+      this.entryFilePath,
+      this.luaParseSettings,
+      this.mode,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "baseline",
+    );
+    const baseline = baselineMinifier.parse();
+    const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
+    let trialMinifier: Minifier;
+    let trial: SourceNode;
+    try {
+      trialMinifier = new Minifier(
+        this.entryFilePath,
+        this.luaParseSettings,
+        this.mode,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "trial",
+      );
+      trial = trialMinifier.parse();
+    } catch {
+      this.copyDiagnosticsFrom(baselineMinifier);
+      this.recordFinalFieldRenameDecision("rejected", "trial-failed");
+      return this.adoptVariant(baselineMinifier, baseline);
+    }
+    const trialBytes = new TextEncoder().encode(trial.toString()).length;
+    if (trialBytes >= baselineBytes) {
+      this.copyDiagnosticsFrom(trialMinifier);
+      this.recordFinalFieldRenameDecision(
+        "rejected",
+        "final-output-not-shorter",
+      );
+      return this.adoptVariant(baselineMinifier, baseline);
+    }
+    this.copyDiagnosticsFrom(trialMinifier);
+    this.recordFinalFieldRenameDecision(
+      "accepted",
+      "final-output-shorter",
+      baselineBytes - trialBytes,
+    );
+    return this.adoptVariant(trialMinifier, trial);
+  }
+
   private parseWithExportDceSelection(): SourceNode {
     let trialMinifier: Minifier;
     let trial: SourceNode;
@@ -253,6 +320,7 @@ export class Minifier {
         undefined,
         undefined,
         "trial",
+        this.fieldRenameVariant,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -265,6 +333,7 @@ export class Minifier {
         undefined,
         undefined,
         "baseline",
+        this.fieldRenameVariant,
       );
       const baseline = baselineMinifier.parse();
       this.copyDiagnosticsFrom(baselineMinifier);
@@ -285,6 +354,7 @@ export class Minifier {
       undefined,
       undefined,
       "baseline",
+      this.fieldRenameVariant,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -313,6 +383,7 @@ export class Minifier {
       "baseline",
       this.aggregateSpecializationVariant,
       this.exportDceVariant,
+      this.fieldRenameVariant,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -328,6 +399,7 @@ export class Minifier {
         "trial",
         this.aggregateSpecializationVariant,
         this.exportDceVariant,
+        this.fieldRenameVariant,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -360,6 +432,7 @@ export class Minifier {
       this.fieldFactVariant,
       "baseline",
       this.exportDceVariant,
+      this.fieldRenameVariant,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -375,6 +448,7 @@ export class Minifier {
         this.fieldFactVariant,
         "trial",
         this.exportDceVariant,
+        this.fieldRenameVariant,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -413,6 +487,7 @@ export class Minifier {
       this.fieldFactVariant,
       this.aggregateSpecializationVariant,
       this.exportDceVariant,
+      this.fieldRenameVariant,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -428,6 +503,7 @@ export class Minifier {
         this.fieldFactVariant,
         this.aggregateSpecializationVariant,
         this.exportDceVariant,
+        this.fieldRenameVariant,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -463,6 +539,7 @@ export class Minifier {
       this.fieldFactVariant,
       this.aggregateSpecializationVariant,
       this.exportDceVariant,
+      this.fieldRenameVariant,
     );
     const baseline = baselineMinifier.parseOnce();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -478,6 +555,7 @@ export class Minifier {
         this.fieldFactVariant,
         this.aggregateSpecializationVariant,
         this.exportDceVariant,
+        this.fieldRenameVariant,
       );
       trial = trialMinifier.parseOnce();
     } catch {
@@ -513,7 +591,11 @@ export class Minifier {
     this.rebuildIdentifiersInUse();
     this.computeGlobalRenames();
     this.transformAll();
-    if (this.functionRewritesEnabled() || this.fieldFactsEnabled()) {
+    if (
+      this.functionRewritesEnabled() ||
+      this.fieldFactsEnabled() ||
+      this.fieldRenamesEnabled()
+    ) {
       // fold/remove/schedule may have changed any module after method rewrites. Publish only a
       // snapshot rebuilt from the complete linked AST generation consumed by final Rename/Print.
       this.linkedAstGeneration++;
@@ -530,6 +612,18 @@ export class Minifier {
         this.entryModule,
         (moduleName) => this.getSourceMetadata(moduleName),
       );
+      if (this.fieldRenameVariant === "trial") {
+        this.wholeProgramFieldRenamesValue = planWholeProgramFieldRenames(
+          this.wholeProgramObjectsValue,
+          this.wholeProgramFieldsValue,
+          this.wholeProgramExportsValue,
+          this.entryModule,
+          (moduleName) => this.getSourceMetadata(moduleName),
+        );
+        this.recordWholeProgramFieldRenameDiagnostics(
+          this.wholeProgramFieldRenamesValue,
+        );
+      }
     }
     this.renameAll();
 
@@ -1162,6 +1256,10 @@ export class Minifier {
     return this.mode.effectAwareTransforms !== false;
   }
 
+  private fieldRenamesEnabled(): boolean {
+    return this.mode.rename !== false;
+  }
+
   private exportDceEnabled(): boolean {
     return (
       this.mode.effectAwareTransforms !== false &&
@@ -1192,6 +1290,7 @@ export class Minifier {
     this.wholeProgramObjectsValue = minifier.wholeProgramObjectsValue;
     this.wholeProgramFieldsValue = minifier.wholeProgramFieldsValue;
     this.wholeProgramExportsValue = minifier.wholeProgramExportsValue;
+    this.wholeProgramFieldRenamesValue = minifier.wholeProgramFieldRenamesValue;
     this.exportDceChanged = minifier.exportDceChanged;
     return output;
   }
@@ -1286,6 +1385,41 @@ export class Minifier {
     });
   }
 
+  private recordFinalFieldRenameDecision(
+    decision: "accepted" | "rejected",
+    reason:
+      "final-output-shorter" | "final-output-not-shorter" | "trial-failed",
+    byteSavings?: number,
+  ): void {
+    this.diagnosticCollector?.record({
+      pass: "whole-program-field-rename-final-cost",
+      decision,
+      reason,
+      candidateSize: 1,
+      estimatedByteSavings: byteSavings,
+      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      moduleName: this.entryModule,
+      sourceRange: [0, fs.readFileSync(this.entryFilePath, "utf8").length],
+    });
+  }
+
+  private recordWholeProgramFieldRenameDiagnostics(
+    plan: WholeProgramFieldRenamePlan,
+  ): void {
+    plan.diagnostics.forEach((diagnostic) =>
+      this.diagnosticCollector?.record({
+        pass: "whole-program-field-rename",
+        moduleName: diagnostic.moduleName,
+        fieldName: diagnostic.field,
+        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        decision: diagnostic.accepted ? "accepted" : "rejected",
+        reason: diagnostic.reason,
+        candidateSize: 1,
+        sourceRange: diagnostic.sourceRange,
+      }),
+    );
+  }
+
   /**
    * dofileの呼び出し箇所ごとに、キャッシュ済みASTから新規にSourceNodeを作り直す。
    * 同じSourceNodeインスタンスを複数箇所へ挿入すると壊れるため、常に作り直す（#18）。
@@ -1329,6 +1463,15 @@ export class Minifier {
       throw new Error(moduleName + " is not found");
     }
     return cached;
+  }
+
+  getFieldRename(
+    node: Parser.Identifier | Parser.StringLiteral,
+  ): { name: string; originalName: string } | undefined {
+    const name = this.wholeProgramFieldRenamesValue?.nameOf(node);
+    const originalName =
+      this.wholeProgramFieldRenamesValue?.originalNameOf(node);
+    return name && originalName ? { name, originalName } : undefined;
   }
 
   getSourceMetadata(moduleName: string): SourceMetadata {

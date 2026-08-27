@@ -81,7 +81,20 @@ export type OptimizationDiagnosticReason =
   | "shape-observation"
   | "export-escape"
   | "multiple-return-allocations"
-  | "unresolved-re-export";
+  | "unresolved-re-export"
+  | "field-candidate"
+  | "equivalence-class"
+  | "key-transfer"
+  | "key-reused"
+  | "field-renamed"
+  | "reserved-key"
+  | "keep-name"
+  | "external-contract"
+  | "object-escape"
+  | "metatable-observation"
+  | "key-data-observation"
+  | "iteration-order-observation"
+  | "name-collision";
 
 export interface OptimizationDiagnostic {
   readonly pass: string;
