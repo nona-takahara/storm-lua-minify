@@ -8,6 +8,7 @@ import { buildMinifiedOutput, SourceMappingUrlStyle } from "./output";
 import { createCliProgram } from "./cliOptions";
 import { loadConfiguration } from "./config";
 import { MinifierMode, resolveMinifierMode } from "./options";
+import { CliProgress, progressEnabled } from "./cliProgress";
 
 const program = createCliProgram();
 
@@ -25,6 +26,7 @@ const luaparseSetting: Partial<Options> = {
 type CliOptions = Omit<MinifierMode, "requiredWhitespace"> & {
   config?: string;
   neverRenameGlobal?: string[];
+  progress?: boolean;
   requiredWhitespace?: "space" | "lf";
   sourceMappingUrlStyle?: SourceMappingUrlStyle;
 };
@@ -32,6 +34,7 @@ type CliOptions = Omit<MinifierMode, "requiredWhitespace"> & {
 const {
   config: configPath,
   neverRenameGlobal,
+  progress: progressOption,
   requiredWhitespace,
   sourceMappingUrlStyle: cliSourceMappingUrlStyle,
   ...cliModeOptions
@@ -53,30 +56,55 @@ const mode = resolveMinifierMode({
 const sourceMappingUrlStyle: SourceMappingUrlStyle =
   cliSourceMappingUrlStyle ?? configuration.sourceMappingUrlStyle ?? "legacy";
 
-luaFiles.forEach((fileName) => {
+luaFiles.forEach((fileName, fileIndex) => {
   const parsedFileName = path.parse(fileName);
 
   if (fs.existsSync(fileName)) {
-    const map = new Minifier(fileName, luaparseSetting, mode).parse();
-    const minFileName = path.format({
-      dir: parsedFileName.dir,
-      name: parsedFileName.name + ".min",
-      ext: ".lua",
-    });
-    const mapFileName = path.format({
-      dir: parsedFileName.dir,
-      name: parsedFileName.name,
-      ext: parsedFileName.ext + ".map",
-    });
-    const { code, map: mapJson } = buildMinifiedOutput(
-      map,
-      minFileName,
-      mapFileName,
-      { sourceMappingUrlStyle },
-    );
+    const progress = progressEnabled(progressOption, process.stderr)
+      ? new CliProgress({
+          fileName,
+          fileIndex: fileIndex + 1,
+          fileCount: luaFiles.length,
+          output: process.stderr,
+        })
+      : undefined;
+    const startedAt = performance.now();
+    try {
+      const map = new Minifier(
+        fileName,
+        luaparseSetting,
+        mode,
+        progress,
+      ).parse();
+      const minFileName = path.format({
+        dir: parsedFileName.dir,
+        name: parsedFileName.name + ".min",
+        ext: ".lua",
+      });
+      const mapFileName = path.format({
+        dir: parsedFileName.dir,
+        name: parsedFileName.name,
+        ext: parsedFileName.ext + ".map",
+      });
+      progress?.addSteps(1);
+      progress?.startStep("Write Lua and source map files");
+      const { code, map: mapJson } = buildMinifiedOutput(
+        map,
+        minFileName,
+        mapFileName,
+        { sourceMappingUrlStyle },
+      );
 
-    fs.writeFileSync(minFileName, code);
-    fs.writeFileSync(mapFileName, mapJson);
+      fs.writeFileSync(minFileName, code);
+      fs.writeFileSync(mapFileName, mapJson);
+      progress?.finish(
+        [minFileName, mapFileName],
+        performance.now() - startedAt,
+      );
+    } catch (error) {
+      progress?.fail();
+      throw error;
+    }
   } else {
     console.error("No such file: " + fileName);
   }
