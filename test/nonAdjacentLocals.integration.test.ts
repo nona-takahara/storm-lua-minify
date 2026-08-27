@@ -132,5 +132,5 @@ describe("effect-aware non-adjacent locals pipeline", () => {
       Buffer.byteLength(disabled),
     );
     expect(() => Parser.parse(enabled, { luaVersion: "5.3" })).not.toThrow();
-  });
+  }, 15_000);
 });

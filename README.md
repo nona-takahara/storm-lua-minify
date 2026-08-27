@@ -139,6 +139,7 @@ pnpm test
 pnpm run verify:lua-budget       # Windowsのluac53で49/50/51境界を確認
 pnpm run verify:effect-semantics # Windowsのlua53で変換前後を差分実行
 pnpm run report:optimizer        # 候補・拒否理由・最終byte比較をJSON出力
+pnpm run report:whole-program-exports -- <entry.lua> # module export到達性と最終byte比較
 ```
 
 optimizerの文移動とlocal宣言packingは、共通のCFG・liveness・文間依存DAGを使います。通常のminifyでもschedulerなしのbaselineとschedulerありのtrialを別々の`Minifier`で最終Rename／Printまで評価し、trialがUTF-8 byte数で厳密に短い場合だけ採用します。同長・増加・trial失敗時は、AST、Resolve、SourceMetadata、Source Mapを共有していないbaselineへ戻ります。

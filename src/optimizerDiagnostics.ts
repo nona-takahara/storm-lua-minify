@@ -68,11 +68,25 @@ export type OptimizationDiagnosticReason =
   | "dynamic-dispatch"
   | "callback-reassignment"
   | "multiple-callback-storage"
-  | "unknown-capture";
+  | "unknown-capture"
+  | "export-field-candidate"
+  | "field-live"
+  | "field-unreachable"
+  | "field-removed"
+  | "field-effect-preserved"
+  | "effectful-initializer"
+  | "entry-contract"
+  | "annotation-root"
+  | "static-field-root"
+  | "shape-observation"
+  | "export-escape"
+  | "multiple-return-allocations"
+  | "unresolved-re-export";
 
 export interface OptimizationDiagnostic {
   readonly pass: string;
   readonly moduleName?: string;
+  readonly fieldName?: string;
   readonly runtimeProfile?: "lua53" | "stormworks";
   readonly decision: OptimizationDecision;
   readonly reason: OptimizationDiagnosticReason;

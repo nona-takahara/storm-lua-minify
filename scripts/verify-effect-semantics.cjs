@@ -160,6 +160,48 @@ function verifyWholeProgramFieldFixture() {
   }
 }
 
+function verifyWholeProgramExportFixture(moduleLikeLua) {
+  const suffix = moduleLikeLua ? "module" : "inline";
+  const fixtureDirectory = path.join(
+    directory,
+    `whole-program-exports-${suffix}`,
+  );
+  fs.mkdirSync(fixtureDirectory);
+  const sources = {
+    "dependency.lua": `initializations=initializations+1 local exports={used=initializations} exports.dead=mark("dead-initializer") local function private_helper() return 9 end function exports.dead_function() return private_helper() end return exports`,
+    "main.lua": `initializations=0 local log={} function mark(value) log[#log+1]=value return value end local first=require("dependency") local second=require("dependency") print(first.used,second.used,initializations,table.concat(log,","))`,
+  };
+  Object.entries(sources).forEach(([name, source]) =>
+    fs.writeFileSync(path.join(fixtureDirectory, name), source),
+  );
+  const entry = path.join(fixtureDirectory, "main.lua");
+  const outputs = ["baseline", "trial"].map((variant) => {
+    const file = path.join(fixtureDirectory, `${variant}.lua`);
+    const code = new Minifier(
+      entry,
+      { luaVersion: "5.3" },
+      { moduleLikeLua, runtimeProfile: "stormworks" },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      variant,
+    )
+      .parse()
+      .toStringWithSourceMap({ file: path.basename(file) }).code;
+    fs.writeFileSync(file, code);
+    return { code, execution: execute(file, fixtureDirectory) };
+  });
+  if (
+    JSON.stringify(outputs[0].execution) !==
+    JSON.stringify(outputs[1].execution)
+  ) {
+    throw new Error(
+      `semantic mismatch in whole-program export fixture (${suffix})\nbaseline=${JSON.stringify(outputs[0])}\ntrial=${JSON.stringify(outputs[1])}`,
+    );
+  }
+}
+
 try {
   fixtures.forEach((source, index) => {
     const sourceFile = path.join(directory, `source-${String(index)}.lua`);
@@ -183,8 +225,10 @@ try {
   });
   verifyWholeProgramMethodFixture();
   verifyWholeProgramFieldFixture();
+  verifyWholeProgramExportFixture(true);
+  verifyWholeProgramExportFixture(false);
   process.stdout.write(
-    `${lua}: ${String(fixtures.length + 2)} effect-aware fixtures matched exactly\n`,
+    `${lua}: ${String(fixtures.length + 4)} effect-aware fixtures matched exactly\n`,
   );
 } finally {
   fs.rmSync(directory, { recursive: true, force: true });

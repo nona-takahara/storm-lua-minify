@@ -205,6 +205,24 @@ return Class
     );
   });
 
+  test("treats a static index overwrite of a method as method mutation", () => {
+    const analysis = programOf({
+      object: objectModule,
+      class: `
+local Object=require("object") local Class={}
+function Class.new() local instance=Object.create_instance({},Class) return instance end
+function Class:method() return 1 end
+Class["method"]=external
+return Class
+`,
+      main: `local Class=require("class") return Class.new():method()`,
+    });
+    expect(analysis.resolvedMethods).toHaveLength(0);
+    expect(analysis.diagnostics).toContainEqual(
+      expect.objectContaining({ reason: "method-field-mutation" }),
+    );
+  });
+
   test.each([
     ["dynamic-key" as const, "value[key]=replacement"],
     ["metatable-mutation" as const, "setmetatable(value,{})"],
