@@ -783,8 +783,16 @@ export class MinifyFile {
   ): SourceNode {
     if (expression.type == "Identifier") {
       return this.generateIdentifier(expression);
+    } else if (expression.type == "StringLiteral") {
+      const fieldRename = this.minifier.getFieldRename(expression);
+      return fieldRename
+        ? this.sourceNodeHelper(
+            expression,
+            JSON.stringify(fieldRename.name),
+            fieldRename.originalName,
+          )
+        : this.sourceNodeHelper(expression, expression.raw);
     } else if (
-      expression.type == "StringLiteral" ||
       expression.type == "NumericLiteral" ||
       expression.type == "BooleanLiteral" ||
       expression.type == "NilLiteral" ||
@@ -925,12 +933,19 @@ export class MinifyFile {
         "]",
       ]);
     } else if (expression.type == "MemberExpression") {
+      const fieldRename = this.minifier.getFieldRename(expression.identifier);
       return this.sourceNodeHelper(expression, [
         this.formatBase(expression.base),
         expression.indexer,
-        this.formatExpression(expression.identifier, {
-          preserveIdentifiers: true,
-        }),
+        fieldRename
+          ? this.sourceNodeHelper(
+              expression.identifier,
+              fieldRename.name,
+              fieldRename.originalName,
+            )
+          : this.formatExpression(expression.identifier, {
+              preserveIdentifiers: true,
+            }),
       ]);
     } else if (expression.type == "FunctionDeclaration") {
       const result = this.sourceNodeHelper(expression, ["function", "("]);
@@ -990,10 +1005,19 @@ export class MinifyFile {
           } else {
             // at this point, `field.type == 'TableKeyString'`
             // TODO: keep track of nested scopes (#18)
+            const fieldRename = this.minifier.getFieldRename(field.key);
             return this.sourceNodeHelper(
               field,
               [
-                this.formatExpression(field.key, { preserveIdentifiers: true }),
+                fieldRename
+                  ? this.sourceNodeHelper(
+                      field.key,
+                      fieldRename.name,
+                      fieldRename.originalName,
+                    )
+                  : this.formatExpression(field.key, {
+                      preserveIdentifiers: true,
+                    }),
                 "=",
                 this.formatExpression(field.value),
                 comma,

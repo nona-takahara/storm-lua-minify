@@ -2,4 +2,4 @@ local
 function
 a()return"hello"end
 local
-b={hello=a}print(b.hello())
+b={a=a}print(b.a())

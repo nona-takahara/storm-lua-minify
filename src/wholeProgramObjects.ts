@@ -69,6 +69,7 @@ export interface WholeProgramObjectAnalysis {
   readonly resolvedConstructors: readonly ResolvedConstructorCall[];
   readonly diagnostics: readonly WholeProgramObjectDiagnostic[];
   objectOf(expression: Parser.Expression): ProgramObjectIdentity | undefined;
+  objectsOf(expression: Parser.Expression): readonly ProgramObjectIdentity[];
   methodCallOf(call: CallSite): ResolvedMethodCall | undefined;
   summaryOfMethodCall(call: CallSite): FunctionSummary | undefined;
   effectsOfMethodCall(call: CallSite): FunctionSummary["effects"];
@@ -289,6 +290,26 @@ export function analyzeWholeProgramObjects(
           factoryCopyAssignments.add(assignment),
         );
       }
+    });
+    walkStatements(module.chunk.body, (node) => {
+      if (node.type !== "ForGenericStatement") return;
+      recognizeKeyPreservingTransfers(node, module.resolved).forEach(
+        (transfer) => {
+          factoryCopyAssignments.add(transfer.assignment);
+          const targets = directValues(transfer.target, module);
+          const sources = directValues(transfer.source, module);
+          targets.forEach((target) => {
+            const recordedSources = sourcesOfObject.get(target) ?? new Set();
+            sources.forEach((source) => {
+              recordedSources.add(source);
+              source.methods.forEach((callable, key) =>
+                target.methods.set(key, callable),
+              );
+            });
+            sourcesOfObject.set(target, recordedSources);
+          });
+        },
+      );
     });
   });
   const directCallTargets = (
@@ -673,6 +694,16 @@ export function analyzeWholeProgramObjects(
     resolvedMethods: resolvedPublic,
     resolvedConstructors,
     diagnostics,
+    objectsOf: (expression) => {
+      const module = moduleOfNode.get(expression);
+      const values =
+        valuesOfExpression.get(expression) ??
+        (module ? directValues(expression, module) : undefined);
+      if (!values) return [];
+      return [...values]
+        .map((value) => publicOfMutable.get(value))
+        .filter((value): value is ProgramObjectIdentity => value !== undefined);
+    },
     objectOf: (expression) => {
       const module = moduleOfNode.get(expression);
       const values =
@@ -799,6 +830,81 @@ function recognizeMixinFactory(
   return copyAssignments.length > 0
     ? { targetParameter, prototypeParameter, copyAssignments }
     : undefined;
+}
+
+interface KeyPreservingTransfer {
+  readonly assignment: Parser.AssignmentStatement;
+  readonly source: Parser.Expression;
+  readonly target: Parser.Expression;
+}
+
+function recognizeKeyPreservingTransfers(
+  statement: Parser.ForGenericStatement,
+  resolved: ResolveResult,
+): KeyPreservingTransfer[] {
+  const keyVariable = statement.variables.at(0);
+  const valueVariable = statement.variables.at(1);
+  if (!keyVariable) return [];
+  const keySymbol = resolved.symbolOf(keyVariable);
+  const valueSymbol = valueVariable
+    ? resolved.symbolOf(valueVariable)
+    : undefined;
+  if (!keySymbol) return [];
+  const first = statement.iterators.at(0);
+  let source: Parser.Expression | undefined;
+  if (
+    first?.type === "CallExpression" &&
+    first.base.type === "Identifier" &&
+    first.base.name === "pairs"
+  )
+    source = first.arguments.at(0);
+  else if (
+    first?.type === "Identifier" &&
+    first.name === "next" &&
+    statement.iterators.length >= 2
+  )
+    source = statement.iterators[1];
+  if (!source) return [];
+  const result: KeyPreservingTransfer[] = [];
+  walkStatements(statement.body, (node) => {
+    if (node.type !== "AssignmentStatement") return;
+    node.variables.forEach((target, index) => {
+      const value = node.init.at(index);
+      if (
+        target.type !== "IndexExpression" ||
+        target.index.type !== "Identifier" ||
+        resolved.symbolOf(target.index) !== keySymbol ||
+        !value
+      )
+        return;
+      const copiesIteratorValue =
+        value.type === "Identifier" &&
+        valueSymbol !== undefined &&
+        resolved.symbolOf(value) === valueSymbol;
+      const copiesSourceIndex =
+        value.type === "IndexExpression" &&
+        value.index.type === "Identifier" &&
+        resolved.symbolOf(value.index) === keySymbol &&
+        sameExpressionIdentity(value.base, source, resolved);
+      if (copiesIteratorValue || copiesSourceIndex)
+        result.push({ assignment: node, source, target: target.base });
+    });
+  });
+  return result;
+}
+
+function sameExpressionIdentity(
+  left: Parser.Expression,
+  right: Parser.Expression,
+  resolved: ResolveResult,
+): boolean {
+  if (left === right) return true;
+  return (
+    left.type === "Identifier" &&
+    right.type === "Identifier" &&
+    resolved.symbolOf(left) !== undefined &&
+    resolved.symbolOf(left) === resolved.symbolOf(right)
+  );
 }
 
 function recognizeConstructor(

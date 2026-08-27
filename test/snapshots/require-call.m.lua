@@ -9,7 +9,7 @@ m=="mod"then
 r=(function()local
 function
 a()return"hello"end
-return{hello=a}end)()end
+return{a=a}end)()end
 package.loaded[m]=package.loaded[m]or
 r
 or
@@ -17,4 +17,4 @@ true
 return
 package.loaded[m]end
 local
-b=require("mod")print(b.hello())
+b=require("mod")print(b.a())

@@ -6,7 +6,7 @@ return
 package.loaded[m]end
 if
 m=="sub.deep"then
-r=(function()return{value=1}end)()end
+r=(function()return{a=1}end)()end
 package.loaded[m]=package.loaded[m]or
 r
 or
@@ -14,4 +14,4 @@ true
 return
 package.loaded[m]end
 local
-a=require("sub.deep")print(a.value)
+a=require("sub.deep")print(a.a)
