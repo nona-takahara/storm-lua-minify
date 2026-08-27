@@ -11,7 +11,7 @@ function minifyExact(source: string, mode: MinifierMode): string {
 
 function minify(source: string, mode: Partial<MinifierMode> = {}): string {
   return minifyExact(source, {
-    moduleLikeLua: false,
+    requireWrapper: false,
     runtimeProfile: "stormworks",
     ...mode,
   });
@@ -26,10 +26,10 @@ tick()
 local second=tableValue.y
 use(first,second)
 `;
-    const enabled = minify(source, { effectAwareLocalHoist: false });
+    const enabled = minify(source, { localDeclarationHoisting: false });
     const disabled = minify(source, {
-      effectAwareTableReads: false,
-      effectAwareLocalHoist: false,
+      tableReadMerging: false,
+      localDeclarationHoisting: false,
     });
 
     expect(Buffer.byteLength(enabled)).toBeLessThan(
@@ -46,10 +46,10 @@ tableValue.y=2
 local second=tableValue.x
 use(first,second)
 `;
-    const fieldSensitive = minify(source, { effectAwareLocalHoist: false });
+    const fieldSensitive = minify(source, { localDeclarationHoisting: false });
     const wholeTable = minify(source, {
       fieldSensitiveTableEffects: false,
-      effectAwareLocalHoist: false,
+      localDeclarationHoisting: false,
     });
 
     expect(Buffer.byteLength(fieldSensitive)).toBeLessThan(
@@ -67,10 +67,10 @@ writeY(tableValue)
 local second=tableValue.x
 use(first,second)
 `;
-    const fieldSensitive = minify(source, { effectAwareLocalHoist: false });
+    const fieldSensitive = minify(source, { localDeclarationHoisting: false });
     const wholeTable = minify(source, {
       fieldSensitiveTableEffects: false,
-      effectAwareLocalHoist: false,
+      localDeclarationHoisting: false,
     });
 
     expect(Buffer.byteLength(fieldSensitive)).toBeLessThan(
@@ -87,10 +87,10 @@ observe(tableValue)
 local second=tableValue.y
 use(first,second)
 `;
-    const enabled = minify(source, { effectAwareLocalHoist: false });
+    const enabled = minify(source, { localDeclarationHoisting: false });
     const disabled = minify(source, {
-      effectAwareTableReads: false,
-      effectAwareLocalHoist: false,
+      tableReadMerging: false,
+      localDeclarationHoisting: false,
     });
     expect(Buffer.byteLength(enabled)).toBeLessThan(
       Buffer.byteLength(disabled),
@@ -106,10 +106,10 @@ tick()
 local second=tableValue.y
 use(first,second)
 `;
-    const enabled = minify(source, { effectAwareLocalHoist: false });
+    const enabled = minify(source, { localDeclarationHoisting: false });
     const disabled = minify(source, {
-      effectAwareTableReads: false,
-      effectAwareLocalHoist: false,
+      tableReadMerging: false,
+      localDeclarationHoisting: false,
     });
 
     expect(Buffer.byteLength(enabled)).toBeLessThan(
@@ -126,10 +126,10 @@ tick()
 local second=tableValue.y
 use(first,second)
 `;
-    const enabled = minify(source, { effectAwareLocalHoist: false });
+    const enabled = minify(source, { localDeclarationHoisting: false });
     const disabled = minify(source, {
-      effectAwareTableReads: false,
-      effectAwareLocalHoist: false,
+      tableReadMerging: false,
+      localDeclarationHoisting: false,
     });
 
     expect(Buffer.byteLength(enabled)).toBeLessThan(
@@ -146,9 +146,7 @@ consume(tableValue)
 local second=tableValue.y
 use(first,second)
 `;
-    expect(minify(source)).toBe(
-      minify(source, { effectAwareTableReads: false }),
-    );
+    expect(minify(source)).toBe(minify(source, { tableReadMerging: false }));
   });
 
   test("does not move reads when a closure publishes an alias", () => {
@@ -163,9 +161,7 @@ mutate()
 local second=tableValue.y
 use(first,second)
 `;
-    expect(minify(source)).toBe(
-      minify(source, { effectAwareTableReads: false }),
-    );
+    expect(minify(source)).toBe(minify(source, { tableReadMerging: false }));
   });
 
   test("does not move reads for a fresh table assigned to an upvalue", () => {
@@ -181,9 +177,7 @@ local function make()
 end
 make()
 `;
-    expect(minify(source)).toBe(
-      minify(source, { effectAwareTableReads: false }),
-    );
+    expect(minify(source)).toBe(minify(source, { tableReadMerging: false }));
   });
 
   test("master safe opt-out disables table read movement", () => {
@@ -194,10 +188,10 @@ tick()
 local second=tableValue.y
 use(first,second)
 `;
-    expect(minify(source, { effectAwareTransforms: false })).toBe(
+    expect(minify(source, { statementOptimizations: false })).toBe(
       minify(source, {
-        effectAwareTableReads: false,
-        effectAwareLocalHoist: false,
+        tableReadMerging: false,
+        localDeclarationHoisting: false,
       }),
     );
   });
@@ -211,19 +205,19 @@ local second=tableValue.y
 use(first,second)
 `;
     const apiDefault = minifyExact(source, {
-      moduleLikeLua: false,
-      effectAwareLocalHoist: false,
+      requireWrapper: false,
+      localDeclarationHoisting: false,
     });
     const explicitLua = minifyExact(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "lua53",
-      effectAwareLocalHoist: false,
+      localDeclarationHoisting: false,
     });
     const optedInLua = minifyExact(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "lua53",
-      allowLocalLifetimeChanges: true,
-      effectAwareLocalHoist: false,
+      allowIntrospectionChanges: true,
+      localDeclarationHoisting: false,
     });
 
     expect(apiDefault).toBe(explicitLua);
@@ -241,10 +235,10 @@ tick()
 local second=tableValue.y
 use(first,second)
 `;
-    const enabled = minify(source, { effectAwareLocalHoist: false });
+    const enabled = minify(source, { localDeclarationHoisting: false });
     const disabled = minify(source, {
-      effectAwareTableReads: false,
-      effectAwareLocalHoist: false,
+      tableReadMerging: false,
+      localDeclarationHoisting: false,
     });
 
     expect(enabled).toBe(disabled);

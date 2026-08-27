@@ -293,11 +293,11 @@ return Class
         "main.lua": `local Class=require("class") local value=Class.new() return value:method(1,side())`,
       },
       {
-        moduleLikeLua: true,
+        requireWrapper: true,
         runtimeProfile: "stormworks",
-        mergeLocals: false,
-        effectAwareLocalHoist: false,
-        effectAwareTableReads: false,
+        localDeclarationMerging: false,
+        localDeclarationHoisting: false,
+        tableReadMerging: false,
         collectOptimizationDiagnostics: true,
       },
     );
@@ -355,16 +355,16 @@ return Class
       "main.lua": `local Class=require("class") local value=Class.new() return value:method(1,side())`,
     };
     const mode = {
-      moduleLikeLua: true,
+      requireWrapper: true,
       runtimeProfile: "stormworks" as const,
-      mergeLocals: false,
-      effectAwareLocalHoist: false,
-      effectAwareTableReads: false,
+      localDeclarationMerging: false,
+      localDeclarationHoisting: false,
+      tableReadMerging: false,
     };
     const enabled = minifyTemporaryLuaProject(files, mode);
     const disabled = minifyTemporaryLuaProject(files, {
       ...mode,
-      effectAwareTransforms: false,
+      functionOptimizations: false,
     });
 
     expect(enabled.code).toBe(disabled.code);
@@ -387,13 +387,13 @@ return Class
         "main.lua": `local Class=require("class") local value=Class.new() return ${Array.from({ length: 12 }, () => "value:read(true,side())").join("+")}`,
       },
       {
-        moduleLikeLua: true,
+        requireWrapper: true,
         runtimeProfile: "stormworks",
-        mergeLocals: false,
-        effectAwareLocalHoist: false,
-        effectAwareTableReads: false,
-        globalAlias: false,
-        foldConstants: true,
+        localDeclarationMerging: false,
+        localDeclarationHoisting: false,
+        tableReadMerging: false,
+        globalAliasing: false,
+        constantOptimizations: true,
         collectOptimizationDiagnostics: true,
       },
     );

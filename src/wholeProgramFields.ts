@@ -532,45 +532,51 @@ export function applyWholeProgramFieldRewrites(
   objects: WholeProgramObjectAnalysis,
   analysis: WholeProgramFieldAnalysis,
   metadataOf: (moduleName: string) => SourceMetadata,
+  options: {
+    readonly replaceReads?: boolean;
+    readonly removeInitializers?: boolean;
+  } = {},
 ): WholeProgramFieldRewriteResult {
   const assignmentTargets = new WeakSet<Parser.MemberExpression>();
-  objects.modules.forEach((module) => {
-    walkBlockDeep(module.chunk.body, {
-      onStatement: (statement) => {
-        if (statement.type !== "AssignmentStatement") return;
-        statement.variables.forEach((variable) => {
-          if (variable.type === "MemberExpression")
-            assignmentTargets.add(variable);
-        });
-      },
+  if (options.replaceReads !== false)
+    objects.modules.forEach((module) => {
+      walkBlockDeep(module.chunk.body, {
+        onStatement: (statement) => {
+          if (statement.type !== "AssignmentStatement") return;
+          statement.variables.forEach((variable) => {
+            if (variable.type === "MemberExpression")
+              assignmentTargets.add(variable);
+          });
+        },
+      });
     });
-  });
   const readCount = new Map<Parser.AssignmentStatement, number>();
   let replacedReads = 0;
-  objects.modules.forEach((module) => {
-    walkBlockDeep(module.chunk.body, {
-      onExpression: (expression) => {
-        if (
-          expression.type !== "MemberExpression" ||
-          assignmentTargets.has(expression)
-        )
-          return;
-        const fact = analysis.factOfRead(expression);
-        if (!fact?.value) return;
-        const replacement = literalFor(fact.value, expression);
-        if (!replacement) {
-          if (fact.initializer)
-            readCount.set(
-              fact.initializer,
-              (readCount.get(fact.initializer) ?? 0) + 1,
-            );
-          return;
-        }
-        replaceExpression(expression, replacement);
-        replacedReads++;
-      },
+  if (options.removeInitializers !== false)
+    objects.modules.forEach((module) => {
+      walkBlockDeep(module.chunk.body, {
+        onExpression: (expression) => {
+          if (
+            expression.type !== "MemberExpression" ||
+            assignmentTargets.has(expression)
+          )
+            return;
+          const fact = analysis.factOfRead(expression);
+          if (!fact?.value) return;
+          const replacement = literalFor(fact.value, expression);
+          if (!replacement) {
+            if (fact.initializer)
+              readCount.set(
+                fact.initializer,
+                (readCount.get(fact.initializer) ?? 0) + 1,
+              );
+            return;
+          }
+          replaceExpression(expression, replacement);
+          replacedReads++;
+        },
+      });
     });
-  });
 
   const factsByInitializer = new Map<
     Parser.AssignmentStatement,

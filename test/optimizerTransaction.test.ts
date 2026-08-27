@@ -19,7 +19,7 @@ describe("transactional final-output selection", () => {
     const selected = minifyTemporaryLuaSource(
       source,
       {
-        moduleLikeLua: false,
+        requireWrapper: false,
         runtimeProfile: "stormworks",
         collectOptimizationDiagnostics: true,
       },
@@ -28,10 +28,10 @@ describe("transactional final-output selection", () => {
     const baseline = minifyTemporaryLuaSource(
       source,
       {
-        moduleLikeLua: false,
+        requireWrapper: false,
         runtimeProfile: "stormworks",
-        mergeLocals: false,
-        effectAwareTransforms: false,
+        localDeclarationMerging: false,
+        statementOptimizations: false,
       },
       { prefix: "storm-normal-final-cost-baseline-" },
     );
@@ -57,7 +57,7 @@ describe("transactional final-output selection", () => {
     const selected = minifyTemporaryLuaSource(
       source,
       {
-        moduleLikeLua: false,
+        requireWrapper: false,
         collectOptimizationDiagnostics: true,
       },
       { prefix: "storm-normal-final-cost-equal-" },
@@ -65,9 +65,9 @@ describe("transactional final-output selection", () => {
     const baseline = minifyTemporaryLuaSource(
       source,
       {
-        moduleLikeLua: false,
-        mergeLocals: false,
-        effectAwareTransforms: false,
+        requireWrapper: false,
+        localDeclarationMerging: false,
+        statementOptimizations: false,
       },
       { prefix: "storm-normal-final-cost-equal-baseline-" },
     );
@@ -96,12 +96,12 @@ use(first,second)
       entryFilePath,
       luaParseSettings: { luaVersion: "5.3" },
       baselineMode: {
-        moduleLikeLua: false,
+        requireWrapper: false,
         runtimeProfile: "stormworks",
-        effectAwareTransforms: false,
+        statementOptimizations: false,
       },
       trialMode: {
-        moduleLikeLua: false,
+        requireWrapper: false,
         runtimeProfile: "stormworks",
       },
     });
@@ -117,8 +117,8 @@ use(first,second)
     const result = selectTransactionalMinifierVariant({
       entryFilePath,
       luaParseSettings: { luaVersion: "5.3" },
-      baselineMode: { moduleLikeLua: false, rename: true },
-      trialMode: { moduleLikeLua: false, rename: false },
+      baselineMode: { requireWrapper: false, identifierOptimizations: true },
+      trialMode: { requireWrapper: false, identifierOptimizations: false },
     });
     expect(result).toMatchObject({ accepted: false, reason: "not-shorter" });
     expect(result.selected).toEqual(result.baseline);
@@ -140,8 +140,8 @@ use(first,second)
     const request = {
       entryFilePath,
       luaParseSettings: { luaVersion: "5.3" as const },
-      baselineMode: { moduleLikeLua: true },
-      trialMode: { moduleLikeLua: true },
+      baselineMode: { requireWrapper: true },
+      trialMode: { requireWrapper: true },
     };
     const first = selectTransactionalMinifierVariant(request);
     const second = selectTransactionalMinifierVariant(request);
@@ -159,9 +159,9 @@ use(first,second)
     const result = selectTransactionalMinifierVariant({
       entryFilePath,
       luaParseSettings: { luaVersion: "5.3" },
-      baselineMode: { moduleLikeLua: false },
+      baselineMode: { requireWrapper: false },
       trialMode: {
-        moduleLikeLua: false,
+        requireWrapper: false,
         neverRenameGlobals: failingReservedNames,
       },
     });

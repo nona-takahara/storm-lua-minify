@@ -53,6 +53,8 @@ export function generateCandidate(counter: number): string {
 }
 
 export interface RenameOptions {
+  /** Keep local, parameter, and label spellings while still applying global renames. */
+  readonly renameLocals?: boolean;
   /** Allow same-scope lifetime reuse when local lifetime is not observable. */
   readonly allowLocalNameReuse?: boolean;
   /** Reuse the exact optimizer generation already built by the scheduler. */
@@ -75,10 +77,15 @@ export function assignRenames(
 ): RenameResult {
   const unavailableNames = new Set(reserved);
   keepNames.forEach((symbol) => unavailableNames.add(symbol.name));
-  const variables = resolveResult.symbols.filter(
-    (symbol) =>
-      symbol.kind !== "label" && !symbol.implicit && !keepNames.has(symbol),
-  );
+  const variables =
+    options.renameLocals === false
+      ? []
+      : resolveResult.symbols.filter(
+          (symbol) =>
+            symbol.kind !== "label" &&
+            !symbol.implicit &&
+            !keepNames.has(symbol),
+        );
   const variableGraph = buildVariableInterference(
     chunk,
     resolveResult,
@@ -92,12 +99,15 @@ export function assignRenames(
   // Labels have a separate Lua namespace. Color them independently so a label
   // and a local may share a short spelling, while usedNames still reserves the
   // spelling against labels from subsequently spliced modules.
-  const labels = resolveResult.symbols.filter(
-    (symbol) =>
-      symbol.kind === "label" &&
-      symbol.name !== "self" &&
-      !keepNames.has(symbol),
-  );
+  const labels =
+    options.renameLocals === false
+      ? []
+      : resolveResult.symbols.filter(
+          (symbol) =>
+            symbol.kind === "label" &&
+            symbol.name !== "self" &&
+            !keepNames.has(symbol),
+        );
   const labelNames = assignColorNames(
     colorGraph(buildLexicalGraph(labels, false)),
     unavailableNames,

@@ -6,7 +6,7 @@ import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
 function minify(source: string, mode: Partial<MinifierMode>): string {
   return minifyTemporaryLuaSource(
     source,
-    { moduleLikeLua: false, ...mode },
+    { requireWrapper: false, ...mode },
     { prefix: "storm-effect-locals-test-" },
   ).code;
 }
@@ -24,7 +24,8 @@ describe("effect-aware non-adjacent locals pipeline", () => {
   test("is enabled by default for Stormworks and produces shorter valid Lua", () => {
     const disabled = minify(SOURCE, {
       runtimeProfile: "stormworks",
-      effectAwareTransforms: false,
+      localDeclarationHoisting: false,
+      tableReadMerging: false,
     });
     const enabled = minify(SOURCE, { runtimeProfile: "stormworks" });
 
@@ -38,7 +39,7 @@ describe("effect-aware non-adjacent locals pipeline", () => {
     expect(
       minify(SOURCE, {
         runtimeProfile: "stormworks",
-        effectAwareTransforms: false,
+        statementOptimizations: false,
       }),
     ).toBe(minify(SOURCE, { runtimeProfile: "lua53" }));
   });
@@ -47,7 +48,7 @@ describe("effect-aware non-adjacent locals pipeline", () => {
     const defaultLua = minify(SOURCE, { runtimeProfile: "lua53" });
     const optedInLua = minify(SOURCE, {
       runtimeProfile: "lua53",
-      allowLocalLifetimeChanges: true,
+      allowIntrospectionChanges: true,
     });
 
     expect(Buffer.byteLength(optedInLua)).toBeLessThan(
@@ -58,8 +59,8 @@ describe("effect-aware non-adjacent locals pipeline", () => {
   test("does not run the lifetime opt-in when the safe transform master is off", () => {
     const output = minify(SOURCE, {
       runtimeProfile: "lua53",
-      allowLocalLifetimeChanges: true,
-      effectAwareTransforms: false,
+      allowIntrospectionChanges: true,
+      statementOptimizations: false,
     });
 
     expect(output).toBe(minify(SOURCE, { runtimeProfile: "lua53" }));
@@ -70,7 +71,8 @@ describe("effect-aware non-adjacent locals pipeline", () => {
       "local first=f() local second=g() local third=h() use(first,second,third)";
     const disabled = minify(source, {
       runtimeProfile: "stormworks",
-      effectAwareTransforms: false,
+      localDeclarationHoisting: false,
+      tableReadMerging: false,
     });
     const enabled = minify(source, { runtimeProfile: "stormworks" });
 
@@ -83,12 +85,12 @@ describe("effect-aware non-adjacent locals pipeline", () => {
   test("table-read opt-out does not disable local hoisting", () => {
     const enabled = minify(SOURCE, {
       runtimeProfile: "stormworks",
-      effectAwareTableReads: false,
+      tableReadMerging: false,
     });
     const localDisabled = minify(SOURCE, {
       runtimeProfile: "stormworks",
-      effectAwareTableReads: false,
-      effectAwareLocalHoist: false,
+      tableReadMerging: false,
+      localDeclarationHoisting: false,
     });
 
     expect(Buffer.byteLength(enabled)).toBeLessThan(
@@ -102,7 +104,7 @@ describe("effect-aware non-adjacent locals pipeline", () => {
       const source = `local first=makeFirst() ${middle} local second=makeSecond() use(first,second)`;
       const disabled = minify(source, {
         runtimeProfile: "stormworks",
-        effectAwareLocalHoist: false,
+        localDeclarationHoisting: false,
       });
       const enabled = minify(source, { runtimeProfile: "stormworks" });
 
@@ -124,7 +126,7 @@ describe("effect-aware non-adjacent locals pipeline", () => {
     const source = `${declarations}\nuse(${names.join(",")})`;
     const disabled = minify(source, {
       runtimeProfile: "stormworks",
-      effectAwareTransforms: false,
+      statementOptimizations: false,
     });
     const enabled = minify(source, { runtimeProfile: "stormworks" });
 

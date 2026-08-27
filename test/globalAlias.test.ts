@@ -127,7 +127,7 @@ test("mode.neverRenameGlobals also protects a global from #8b aliasing, not just
     label: "mode.neverRenameGlobals also protects a global from #8b aliasing",
     fixture: "global-alias",
     mode: {
-      moduleLikeLua: false,
+      requireWrapper: false,
       neverRenameGlobals: new Set(["screen"]),
     },
   });

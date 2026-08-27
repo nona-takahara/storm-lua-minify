@@ -730,6 +730,7 @@ function collectPropagationCandidates(
 interface RewriteContext {
   readonly resolved: ResolveResult;
   readonly propagate: ReadonlyMap<Symbol, ConstantValue>;
+  readonly evaluateExpressions: boolean;
   changed: boolean;
 }
 
@@ -777,7 +778,7 @@ function rewriteExpression(
     case "BinaryExpression": {
       expr.left = rewriteExpression(expr.left, ctx);
       expr.right = rewriteExpression(expr.right, ctx);
-      const folded = tryFoldBinary(expr);
+      const folded = ctx.evaluateExpressions ? tryFoldBinary(expr) : undefined;
       if (folded) {
         ctx.changed = true;
         return folded;
@@ -787,7 +788,7 @@ function rewriteExpression(
     case "LogicalExpression": {
       expr.left = rewriteExpression(expr.left, ctx);
       expr.right = rewriteExpression(expr.right, ctx);
-      const folded = tryFoldLogical(expr);
+      const folded = ctx.evaluateExpressions ? tryFoldLogical(expr) : undefined;
       if (folded) {
         ctx.changed = true;
         return folded;
@@ -796,7 +797,7 @@ function rewriteExpression(
     }
     case "UnaryExpression": {
       expr.argument = rewriteExpression(expr.argument, ctx);
-      const folded = tryFoldUnary(expr);
+      const folded = ctx.evaluateExpressions ? tryFoldUnary(expr) : undefined;
       if (folded) {
         ctx.changed = true;
         return folded;
@@ -947,15 +948,27 @@ export function foldConstants(
   resolved: ResolveResult,
   metadata: SourceMetadata,
   facts: OptimizerFacts,
+  options: {
+    readonly evaluateExpressions?: boolean;
+    readonly propagateLocals?: boolean;
+  } = {},
 ): boolean {
   const reassigned = collectReassignedSymbols(facts);
-  const propagate = collectPropagationCandidates(
-    chunk.body,
+  const propagate =
+    options.propagateLocals === false
+      ? new Map<Symbol, ConstantValue>()
+      : collectPropagationCandidates(
+          chunk.body,
+          resolved,
+          metadata,
+          reassigned,
+        );
+  const ctx: RewriteContext = {
     resolved,
-    metadata,
-    reassigned,
-  );
-  const ctx: RewriteContext = { resolved, propagate, changed: false };
+    propagate,
+    evaluateExpressions: options.evaluateExpressions !== false,
+    changed: false,
+  };
   rewriteBlock(chunk.body, ctx);
   return ctx.changed;
 }

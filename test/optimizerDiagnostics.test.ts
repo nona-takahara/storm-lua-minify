@@ -76,7 +76,7 @@ describe("optimization diagnostics", () => {
       const { minifier } = minifyTemporaryLuaSource(
         source,
         {
-          moduleLikeLua: false,
+          requireWrapper: false,
           runtimeProfile: "stormworks",
           collectOptimizationDiagnostics: true,
         },
@@ -90,9 +90,9 @@ describe("optimization diagnostics", () => {
     const { minifier: luaMinifier } = minifyTemporaryLuaSource(
       fixtures[0],
       {
-        moduleLikeLua: false,
+        requireWrapper: false,
         runtimeProfile: "lua53",
-        allowLocalLifetimeChanges: true,
+        allowIntrospectionChanges: true,
         collectOptimizationDiagnostics: true,
       },
       {
@@ -139,7 +139,7 @@ describe("optimization diagnostics", () => {
       minifyLuaProject(
         project,
         {
-          moduleLikeLua: false,
+          requireWrapper: false,
           runtimeProfile: "stormworks",
           collectOptimizationDiagnostics,
         },

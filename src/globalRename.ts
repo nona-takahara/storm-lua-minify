@@ -14,7 +14,7 @@
 // この「代入されていれば内部用」というヒューリスティックだけでは、
 // エンジン側が特定の名前を探して呼び出す規約（コールバックエントリポイント）を
 // 誤ってリネームしてしまう危険がある。そのようなコールバック名は
-// `neverRename`（CLIの--reserved-globals-configで指定された設定ファイル由来）に
+// `neverRename`（configのnever-rename-globalsまたはCLI指定由来）に
 // 含めることで、代入の有無に関わらず常にリネーム対象から除外する。
 import { ResolveResult } from "./resolver";
 import { generateCandidate, isAvailable } from "./renamer";

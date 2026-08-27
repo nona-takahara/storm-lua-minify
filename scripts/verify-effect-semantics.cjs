@@ -116,7 +116,7 @@ print(result,table.concat(log,","))
   const code = new Minifier(
     entry,
     { luaVersion: "5.3" },
-    { moduleLikeLua: true, runtimeProfile: "stormworks" },
+    { requireWrapper: true, runtimeProfile: "stormworks" },
   )
     .parse()
     .toStringWithSourceMap({ file: path.basename(minifiedFile) }).code;
@@ -146,7 +146,7 @@ function verifyWholeProgramFieldFixture() {
   const code = new Minifier(
     entry,
     { luaVersion: "5.3" },
-    { moduleLikeLua: true, runtimeProfile: "stormworks" },
+    { requireWrapper: true, runtimeProfile: "stormworks" },
   )
     .parse()
     .toStringWithSourceMap({ file: path.basename(minifiedFile) }).code;
@@ -160,8 +160,8 @@ function verifyWholeProgramFieldFixture() {
   }
 }
 
-function verifyWholeProgramExportFixture(moduleLikeLua) {
-  const suffix = moduleLikeLua ? "module" : "inline";
+function verifyWholeProgramExportFixture(requireWrapper) {
+  const suffix = requireWrapper ? "module" : "inline";
   const fixtureDirectory = path.join(
     directory,
     `whole-program-exports-${suffix}`,
@@ -180,7 +180,7 @@ function verifyWholeProgramExportFixture(moduleLikeLua) {
     const code = new Minifier(
       entry,
       { luaVersion: "5.3" },
-      { moduleLikeLua, runtimeProfile: "stormworks" },
+      { requireWrapper, runtimeProfile: "stormworks" },
       undefined,
       undefined,
       undefined,
@@ -218,7 +218,7 @@ for key,value in pairs(source) do print(key,value) end
   const code = new Minifier(
     entry,
     { luaVersion: "5.3" },
-    { moduleLikeLua: false, runtimeProfile: "stormworks" },
+    { requireWrapper: false, runtimeProfile: "stormworks" },
   )
     .parse()
     .toStringWithSourceMap({ file: path.basename(minifiedFile) }).code;
@@ -240,7 +240,7 @@ try {
     const code = new Minifier(
       sourceFile,
       { luaVersion: "5.3" },
-      { moduleLikeLua: false, runtimeProfile: "stormworks" },
+      { requireWrapper: false, runtimeProfile: "stormworks" },
     )
       .parse()
       .toStringWithSourceMap({ file: path.basename(minifiedFile) }).code;

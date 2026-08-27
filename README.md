@@ -12,47 +12,99 @@ npm i storm-lua-minify
 npx storm-lua-minify script.lua
 ```
 
-- `-m`オプションを付加すると、モジュールの挙動をLuaの実際の挙動に近づけます
+- 既定では`require`/`dofile`先を呼び出し位置へ直接展開します。`-m` / `--require-wrapper`は、`require`を生成したfunction経由で展開する方式へ切り替えます。
 
-## 実行環境と効果解析最適化
+## v1オプション体系
 
-CLIはStormworks向けツールとして、`--runtime-profile stormworks`を既定にします。このprofileでは、非連続な`local`宣言やfresh tableの安定したreadを効果解析でまとめる、意味保存の最適化が既定で有効です。ライブラリAPIで`runtimeProfile`を省略した場合だけは、既存利用との互換性のため`lua53`として扱います。
+最適化オプションは、個別スイッチ、機能グループ、最上位の`optimizations`という階層を持ちます。すべてのboolean CLIスイッチに肯定形と否定形があります。
 
-| 実行環境          | 効果解析最適化の既定 | 変更方法                                                                 |
-| ----------------- | -------------------- | ------------------------------------------------------------------------ |
-| CLI / Stormworks  | 有効                 | 個別の`--no-*`、または`--no-effect-aware-transforms`で無効化             |
-| CLI / Lua 5.3     | 無効                 | `--runtime-profile lua53 --allow-local-lifetime-changes`で明示的に有効化 |
-| API / profile省略 | 無効                 | `runtimeProfile: "stormworks"`、またはLua用opt-inを指定                  |
+```console
+storm-lua-minify --function-optimizations --no-function-inlining script.lua
+storm-lua-minify --no-optimizations --local-renaming script.lua
+```
 
-純Luaでは`debug.getlocal`やdebug hookから`local`の生存期間を観測できるため、通常の計算結果が同じでも宣言位置の変更が観測され得ます。この差を許可する`--allow-local-lifetime-changes`はopt-inです。未知のcall、alias、escape、動的table key、変更可能なmetatableを安全だと仮定する最適化は、このオプションでは有効になりません。
+末端の明示値は同じ設定元の親より優先されます。設定元の優先順位はCLI、`--config`で指定したJSON、runtime・製品既定の順です。したがって、CLIの包括指定は設定ファイルの個別指定を上書きし、同じCLIに個別指定があれば個別指定が勝ちます。
 
-- `--runtime-profile <stormworks|lua53>`: 効果解析が前提とする実行環境を選びます。CLI既定は`stormworks`です
-- `--no-effect-aware-transforms`: 効果解析による最適化をすべて無効にします
-- `--no-effect-aware-local-hoist`: 非連続`local`宣言のまとめ上げだけを無効にします
-- `--no-effect-aware-table-reads`: fresh・nonescape tableの安定したreadのまとめ上げだけを無効にします
-- `--no-field-sensitive-table-effects`: tableの変更追跡をstatic key単位からtable全体へ戻します
-- `--allow-local-lifetime-changes`: Lua 5.3 profileで、debug APIから観測可能な`local`生存期間の変更を許可します
-- `--aggressive-table-read-merges`: tableへの変更を越えるreadも積極的なまとめ上げの対象にします（既定は無効）
-- `--assume-annotations`: 対応するEmmyLua annotationをoptimizer factの根拠として信頼します（既定は無効）
+```text
+CLI末端 → CLI直近の親 → CLI最上位
+→ config末端 → config直近の親 → config最上位
+→ 既定値
+```
 
-`-m` / `--module-like-lua`は`require`・`dofile`の出力方式を選ぶオプションであり、runtime profileとは独立です。
+設定ファイルはCLIと同じケバブケースの平坦なキーを使います。
 
-### local宣言まとめ上げの安全性境界
+```json
+{
+  "runtime-profile": "stormworks",
+  "function-optimizations": false,
+  "function-inlining": true,
+  "global-renaming": true,
+  "never-rename-globals": ["onTick", "onDraw"]
+}
+```
 
-| 分類                   | API / CLIオプション                                            | 既定                                | 変換例                                  |
-| ---------------------- | -------------------------------------------------------------- | ----------------------------------- | --------------------------------------- |
-| 純Luaで意味保存        | `mergeLocals` / `--no-merge-locals`                            | 有効（opt-out）                     | 独立した連続localを1文へ結合            |
-| Stormworksで意味保存   | `effectAwareLocalHoist` / `--no-effect-aware-local-hoist`      | Stormworks profileで有効（opt-out） | 依存するinitializerを元位置の代入へ分離 |
-| Stormworksでも意味変更 | `aggressiveTableReadMerges` / `--aggressive-table-read-merges` | 無効（opt-in）                      | dirtyなtable readを変更より前へ移動     |
-| source上の明示的仮定   | `assumeAnnotations` / `--assume-annotations`                   | 無効（opt-in）                      | EmmyLua由来のconstructor field fact     |
+```console
+storm-lua-minify --config storm-lua-minify.json --no-function-inlining script.lua
+```
 
-2段目はlocalの生存期間を早めるため、`debug.getlocal`等を持つ純Luaでは既定で無効です。3段目は実際に読む値が変わり得ます。出力サイズを優先し、その違いを受け入れられるコードでだけ指定してください。
+### 最適化階層
 
-### 関数rewrite
+| 包括スイッチ               | 個別スイッチ                                                                                                     |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `optimizations`            | 以下の全機能グループ                                                                                             |
+| `identifier-optimizations` | `local-renaming`, `local-name-reuse`, `global-renaming`, `field-renaming`, `global-aliasing`                     |
+| `statement-optimizations`  | `local-declaration-merging`, `local-declaration-hoisting`, `table-read-merging`, `field-sensitive-table-effects` |
+| `constant-optimizations`   | `constant-expression-evaluation`, `local-constant-propagation`, `interprocedural-constant-propagation`           |
+| `function-optimizations`   | `parameter-pruning`, `function-inlining`, `function-specialization`                                              |
+| `object-optimizations`     | `field-value-propagation`                                                                                        |
+| `dead-code-optimizations`  | `unused-code-removal`, `unused-export-removal`                                                                   |
+| `unused-code-removal`      | `unused-local-removal`, `unused-function-removal`, `unused-field-initializer-removal`                            |
 
-解決可能なlocal関数について、末尾の未使用parameter削除、single-use関数のinline、到達不能なlocal関数の削除を共通call graph・function summary上で行います。inlineで複製するparameter・local・labelはResolveのsymbol単位でalpha conversionし、呼び出し側の同名bindingによるcaptureを防ぎます。実引数は元の順序と回数で評価し、複数戻り値と末尾展開はLuaの代入・return規則を保ちます。再帰、escape、複数call、vararg、未知のcall target、証明できないupvalue/closureは保守的に拒否します。
+`global-renaming`と三つの定数最適化は既定で無効です。それ以外の実装済み末端最適化は既定で有効ですが、安全性の条件を満たさない候補は実行されません。
 
-関数inlineはstack frameやparameter数をdebug APIから観測できるため、`stormworks` profileでは既定で有効、`lua53` profileでは`--allow-local-lifetime-changes`を明示した場合だけ有効です。関数rewriteあり／なしはschedulerとは別の隔離された`Minifier`で最終Rename／Printまで比較し、関数rewrite単独で出力が厳密に短くなる場合だけ採用します。Source Mapは、inlineした本体を元の関数本体へ、埋め込んだ実引数を元のcall siteへ対応付けます。
+### 切り離しの判断基準
+
+個別スイッチは、実装上の関数の数ではなく、利用者が別々に許可・拒否したい意味変化を境界にします。同じ解析や変換パスを共有していても、次のいずれかが異なるなら別スイッチにします。
+
+- 式や文の評価順・評価回数を変えるか
+- metatable、debug API、外部から保持されたtableやglobal名を通じて変化を観測できるか
+- 一つのファイル内の事実だけで判断できるか、リンクされた全モジュールの仮定が必要か
+- 変換そのものを選ぶ設定か、変換を安全とみなすための仮定か
+
+現在の末端スイッチは、この基準で次のように分けています。
+
+| 変換単位                                                            | 主な境界                                                                                                                                 |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `local-renaming`, `global-renaming`, `field-renaming`               | local、global、fieldでは名前を外部から観測する経路が異なる。globalとfieldはリンクされた全モジュールを調べる                              |
+| `local-name-reuse`                                                  | 名前を短くすることとは別に、異なる生存期間で同じ名前を再利用する。debug introspectionからの観測条件を持つ                                |
+| `global-aliasing`                                                   | global名自体の変更ではなく、localへの読取りを追加する。alias宣言を後続の文結合より先に実行する                                           |
+| `local-declaration-merging`                                         | 隣接宣言を一つの並列代入へ変える。初期化式の評価順と束縛前参照を保存できる候補に限る                                                     |
+| `local-declaration-hoisting`                                        | 離れた宣言を移動するため、localの生存期間と文の実行順を変え得る                                                                          |
+| `table-read-merging`                                                | table readをwriteの前後で移動し得る。値の観測可能性は`allow-observable-table-read-changes`で別に許可する                                 |
+| `field-sensitive-table-effects`                                     | 変換の有無ではなく、table全体かstatic field単位かというwrite影響範囲の精度を選ぶ                                                         |
+| `constant-expression-evaluation`                                    | リテラルだけの演算を先に計算する。metamethodや暗黙の文字列数値変換を伴う式は対象にせず、実行順を変えても新しい効果が生じない範囲に閉じる |
+| `local-constant-propagation`                                        | 定数式の計算とは別に、local宣言を参照先へ伝搬する。宣言の削除やdebugからの観測が異なる                                                   |
+| `interprocedural-constant-propagation`                              | 関数要約を介してモジュール内外へ定数を伝えるため、局所伝搬と分ける                                                                       |
+| `parameter-pruning`, `function-inlining`, `function-specialization` | 引数評価を残してparameterだけ減らす、呼出しを本体へ置換する、複数呼出しを集約して専用化する、という実行構造の違いで分ける                |
+| `field-value-propagation`                                           | 全モジュールのconstructorとescapeを解析し、安定したfield readを値へ置換する                                                              |
+| `unused-local-removal`, `unused-function-removal`                   | 同じ未使用解析を使っても、値宣言とfunction宣言では削除対象・観測経路が異なる                                                             |
+| `unused-field-initializer-removal`, `unused-export-removal`         | 前者はconstructor field、後者はentryから到達不能なexportを全プログラム解析で削除する。initializerの効果は残す                            |
+
+新しい変換を追加するときは、まず既存の末端スイッチと上記の境界が一致するかを確認します。一致する場合はその変換単位へ挿入し、異なる仮定や観測経路を持つ場合は新しい末端スイッチを作ります。単に同じファイルへ実装されていることは、スイッチをまとめる理由にしません。
+
+### 実行環境と仮定
+
+CLIの`runtime-profile`は`stormworks`が既定です。ライブラリAPIで省略した場合は`lua53`として扱います。
+
+- `--allow-introspection-changes`: local名・生存期間、parameter、stack frameなどdebug APIから観測できる変更を許可します。
+- `--allow-observable-table-read-changes`: writeを越えるtable read移動によって値が変わり得る候補を許可します。
+- `--assume-annotations`: 対応するEmmyLua annotationをoptimizer factの根拠として信頼します。
+
+これらは最適化階層の外にあります。`--optimizations`を指定しても暗黙には有効になりません。localの生存期間・再利用やstack frameを変える変換のうち安全性条件にこの仮定を使うものは、`lua53` profileでは`--allow-introspection-changes`を指定した場合だけ実行されます。
+
+`require-wrapper`も最適化階層とは別枠です。これは最適化の強弱ではなく、モジュールの展開方式を選びます。既定では呼び出し位置へ直接展開し、`-m`または`--require-wrapper`では生成したrequire functionを経由して展開します。`--no-optimizations`はこの方式を変更しません。短縮名`-m`とその挙動は維持しますが、旧長名`--module-like-lua`を含む旧オプションには互換別名を設けません。
+
+関数inlineでは実引数の評価順と回数、複数戻り値、binding identityを保存します。再帰、escape、vararg、未知のcall target、証明できないclosureは拒否され、最終Rename・Print後に短くなるtrialだけが採用されます。
 
 # Source Map
 
@@ -62,13 +114,13 @@ CLIはStormworks向けツールとして、`--runtime-profile stormworks`を既�
 
 出力される `.min.lua` の末尾に付く `sourceMappingURL` アノテーションの書式は、3種類から選べます。
 
-| オプション                         | 書式                                        | 特徴                                                                                                                                                       |
-| ---------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| （既定）                           | 複数行の `--[[`〜`]]` ブロックコメント      | 過去のバージョンと同じ出力。既存ツールとの互換性を優先する場合はこのまま使う                                                                               |
-| `--single-line-source-mapping-url` | 単一行の `--` ラインコメント                | 有効なLuaのまま、Source Map仕様が定める「アノテーションは生成コードの最終行に置く」という規則を満たす                                                      |
-| `--strict-source-mapping-url`      | Luaコメントで包まないマーカー文字列そのまま | 規則を厳密に満たすが、出力ファイルの最終行は有効なLua文ではなくなる（Lua文法上、`//`から始まる行をコメント化なしに構文解析可能にする方法は存在しないため） |
+| `--source-mapping-url-style` | 書式                                   | 特徴                                              |
+| ---------------------------- | -------------------------------------- | ------------------------------------------------- |
+| `legacy`（既定）             | 複数行の `--[[`〜`]]` ブロックコメント | 従来形式                                          |
+| `line`                       | 単一行の `--` ラインコメント           | 有効なLuaのままSource Map仕様の最終行規則を満たす |
+| `strict`                     | Luaコメントで包まないマーカー文字列    | 最終行は有効なLua文ではなくなる                   |
 
-「最終行に置く」規則を厳密な前提とするツール（生成コードの末尾だけを見て `sourceMappingURL` を解決する実装など）と組み合わせる場合は、`--single-line-source-mapping-url` を試してください。
+「最終行に置く」規則を前提とするツールと組み合わせる場合は、`--source-mapping-url-style line`を指定してください。
 
 ## sourcesContent
 
@@ -78,25 +130,13 @@ CLIはStormworks向けツールとして、`--runtime-profile stormworks`を既�
 
 識別子・リテラル・式などASTノードに対応する出力は、それぞれ元ソース上の対応する位置に正確にマッピングされます。加えて、`then`/`elseif`/`else`/`end`/`do`/`until` といった、AST上では文・式の境界としてしか位置を持たないキーワードについても、それぞれが実際に出現する位置に個別にマッピングされます（例: `if`〜`then`〜`end` の `then` と `end` は、`if` とは別の、それぞれ自身の出現位置を持ちます）。トークン単位で対応関係を表示するビューアと組み合わせる際は、この粒度でのマッピングが利用されます。
 
-## 識別子短縮関連のオプション
+## 識別子短縮
 
-Luaコード内で完結し、意味論を変更しない最適化は既定で有効です。グローバル識別子の短縮だけは、Luaコード外からの名前による参照を静的に判定できないため、明示的に有効化した場合だけ行います。
-
-- `--no-rename`: すべての識別子短縮を無効にします
-- `--no-merge-locals`: 連続する`local`変数宣言のまとめ上げを無効にします
-- `--global-rename`: 代入されているグローバル識別子をスクリプト内部用とみなし、短縮を有効にします
-- `--no-global-alias`: 短縮できない外部グローバル識別子（`screen`など、代入されず参照のみされるもの）を、頻出する場合にローカル変数へ代入して短縮する最適化を無効にします
-- `--no-remove-unused`: 未使用ローカル宣言の安全な範囲での削除を無効にします
-- `--no-remove-unused-globals`: 将来追加する未使用グローバル削除だけを無効にします（ローカル削除は続けます）
-- `--reserved-globals-config <path>`: `{"neverRenameGlobals": ["name", ...]}`形式のJSONファイルを指定し、**代入されていても常にリネームしないグローバル名**を列挙します
-
-ローカル識別子は、CFGのlivenessから作る干渉グラフを重み付きでcoloringし、同時に生きないlocal・parameter・for変数へ同じ短名を再利用します。branch join、loop back-edge、upvalue capture、字句shadowingを考慮し、割当後には全参照を再Resolveして元と同じ宣言へ結び付くことを検証します。`stormworks` profileではdebug APIによるlocal lifetime観測がないため同一scope内でも再利用します。`lua53` profileでは既定で同一scope内の再利用を抑止し、`--allow-local-lifetime-changes`を明示した場合だけ有効にします。`--@storm keep-name`、予約global、module splice、Source Map上の元identifier名は従来どおり維持されます。
+local名短縮と、生存期間が重ならないlocalへの名前再利用は別スイッチです。後者は`lua53` profileでは`--allow-introspection-changes`も必要です。グローバル名短縮はLuaコード外からの参照を静的に判定できないため、既定では無効です。保護名は設定ファイルの`never-rename-globals`、またはCLIの`--never-rename-global <name...>`で指定します。
 
 ## 定数の事前計算と定数伝搬（opt-in）
 
-`--fold-constants`を指定すると、定数式の事前計算（例: `1+2`を`3`に）と、再代入されない定数ローカル変数の伝搬（例: `local x=1 print(x)`を`print(1)`に）を行います。上記の識別子短縮関連のオプションと違い、**このオプションは既定では無効**です（指定しない限り、このパスは一切実行されません）。
-
-- `--fold-constants`: 定数式の事前計算と、定数ローカル変数の伝搬を有効にします（既定では無効）
+`--constant-expression-evaluation`は`1+2`のような閉じた定数式を評価します。`--local-constant-propagation`は再代入されない定数localを参照先へ伝搬し、`--interprocedural-constant-propagation`は純粋な関数summaryからcall結果を伝搬します。いずれも既定では無効で、`--constant-optimizations`によりまとめて有効化できます。
 
 対象は、算術・比較・連結・論理演算（`and`／`or`／`not`）・ビット演算・長さ演算子（`#`）です。畳み込んでもプログラムの意味は変わりません。整数と浮動小数点数の区別も保たれ、`3/1`は`3`ではなく`3.0`になります（Luaの`/`は常に浮動小数点数を返すため）。
 
@@ -122,11 +162,11 @@ Luaコード内で完結し、意味論を変更しない最適化は既定で�
 
 EmmyLuaの`class`／継承、`field`、`param`／`return`／`type`、`alias`／`enum`は`SourceMetadata`へ関連付けられ、constructor field解析の候補になります。通常は候補の発見とdiagnosticsにだけ使われ、変換の根拠にはなりません。`--assume-annotations`（APIでは`assumeAnnotations: true`）を明示した場合だけ、対応subsetのliteral factがコード由来factと同じ失効規則の下で変換へ参加します。再代入、未知call、alias escape、動的key、metatable変更、またはコードとannotationの矛盾が見つかったfieldはunknownへ戻ります。`---@diagnostic`など他のdirectiveは通常のsource metadataとして保持され、optimizer factにはなりません。
 
-### ⚠️ `--reserved-globals-config` について（重要）
+### ⚠️ `--global-renaming` について（重要）
 
-`--global-rename`を有効にすると、このツールは「プログラム中のどこかで代入されているグローバル名」を内部専用とみなしてリネームします。これは通常のスクリプト内部の状態変数には安全ですが、**実行環境（エンジンなど）が特定の名前のグローバル関数・変数を探して呼び出す規約がある場合、その名前を誤ってリネームしてしまうと、静かに（エラーなく）呼び出されなくなるバグになります**。
+`--global-renaming`を有効にすると、このツールは「プログラム中のどこかで代入されているグローバル名」を内部専用とみなしてリネームします。これは通常のスクリプト内部の状態変数には安全ですが、**実行環境が特定名のグローバルを探す場合、その名前を誤って変更すると静かに呼び出されなくなります**。
 
-そのような規約（例: Stormworksのマイクロコントローラーでエンジン側が呼び出す特定名のコールバック関数など）が対象のスクリプトにある場合は、`--global-rename`を指定しないか、`--reserved-globals-config`でその名前を保護対象として指定してください。
+そのような規約がある場合は`global-renaming`を無効にするか、保護する名前を`never-rename-globals`へ列挙してください。
 
 # 開発・テスト
 

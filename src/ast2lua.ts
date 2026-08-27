@@ -491,7 +491,7 @@ export class MinifyFile {
   private trySpliceRequireStatement(
     statement: Parser.LocalStatement | Parser.AssignmentStatement,
   ): SourceNode | undefined {
-    if (this.mode.moduleLikeLua) {
+    if (this.mode.requireWrapper) {
       return undefined;
     }
     if (statement.variables.length !== 1 || statement.init.length !== 1) {
@@ -538,7 +538,7 @@ export class MinifyFile {
       | Parser.StringCallExpression
       | Parser.TableCallExpression,
   ): SourceNode | undefined {
-    if (this.mode.moduleLikeLua) {
+    if (this.mode.requireWrapper) {
       return undefined;
     }
     const moduleRef = this.matchModuleCallExpression(expr);
@@ -1106,7 +1106,7 @@ export class MinifyFile {
       return this.minifier.printModuleInline(ref.moduleName);
     }
 
-    if (!this.mode.moduleLikeLua) {
+    if (!this.mode.requireWrapper) {
       // SLモード（無オプション）: requireもキャッシュせずその場展開する
       // （挙動互換性のため、ホイストした共有ローカルへの参照にはしない）。
       // 式の位置に置けるようにIIFEで包む。

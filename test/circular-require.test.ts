@@ -10,7 +10,7 @@ test("circular require is rejected with a clear error", () => {
   const minifier = new Minifier(
     fixtureEntryPath("circular-require"),
     LUAPARSE_SETTINGS,
-    { moduleLikeLua: true },
+    { requireWrapper: true },
   );
   assert.throws(
     () => minifier.parse(),

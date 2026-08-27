@@ -10,12 +10,12 @@ use(second)
 `;
 
 const BASE_MODE = {
-  moduleLikeLua: false,
-  mergeLocals: false,
-  effectAwareLocalHoist: false,
-  effectAwareTableReads: false,
-  globalAlias: false,
-  removeUnused: false,
+  requireWrapper: false,
+  localDeclarationMerging: false,
+  localDeclarationHoisting: false,
+  tableReadMerging: false,
+  globalAliasing: false,
+  unusedCodeRemoval: false,
 } as const;
 
 describe("liveness-based identifier coloring", () => {
@@ -72,7 +72,7 @@ describe("liveness-based identifier coloring", () => {
     const optedIn = minifyTemporaryLuaSource(SOURCE, {
       ...BASE_MODE,
       runtimeProfile: "lua53",
-      allowLocalLifetimeChanges: true,
+      allowIntrospectionChanges: true,
     });
 
     expect(preserved.code.replaceAll("\n", " ")).toBe(
@@ -89,10 +89,11 @@ describe("liveness-based identifier coloring", () => {
         ...fixture,
         mode: {
           ...fixture.mode,
-          mergeLocals: false,
-          effectAwareTransforms: false,
-          globalAlias: false,
-          removeUnused: false,
+          localDeclarationMerging: false,
+          optimizations: false,
+          identifierOptimizations: true,
+          globalAliasing: false,
+          unusedCodeRemoval: false,
         },
       };
       const colored = runMinifier({

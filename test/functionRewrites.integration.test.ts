@@ -9,15 +9,15 @@ local function first(value,unused) return value end
 return first(1,sideEffect())
 `;
     const optimized = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
-      mergeLocals: false,
+      localDeclarationMerging: false,
     }).code;
     const baseline = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
-      mergeLocals: false,
-      effectAwareTransforms: false,
+      localDeclarationMerging: false,
+      functionOptimizations: false,
     }).code;
 
     expect(optimized).toContain("sideEffect()");
@@ -30,19 +30,19 @@ return first(1,sideEffect())
     const source =
       "local function first(value,unused)return value end return first(1,2)";
     const preserved = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "lua53",
-      mergeLocals: false,
-      effectAwareLocalHoist: false,
-      effectAwareTableReads: false,
+      localDeclarationMerging: false,
+      localDeclarationHoisting: false,
+      tableReadMerging: false,
     }).code;
     const allowed = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "lua53",
-      allowLocalLifetimeChanges: true,
-      mergeLocals: false,
-      effectAwareLocalHoist: false,
-      effectAwareTableReads: false,
+      allowIntrospectionChanges: true,
+      localDeclarationMerging: false,
+      localDeclarationHoisting: false,
+      tableReadMerging: false,
     }).code;
 
     expect(allowed.length).toBeLessThan(preserved.length);
@@ -52,14 +52,14 @@ return first(1,sideEffect())
     const source =
       "local function choose(enabled,value)if enabled then return value end return 0 end return choose(true,1)+choose(true,2)+choose(true,3)";
     const preserved = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "lua53",
       collectOptimizationDiagnostics: true,
     });
     const allowed = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "lua53",
-      allowLocalLifetimeChanges: true,
+      allowIntrospectionChanges: true,
       collectOptimizationDiagnostics: true,
     });
     expect(
@@ -79,9 +79,9 @@ return first(1,sideEffect())
     const source =
       "local function compute()return external()+1 end return compute()";
     const optimized = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
-      mergeLocals: false,
+      localDeclarationMerging: false,
     }).code;
 
     expect(optimized).toContain("external()+1");
@@ -92,9 +92,9 @@ return first(1,sideEffect())
     const source =
       "local function run() first() globalValue=second() end run()";
     const optimized = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
-      mergeLocals: false,
+      localDeclarationMerging: false,
     }).code;
 
     expect(optimized).toContain("first()globalValue=second()");
@@ -105,10 +105,10 @@ return first(1,sideEffect())
     const source =
       "local function add(value,amount)return value+amount end return add(40,2)";
     const optimized = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
-      mergeLocals: false,
-      foldConstants: true,
+      localDeclarationMerging: false,
+      constantOptimizations: true,
     }).code;
 
     expect(optimized).not.toContain("function");
@@ -119,9 +119,9 @@ return first(1,sideEffect())
     const source =
       "local function run(first,second)local sum=first+second publish(sum)end run(makeFirst(),makeSecond())";
     const optimized = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
-      mergeLocals: false,
+      localDeclarationMerging: false,
     }).code;
 
     expect(optimized.indexOf("makeFirst()")).toBeLessThan(
@@ -135,9 +135,9 @@ return first(1,sideEffect())
     const source =
       "local function pair(value)local next=value+1 if flag then return value,next end return next,value end return pair(make())";
     const optimized = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
-      mergeLocals: false,
+      localDeclarationMerging: false,
     }).code;
 
     expect(optimized).not.toContain("function");
@@ -148,7 +148,7 @@ return first(1,sideEffect())
   test("deletes unreachable local functions through the shared unused pass", () => {
     const source = "local function unreachable() publish() end return 1";
     const result = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
       collectOptimizationDiagnostics: true,
     });
@@ -174,7 +174,7 @@ local function variadic(...) return ... end
 return recursive(true),variadic(1)
 `;
     const result = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
       collectOptimizationDiagnostics: true,
     });
@@ -206,9 +206,9 @@ return recursive(true),variadic(1)
       "return compute()",
     ].join("\n");
     const result = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
-      mergeLocals: false,
+      localDeclarationMerging: false,
     });
     const offset = result.code.indexOf("external");
     expect(offset).toBeGreaterThanOrEqual(0);
@@ -230,9 +230,9 @@ return recursive(true),variadic(1)
     const result = minifyTemporaryLuaSource(
       "local function run(value)publish(value)end run(make())",
       {
-        moduleLikeLua: false,
+        requireWrapper: false,
         runtimeProfile: "stormworks",
-        mergeLocals: false,
+        localDeclarationMerging: false,
         collectOptimizationDiagnostics: true,
       },
     );
@@ -252,10 +252,10 @@ end
 return choose(true,1,9)+choose(true,2,9)+choose(true,3,9)+choose(true,4,9)
 `;
     const result = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
-      mergeLocals: false,
-      foldConstants: true,
+      localDeclarationMerging: false,
+      constantOptimizations: true,
       collectOptimizationDiagnostics: true,
     });
     expect(result.minifier.optimizationDiagnostics).toContainEqual(
@@ -283,10 +283,10 @@ end
 return choose(true,1)+choose(true,2)+choose(true,3)+choose(flag,4)
 `;
     const result = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
-      mergeLocals: false,
-      foldConstants: true,
+      localDeclarationMerging: false,
+      constantOptimizations: true,
       collectOptimizationDiagnostics: true,
     });
     expect(result.minifier.optimizationDiagnostics).toContainEqual(
@@ -309,9 +309,9 @@ end
 return choose(true,1)+choose(true,2)+choose(true,3)
 `;
     const result = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
-      mergeLocals: false,
+      localDeclarationMerging: false,
       collectOptimizationDiagnostics: true,
     });
     expect(result.minifier.optimizationDiagnostics).toContainEqual(
@@ -333,9 +333,9 @@ return choose(true,1)+choose(true,2)+choose(true,3)
       "return choose(true)+choose(true)+choose(true)",
     ].join("\n");
     const result = minifyTemporaryLuaSource(source, {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
-      mergeLocals: false,
+      localDeclarationMerging: false,
       collectOptimizationDiagnostics: true,
     });
     const offset = result.code.indexOf("external");

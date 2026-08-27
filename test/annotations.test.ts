@@ -7,7 +7,11 @@ test("annotations protect declarations and preserved comments stay near their st
   const { code } = runMinifier({
     label: "annotations",
     fixture: "annotations",
-    mode: { moduleLikeLua: false, mergeLocals: false, globalAlias: false },
+    mode: {
+      requireWrapper: false,
+      localDeclarationMerging: false,
+      globalAliasing: false,
+    },
   });
   assert.match(code, /--# file header\nfunction\nonTick/);
   assert.match(code, /local\ndescriptive=2/);
@@ -23,9 +27,9 @@ test("annotation and configured global-name protection are combined", () => {
     label: "annotation and config protection",
     fixture: "annotations",
     mode: {
-      moduleLikeLua: false,
-      mergeLocals: false,
-      globalAlias: false,
+      requireWrapper: false,
+      localDeclarationMerging: false,
+      globalAliasing: false,
       neverRenameGlobals: new Set(["configuredGlobal"]),
     },
   });
@@ -35,9 +39,9 @@ test("annotation and configured global-name protection are combined", () => {
 
 test("global rename is disabled by default and enabled only by explicit opt-in", () => {
   const commonMode = {
-    moduleLikeLua: false,
-    mergeLocals: false,
-    globalAlias: false,
+    requireWrapper: false,
+    localDeclarationMerging: false,
+    globalAliasing: false,
   } as const;
   const defaultResult = runMinifier({
     label: "global rename default",
@@ -47,22 +51,22 @@ test("global rename is disabled by default and enabled only by explicit opt-in",
   const optedInResult = runMinifier({
     label: "global rename opt-in",
     fixture: "annotations",
-    mode: { ...commonMode, globalRename: true },
+    mode: { ...commonMode, globalRenaming: true },
   });
 
   assert.match(defaultResult.code, /configuredGlobal=4/);
   assert.doesNotMatch(optedInResult.code, /configuredGlobal/);
 });
 
-test("removeUnused false preserves otherwise removable locals", () => {
+test("unusedCodeRemoval false preserves otherwise removable locals", () => {
   const { code } = runMinifier({
     label: "annotations no removal",
     fixture: "annotations",
     mode: {
-      moduleLikeLua: false,
-      removeUnused: false,
-      mergeLocals: false,
-      globalAlias: false,
+      requireWrapper: false,
+      unusedCodeRemoval: false,
+      localDeclarationMerging: false,
+      globalAliasing: false,
     },
   });
   assert.match(code, /local\n[a-zA-Z_]=3/);
@@ -73,10 +77,9 @@ test("disabling future global removal does not disable local removal", () => {
     label: "annotations local removal",
     fixture: "annotations",
     mode: {
-      moduleLikeLua: false,
-      removeUnusedGlobals: false,
-      mergeLocals: false,
-      globalAlias: false,
+      requireWrapper: false,
+      localDeclarationMerging: false,
+      globalAliasing: false,
     },
   });
   assert.doesNotMatch(code, /unused/);

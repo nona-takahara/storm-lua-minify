@@ -7,12 +7,12 @@ test("必須空白は既定でLFになり、半角スペースへ切り替えて
   const lineFeed = runMinifier({
     label: "required whitespace LF",
     fixture: "single-file",
-    mode: { moduleLikeLua: false },
+    mode: { requireWrapper: false },
   }).code;
   const space = runMinifier({
     label: "required whitespace space",
     fixture: "single-file",
-    mode: { moduleLikeLua: false, requiredWhitespace: " " },
+    mode: { requireWrapper: false, requiredWhitespace: " " },
   }).code;
 
   assert.match(lineFeed, /local\nfunction/);
@@ -26,12 +26,12 @@ test("AST化したrequireラッパーにも同じ必須空白ポリシーを適�
   const lineFeed = runMinifier({
     label: "require wrapper LF",
     fixture: "require-call",
-    mode: { moduleLikeLua: true },
+    mode: { requireWrapper: true },
   }).code;
   const space = runMinifier({
     label: "require wrapper space",
     fixture: "require-call",
-    mode: { moduleLikeLua: true, requiredWhitespace: " " },
+    mode: { requireWrapper: true, requiredWhitespace: " " },
   }).code;
 
   assert.match(lineFeed, /^function\nrequire\(m,r\)/);
