@@ -200,6 +200,13 @@ export function analyzeWholeProgramObjects(
     } else if (expression.type === "CallExpression") {
       const required = staticRequiredModule(expression);
       if (required) result = new Set(moduleReturns.get(required) ?? []);
+    } else if (expression.type === "LogicalExpression") {
+      directValues(expression.left, module).forEach((object) => {
+        result.add(object);
+      });
+      directValues(expression.right, module).forEach((object) => {
+        result.add(object);
+      });
     }
     valuesOfExpression.set(expression, result);
     return result;
@@ -436,9 +443,16 @@ export function analyzeWholeProgramObjects(
         if (factoryCopyAssignments.has(statement)) return;
         statement.variables.forEach((target) => {
           if (target.type === "IndexExpression") {
-            directValues(target.base, module).forEach((object) =>
-              object.invalidationReasons.add("dynamic-key"),
-            );
+            const key = staticStringArgument(target.index);
+            if (key === undefined)
+              directValues(target.base, module).forEach((object) =>
+                object.invalidationReasons.add("dynamic-key"),
+              );
+            else
+              directValues(target.base, module).forEach((object) => {
+                if (object.methods.has(key))
+                  object.invalidationReasons.add("method-field-mutation");
+              });
           } else if (target.type === "MemberExpression") {
             if (methodDefinitions.has(target)) return;
             directValues(target.base, module).forEach((object) => {

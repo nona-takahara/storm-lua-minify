@@ -39,6 +39,7 @@
     "report:whole-program-objects": "pnpm run build && node scripts/report-whole-program-objects.cjs",
     "report:whole-program-fields": "pnpm run build && node scripts/report-whole-program-fields.cjs",
     "report:aggregate-specialization": "pnpm run build && node scripts/report-aggregate-specialization.cjs",
+    "report:whole-program-exports": "pnpm run build && node scripts/report-whole-program-exports.cjs",
     "verify:effect-semantics": "pnpm run build && node scripts/verify-effect-semantics.cjs",
     "prepack": "pnpm run build"
   },

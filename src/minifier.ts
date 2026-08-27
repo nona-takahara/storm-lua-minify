@@ -56,6 +56,11 @@ import {
   WholeProgramFieldAnalysis,
 } from "./wholeProgramFields";
 import { applyAggregateSpecialization } from "./aggregateSpecialization";
+import {
+  analyzeWholeProgramExports,
+  applyWholeProgramExportDce,
+  WholeProgramExportAnalysis,
+} from "./wholeProgramExports";
 
 export type { RuntimeProfile } from "./runtimeEnvironment";
 
@@ -147,9 +152,12 @@ export class Minifier {
   private readonly functionRewriteVariant?: "baseline" | "trial";
   private readonly fieldFactVariant?: "baseline" | "trial";
   private readonly aggregateSpecializationVariant?: "baseline" | "trial";
+  private readonly exportDceVariant?: "baseline" | "trial";
   private linkedAstGeneration = 0;
   private wholeProgramObjectsValue?: WholeProgramObjectAnalysis;
   private wholeProgramFieldsValue?: WholeProgramFieldAnalysis;
+  private wholeProgramExportsValue?: WholeProgramExportAnalysis;
+  private exportDceChanged = false;
 
   constructor(
     entryFilePath: string,
@@ -159,11 +167,13 @@ export class Minifier {
     functionRewriteVariant?: "baseline" | "trial",
     fieldFactVariant?: "baseline" | "trial",
     aggregateSpecializationVariant?: "baseline" | "trial",
+    exportDceVariant?: "baseline" | "trial",
   ) {
     this.schedulerVariant = schedulerVariant;
     this.functionRewriteVariant = functionRewriteVariant;
     this.fieldFactVariant = fieldFactVariant;
     this.aggregateSpecializationVariant = aggregateSpecializationVariant;
+    this.exportDceVariant = exportDceVariant;
     this.entryFilePath = entryFilePath;
     this.identifiersInUse = new Set<string>();
     this.moduleSourceText = new Map<string, string>();
@@ -198,7 +208,14 @@ export class Minifier {
     return this.wholeProgramFieldsValue;
   }
 
+  get wholeProgramExports(): WholeProgramExportAnalysis | undefined {
+    return this.wholeProgramExportsValue;
+  }
+
   parse(): SourceNode {
+    if (this.exportDceVariant === undefined && this.exportDceEnabled()) {
+      return this.parseWithExportDceSelection();
+    }
     if (this.fieldFactVariant === undefined && this.fieldFactsEnabled()) {
       return this.parseWithFieldFactSelection();
     }
@@ -223,6 +240,69 @@ export class Minifier {
     return this.parseOnce();
   }
 
+  private parseWithExportDceSelection(): SourceNode {
+    let trialMinifier: Minifier;
+    let trial: SourceNode;
+    try {
+      trialMinifier = new Minifier(
+        this.entryFilePath,
+        this.luaParseSettings,
+        this.mode,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "trial",
+      );
+      trial = trialMinifier.parse();
+    } catch {
+      const baselineMinifier = new Minifier(
+        this.entryFilePath,
+        this.luaParseSettings,
+        this.mode,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "baseline",
+      );
+      const baseline = baselineMinifier.parse();
+      this.copyDiagnosticsFrom(baselineMinifier);
+      this.recordFinalExportDceDecision("rejected", "trial-failed");
+      return this.adoptVariant(baselineMinifier, baseline);
+    }
+    if (!trialMinifier.exportDceChanged) {
+      this.copyDiagnosticsFrom(trialMinifier);
+      this.recordFinalExportDceDecision("rejected", "final-output-not-shorter");
+      return this.adoptVariant(trialMinifier, trial);
+    }
+    const baselineMinifier = new Minifier(
+      this.entryFilePath,
+      this.luaParseSettings,
+      this.mode,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "baseline",
+    );
+    const baseline = baselineMinifier.parse();
+    const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
+    const trialBytes = new TextEncoder().encode(trial.toString()).length;
+    if (trialBytes >= baselineBytes) {
+      this.copyDiagnosticsFrom(trialMinifier);
+      this.recordFinalExportDceDecision("rejected", "final-output-not-shorter");
+      return this.adoptVariant(baselineMinifier, baseline);
+    }
+    this.copyDiagnosticsFrom(trialMinifier);
+    this.recordFinalExportDceDecision(
+      "accepted",
+      "final-output-shorter",
+      baselineBytes - trialBytes,
+    );
+    return this.adoptVariant(trialMinifier, trial);
+  }
+
   private parseWithFieldFactSelection(): SourceNode {
     const baselineMinifier = new Minifier(
       this.entryFilePath,
@@ -232,6 +312,7 @@ export class Minifier {
       undefined,
       "baseline",
       this.aggregateSpecializationVariant,
+      this.exportDceVariant,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -246,6 +327,7 @@ export class Minifier {
         undefined,
         "trial",
         this.aggregateSpecializationVariant,
+        this.exportDceVariant,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -277,6 +359,7 @@ export class Minifier {
       undefined,
       this.fieldFactVariant,
       "baseline",
+      this.exportDceVariant,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -291,6 +374,7 @@ export class Minifier {
         undefined,
         this.fieldFactVariant,
         "trial",
+        this.exportDceVariant,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -328,6 +412,7 @@ export class Minifier {
       "baseline",
       this.fieldFactVariant,
       this.aggregateSpecializationVariant,
+      this.exportDceVariant,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -342,6 +427,7 @@ export class Minifier {
         "trial",
         this.fieldFactVariant,
         this.aggregateSpecializationVariant,
+        this.exportDceVariant,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -376,6 +462,7 @@ export class Minifier {
       this.functionRewriteVariant,
       this.fieldFactVariant,
       this.aggregateSpecializationVariant,
+      this.exportDceVariant,
     );
     const baseline = baselineMinifier.parseOnce();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -390,6 +477,7 @@ export class Minifier {
         this.functionRewriteVariant,
         this.fieldFactVariant,
         this.aggregateSpecializationVariant,
+        this.exportDceVariant,
       );
       trial = trialMinifier.parseOnce();
     } catch {
@@ -420,6 +508,7 @@ export class Minifier {
     this.rewriteFunctionsAll();
     this.rewriteWholeProgramFieldsAll();
     this.foldConstantsAll();
+    this.rewriteWholeProgramExportsAll();
     this.removeUnusedAll();
     this.rebuildIdentifiersInUse();
     this.computeGlobalRenames();
@@ -436,6 +525,11 @@ export class Minifier {
           metadataOf: (moduleName) => this.getSourceMetadata(moduleName),
         },
       );
+      this.wholeProgramExportsValue = analyzeWholeProgramExports(
+        this.wholeProgramObjectsValue,
+        this.entryModule,
+        (moduleName) => this.getSourceMetadata(moduleName),
+      );
     }
     this.renameAll();
 
@@ -451,6 +545,89 @@ export class Minifier {
     });
 
     return result;
+  }
+
+  private rewriteWholeProgramExportsAll(): void {
+    if (this.exportDceVariant !== "trial" || !this.exportDceEnabled()) return;
+    const objectAnalysis = this.analyzeWholeProgramObjects();
+    const exportAnalysis = analyzeWholeProgramExports(
+      objectAnalysis,
+      this.entryModule,
+      (moduleName) => this.getSourceMetadata(moduleName),
+    );
+    this.wholeProgramObjectsValue = objectAnalysis;
+    this.wholeProgramExportsValue = exportAnalysis;
+    exportAnalysis.diagnostics.forEach((diagnostic) =>
+      this.diagnosticCollector?.record({
+        pass: "whole-program-export-reachability",
+        moduleName: diagnostic.moduleName,
+        fieldName: diagnostic.field,
+        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        decision:
+          diagnostic.reason === "export-field-candidate" ||
+          diagnostic.reason === "field-live" ||
+          diagnostic.reason === "field-unreachable"
+            ? "accepted"
+            : "rejected",
+        reason: diagnostic.reason,
+        candidateSize: 1,
+        sourceRange: diagnostic.sourceRange,
+      }),
+    );
+    const analysisByModule = new Map(
+      objectAnalysis.modules.map((module) => [module.name, module.analysis]),
+    );
+    const result = applyWholeProgramExportDce(
+      exportAnalysis,
+      (moduleName) => this.getSourceMetadata(moduleName),
+      (moduleName, expression) =>
+        analysisByModule.get(moduleName)?.facts.discardabilityOf(expression)
+          .discardable === true,
+    );
+    result.refusedEffectfulInitializerFields.forEach((field) =>
+      this.diagnosticCollector?.record({
+        pass: "whole-program-export-dce",
+        moduleName: field.moduleName,
+        fieldName: field.key,
+        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        decision: "rejected",
+        reason: "effectful-initializer",
+        candidateSize: 1,
+      }),
+    );
+    if (!result.changed) return;
+    this.exportDceChanged = true;
+    this.linkOrder.forEach((moduleName) => {
+      const ast = this.moduleAST.get(moduleName);
+      if (!ast) throw new Error(moduleName + " is not found");
+      this.moduleResolve.set(moduleName, resolveScopes(ast));
+    });
+    this.linkedAstGeneration++;
+    this.wholeProgramObjectsValue = undefined;
+    this.wholeProgramFieldsValue = undefined;
+    this.wholeProgramExportsValue = undefined;
+    result.removedFields.forEach((field) =>
+      this.diagnosticCollector?.record({
+        pass: "whole-program-export-dce",
+        moduleName: field.moduleName,
+        fieldName: field.key,
+        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        decision: "accepted",
+        reason: "field-removed",
+        candidateSize: 1,
+      }),
+    );
+    result.preservedEffectFields.forEach((field) =>
+      this.diagnosticCollector?.record({
+        pass: "whole-program-export-dce",
+        moduleName: field.moduleName,
+        fieldName: field.key,
+        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        decision: "accepted",
+        reason: "field-effect-preserved",
+        candidateSize: 1,
+      }),
+    );
   }
 
   private rewriteWholeProgramFieldsAll(): void {
@@ -502,6 +679,7 @@ export class Minifier {
     this.linkedAstGeneration++;
     this.wholeProgramObjectsValue = undefined;
     this.wholeProgramFieldsValue = undefined;
+    this.wholeProgramExportsValue = undefined;
     this.diagnosticCollector?.record({
       pass: "whole-program-constructor-field-rewrite",
       moduleName: this.entryModule,
@@ -606,6 +784,7 @@ export class Minifier {
         this.linkedAstGeneration++;
         this.wholeProgramObjectsValue = undefined;
         this.wholeProgramFieldsValue = undefined;
+        this.wholeProgramExportsValue = undefined;
         initialWholeProgram = this.analyzeWholeProgramObjects();
         const specializedFields = analyzeWholeProgramFields(
           initialWholeProgram,
@@ -637,6 +816,7 @@ export class Minifier {
           this.linkedAstGeneration++;
           this.wholeProgramObjectsValue = undefined;
           this.wholeProgramFieldsValue = undefined;
+          this.wholeProgramExportsValue = undefined;
           initialWholeProgram = this.analyzeWholeProgramObjects();
         }
       }
@@ -853,6 +1033,8 @@ export class Minifier {
       if (passes.astGeneration > 0) {
         this.linkedAstGeneration += passes.astGeneration;
         this.wholeProgramObjectsValue = undefined;
+        this.wholeProgramFieldsValue = undefined;
+        this.wholeProgramExportsValue = undefined;
       }
     });
     this.wholeProgramObjectsValue = this.analyzeWholeProgramObjects();
@@ -913,6 +1095,7 @@ export class Minifier {
     this.linkedAstGeneration++;
     this.wholeProgramObjectsValue = undefined;
     this.wholeProgramFieldsValue = undefined;
+    this.wholeProgramExportsValue = undefined;
     return this.analyzeWholeProgramObjects();
   }
 
@@ -979,6 +1162,13 @@ export class Minifier {
     return this.mode.effectAwareTransforms !== false;
   }
 
+  private exportDceEnabled(): boolean {
+    return (
+      this.mode.effectAwareTransforms !== false &&
+      this.mode.removeUnused !== false
+    );
+  }
+
   private copyDiagnosticsFrom(minifier: Minifier): void {
     minifier.optimizationDiagnostics.forEach((diagnostic) =>
       this.diagnosticCollector?.record(diagnostic),
@@ -1001,6 +1191,8 @@ export class Minifier {
     this.linkedAstGeneration = minifier.linkedAstGeneration;
     this.wholeProgramObjectsValue = minifier.wholeProgramObjectsValue;
     this.wholeProgramFieldsValue = minifier.wholeProgramFieldsValue;
+    this.wholeProgramExportsValue = minifier.wholeProgramExportsValue;
+    this.exportDceChanged = minifier.exportDceChanged;
     return output;
   }
 
@@ -1066,6 +1258,24 @@ export class Minifier {
   ): void {
     this.diagnosticCollector?.record({
       pass: "constructor-field-final-cost",
+      decision,
+      reason,
+      candidateSize: 1,
+      estimatedByteSavings: byteSavings,
+      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      moduleName: this.entryModule,
+      sourceRange: [0, fs.readFileSync(this.entryFilePath, "utf8").length],
+    });
+  }
+
+  private recordFinalExportDceDecision(
+    decision: "accepted" | "rejected",
+    reason:
+      "final-output-shorter" | "final-output-not-shorter" | "trial-failed",
+    byteSavings?: number,
+  ): void {
+    this.diagnosticCollector?.record({
+      pass: "module-export-dce-final-cost",
       decision,
       reason,
       candidateSize: 1,
