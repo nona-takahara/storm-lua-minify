@@ -29,7 +29,7 @@ export function fixtureEntryPath(fixture: string, entry = "main.lua"): string {
 }
 
 export function slug(c: Pick<FixtureCase, "fixture" | "mode">): string {
-  return `${c.fixture}.${c.mode.moduleLikeLua ? "m" : "sl"}`;
+  return `${c.fixture}.${c.mode.requireWrapper ? "m" : "sl"}`;
 }
 
 export function runMinifier(c: FixtureCase): {
@@ -54,91 +54,91 @@ export const WORKING_CASES: FixtureCase[] = [
   {
     label: "単一ファイル",
     fixture: "single-file",
-    mode: { moduleLikeLua: false },
+    mode: { requireWrapper: false },
   },
   {
     label: 'require("m") 構文 (-m モード)',
     fixture: "require-call",
-    mode: { moduleLikeLua: true },
+    mode: { requireWrapper: true },
   },
   {
     label: "dofile (SLモード)",
     fixture: "dofile",
-    mode: { moduleLikeLua: false },
+    mode: { requireWrapper: false },
   },
   {
     label: "同一モジュールの多重require (-m モード)",
     fixture: "multi-require",
-    mode: { moduleLikeLua: true },
+    mode: { requireWrapper: true },
   },
   {
     label: "エントリ直下で多数のrequire (-m モード, #12回帰防止)",
     fixture: "entry-scope-many-requires",
-    mode: { moduleLikeLua: true },
+    mode: { requireWrapper: true },
   },
   {
     label: "ビット演算子・整数除算の優先順序 (#27回帰防止)",
     fixture: "bitwise-precedence",
-    mode: { moduleLikeLua: false },
+    mode: { requireWrapper: false },
   },
   {
     label:
       'require "m" (括弧なし文字列呼び出し構文) が解決される (-m モード, #18/#11修正確認)',
     fixture: "require-string-call",
-    mode: { moduleLikeLua: true },
+    mode: { requireWrapper: true },
   },
   {
     label:
       "SLモードでrequireしたモジュールが文としてその場展開される (#18/#11修正確認)",
     fixture: "require-call",
-    mode: { moduleLikeLua: false },
+    mode: { requireWrapper: false },
   },
   {
     label:
       "SLモードで同一モジュールを多重requireすると呼び出しごとに独立して文展開される (#18/#11修正確認)",
     fixture: "multi-require",
-    mode: { moduleLikeLua: false },
+    mode: { requireWrapper: false },
   },
   {
     label:
       "SLモードで戻り値を使わない単独のrequire文はdofileと同様functionで包まずそのまま展開される (#29対応確認)",
     fixture: "bare-require",
-    mode: { moduleLikeLua: false },
+    mode: { requireWrapper: false },
   },
   {
     label:
       "SLモードでrequireが式の一部（ネスト位置）に現れる場合はIIFEにフォールバックする (#29対応確認)",
     fixture: "require-in-expression",
-    mode: { moduleLikeLua: false },
+    mode: { requireWrapper: false },
   },
   {
     label:
       "ドット区切りのモジュール名（サブディレクトリ）が解決される (-m モード, #21 Source Map確認)",
     fixture: "nested-module",
-    mode: { moduleLikeLua: true },
+    mode: { requireWrapper: true },
   },
   {
     label:
       "連続するrequire文はまとめ上げられるが、参照順序ハザードのある宣言は分割のまま (-m モード, #9確認)",
     fixture: "merge-locals",
-    mode: { moduleLikeLua: true },
+    mode: { requireWrapper: true },
   },
   {
     label:
       "SLモードでは連続するrequire文はrequire splice最適化(#29)を優先しまとめ上げない (#9確認)",
     fixture: "merge-locals",
-    mode: { moduleLikeLua: false },
+    mode: { requireWrapper: false },
   },
   {
     label:
       "頻出するリネーム不可グローバルはローカル代入エイリアスに短縮される (#8b確認)",
     fixture: "global-alias",
-    mode: { moduleLikeLua: false },
+    mode: { requireWrapper: false },
   },
   {
     label: "定数の事前計算と定数伝搬 (#44)",
     fixture: "const-fold",
-    mode: { moduleLikeLua: false, foldConstants: true },
+    mode: { requireWrapper: false, constantOptimizations: true },
   },
 ];
 

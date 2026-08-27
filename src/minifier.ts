@@ -20,7 +20,6 @@ import { PassOrchestrator } from "./optimizerPass";
 import {
   analyzeLocalResourceUsage,
   checkParallelEvaluation,
-  RuntimeProfile,
   runtimeEnvironmentOf,
 } from "./runtimeEnvironment";
 import {
@@ -65,57 +64,14 @@ import {
   planWholeProgramFieldRenames,
   WholeProgramFieldRenamePlan,
 } from "./wholeProgramFieldRenames";
+import {
+  MinifierMode,
+  ResolvedMinifierMode,
+  resolveMinifierMode,
+} from "./options";
 
 export type { RuntimeProfile } from "./runtimeEnvironment";
-
-export interface MinifierMode {
-  moduleLikeLua: boolean;
-  // 実行環境の意味論。moduleLikeLua（require出力方式）とは独立。
-  // 省略時は後方互換のためlua53として扱う。
-  runtimeProfile?: RuntimeProfile;
-  // 選択環境で意味を保存する効果解析Transformのmaster opt-out。
-  // Stormworks profileでは省略時に有効。
-  effectAwareTransforms?: boolean;
-  // RHSを元位置に残す非連続local宣言hoistの個別opt-out。
-  effectAwareLocalHoist?: boolean;
-  // fresh・nonescape tableの安定したreadを含むlocal mergeの個別opt-out。
-  effectAwareTableReads?: boolean;
-  // dirtyなtable readも対象に含める積極的なopt-in。
-  aggressiveTableReadMerges?: boolean;
-  // table全体ではなくstatic key単位でdirtyを追跡する精密化の個別opt-out。
-  fieldSensitiveTableEffects?: boolean;
-  // 純Luaでdebug APIから観測できるlocal lifetimeの変更を許可するopt-in。
-  // Stormworksではdebug introspectionを前提にしないため指定不要。
-  allowLocalLifetimeChanges?: boolean;
-  // 字句の結合を防ぐために必要な1バイトの空白。省略時は、出力サイズを
-  // 増やさずStormworksの行単位診断を改善できるLFを使う。
-  requiredWhitespace?: " " | "\n";
-  // 識別子の短縮(リネーム)を行うかどうか。デバッグ用途でfalseにできる。省略時はtrue扱い。
-  rename?: boolean;
-  // 内部でのみ使用するグローバル識別子の短縮（#8a）を行うかどうか。省略時はfalse扱い。
-  // 外部から名前で参照されるグローバルを静的に識別できないため、明示的なopt-inとする。
-  // renameがfalseの場合はこちらの値に関わらず無効になる。
-  globalRename?: boolean;
-  // 代入されていてもリネームしないグローバル名（エンジン側のコールバック規約名など）。
-  // CLIの--reserved-globals-configで指定された設定ファイルから読み込む想定。
-  neverRenameGlobals?: ReadonlySet<string>;
-  // 連続するlocal変数宣言のまとめ上げ（#9）を行うかどうか。省略時はtrue扱い。
-  mergeLocals?: boolean;
-  // 外部グローバル識別子（リネーム不可のもの）のローカル代入短縮（#8b）を
-  // 行うかどうか。省略時はtrue扱い。renameがfalseの場合は常に無効になる。
-  globalAlias?: boolean;
-  // 未使用ローカル宣言の安全な範囲での削除。省略時はtrue扱い。
-  removeUnused?: boolean;
-  // 将来の未使用グローバル削除用スイッチ。removeUnused=falseなら常に無効。
-  removeUnusedGlobals?: boolean;
-  // 定数式の事前計算と、定数ローカル変数の伝搬。省略時はfalse扱い（明示的に有効化する）。
-  foldConstants?: boolean;
-  // 最適化候補の採否理由を収集する。既定offで、生成結果には影響しない。
-  collectOptimizationDiagnostics?: boolean;
-  // EmmyLua由来のoptimizer factを変換根拠として信頼する単一のassumption契約。
-  // 省略時もannotationは候補metadataとして解析されるが、意味の根拠にはしない。
-  assumeAnnotations?: boolean;
-}
+export type { MinifierMode } from "./options";
 
 const NO_RENAME: RenameResult = {
   nameOf: () => undefined,
@@ -139,7 +95,7 @@ export class Minifier {
   readonly moduleNameAndFileName: Map<string, string>;
   readonly dir: string;
   readonly entryModule: string;
-  readonly mode: MinifierMode;
+  readonly mode: ResolvedMinifierMode;
   readonly luaParseSettings: Partial<Options>;
 
   // Linkパスで解決されたモジュール名を、依存されている側が先に来る順序で並べたもの
@@ -195,7 +151,7 @@ export class Minifier {
       locations: true,
       ranges: true,
     };
-    this.mode = mode;
+    this.mode = resolveMinifierMode(mode);
     if (mode.collectOptimizationDiagnostics) {
       this.diagnosticCollector = new OptimizationDiagnosticCollector();
     }
@@ -236,7 +192,7 @@ export class Minifier {
     }
     if (
       this.aggregateSpecializationVariant === undefined &&
-      this.functionRewritesEnabled()
+      this.functionSpecializationEnabled()
     ) {
       return this.parseWithAggregateSpecializationSelection();
     }
@@ -627,7 +583,7 @@ export class Minifier {
     }
     this.renameAll();
 
-    const result = this.mode.moduleLikeLua
+    const result = this.mode.requireWrapper
       ? this.printModuleWithRequireWrapper()
       : this.printModule(this.entryModule);
 
@@ -656,7 +612,7 @@ export class Minifier {
         pass: "whole-program-export-reachability",
         moduleName: diagnostic.moduleName,
         fieldName: diagnostic.field,
-        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        runtimeProfile: this.mode.runtimeProfile,
         decision:
           diagnostic.reason === "export-field-candidate" ||
           diagnostic.reason === "field-live" ||
@@ -683,7 +639,7 @@ export class Minifier {
         pass: "whole-program-export-dce",
         moduleName: field.moduleName,
         fieldName: field.key,
-        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        runtimeProfile: this.mode.runtimeProfile,
         decision: "rejected",
         reason: "effectful-initializer",
         candidateSize: 1,
@@ -705,7 +661,7 @@ export class Minifier {
         pass: "whole-program-export-dce",
         moduleName: field.moduleName,
         fieldName: field.key,
-        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        runtimeProfile: this.mode.runtimeProfile,
         decision: "accepted",
         reason: "field-removed",
         candidateSize: 1,
@@ -716,7 +672,7 @@ export class Minifier {
         pass: "whole-program-export-dce",
         moduleName: field.moduleName,
         fieldName: field.key,
-        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        runtimeProfile: this.mode.runtimeProfile,
         decision: "accepted",
         reason: "field-effect-preserved",
         candidateSize: 1,
@@ -738,7 +694,7 @@ export class Minifier {
       this.diagnosticCollector?.record({
         pass: "whole-program-constructor-fields",
         moduleName: diagnostic.moduleName,
-        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        runtimeProfile: this.mode.runtimeProfile,
         decision: diagnostic.reason === "field-fact" ? "accepted" : "rejected",
         reason: diagnostic.reason,
         candidateSize: 1,
@@ -749,6 +705,10 @@ export class Minifier {
       objectAnalysis,
       fieldAnalysis,
       (moduleName) => this.getSourceMetadata(moduleName),
+      {
+        replaceReads: this.mode.fieldValuePropagation,
+        removeInitializers: this.mode.unusedFieldInitializerRemoval,
+      },
     );
     if (!result.changed) return;
     this.linkOrder.forEach((moduleName) => {
@@ -765,6 +725,10 @@ export class Minifier {
           resolved,
           this.getSourceMetadata(moduleName),
           facts,
+          {
+            evaluateExpressions: this.mode.constantExpressionEvaluation,
+            propagateLocals: this.mode.localConstantPropagation,
+          },
         );
         return { changed, invalidatesResolve: changed };
       });
@@ -777,7 +741,7 @@ export class Minifier {
     this.diagnosticCollector?.record({
       pass: "whole-program-constructor-field-rewrite",
       moduleName: this.entryModule,
-      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      runtimeProfile: this.mode.runtimeProfile,
       decision: "accepted",
       reason: "field-rewrite-applied",
       candidateSize: result.replacedReads + result.removedInitializers,
@@ -793,7 +757,7 @@ export class Minifier {
       this.diagnosticCollector?.record({
         pass: "whole-program-constructor-field-rewrite",
         moduleName: this.entryModule,
-        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        runtimeProfile: this.mode.runtimeProfile,
         decision: "accepted",
         reason,
         candidateSize: count,
@@ -819,7 +783,10 @@ export class Minifier {
         (method) => method.target.declaration,
       ),
     );
-    if (this.aggregateSpecializationVariant !== "baseline") {
+    if (
+      this.mode.functionSpecialization &&
+      this.aggregateSpecializationVariant !== "baseline"
+    ) {
       const initialFieldFacts = analyzeWholeProgramFields(initialWholeProgram, {
         trustAnnotations: this.mode.assumeAnnotations === true,
         metadataOf: (moduleName) => this.getSourceMetadata(moduleName),
@@ -832,9 +799,7 @@ export class Minifier {
           const resolved = this.moduleResolve.get(name);
           if (!chunk || !resolved) throw new Error(name + " is not found");
           const resources = analyzeLocalResourceUsage(chunk);
-          const runtime = runtimeEnvironmentOf(
-            this.mode.runtimeProfile ?? "lua53",
-          );
+          const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile);
           return {
             name,
             chunk,
@@ -861,7 +826,7 @@ export class Minifier {
         this.diagnosticCollector?.record({
           pass: "aggregate-function-specialization",
           moduleName: module?.name,
-          runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+          runtimeProfile: this.mode.runtimeProfile,
           decision:
             diagnostic.reason === "variant-created" ? "accepted" : "rejected",
           reason: diagnostic.reason,
@@ -891,12 +856,16 @@ export class Minifier {
           initialWholeProgram,
           specializedFields,
           (moduleName) => this.getSourceMetadata(moduleName),
+          {
+            replaceReads: this.mode.fieldValuePropagation,
+            removeInitializers: this.mode.unusedFieldInitializerRemoval,
+          },
         );
         if (downstream.removedInitializers > 0)
           this.diagnosticCollector?.record({
             pass: "aggregate-function-specialization",
             moduleName: this.entryModule,
-            runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+            runtimeProfile: this.mode.runtimeProfile,
             decision: "accepted",
             reason: "dead-field-write",
             candidateSize: downstream.removedInitializers,
@@ -921,17 +890,19 @@ export class Minifier {
         (method) => method.target.declaration,
       ),
     ]);
-    initialWholeProgram = this.pruneWholeProgramParameters(
-      initialWholeProgram,
-      resolvedMethodDeclarations,
-    );
+    if (this.mode.parameterPruning) {
+      initialWholeProgram = this.pruneWholeProgramParameters(
+        initialWholeProgram,
+        resolvedMethodDeclarations,
+      );
+    }
 
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
       const resolved = this.moduleResolve.get(moduleName);
       if (!ast || !resolved) throw new Error(moduleName + " is not found");
       const passes = new PassOrchestrator(ast, resolved);
-      const runtimeProfile = this.mode.runtimeProfile ?? "lua53";
+      const runtimeProfile = this.mode.runtimeProfile;
       const moduleRange =
         sourceRangeOf(ast) ??
         ([0, this.moduleSourceText.get(moduleName)?.length ?? 0] as const);
@@ -995,134 +966,137 @@ export class Minifier {
           sourceRange: sourceRangeOf(callable.declaration),
         });
       });
-      passes.run("inline-closed-single-use-functions", (currentResolve) => {
-        const analysis = passes.analysis(
-          OPTIMIZER_ANALYSIS_CACHE_KEY,
-          analyzeOptimizerAtGeneration,
-        );
-        const result = inlineClosedSingleUseFunctions(
-          analysis.interprocedural,
-          currentResolve,
-          this.getSourceMetadata(moduleName),
-        );
-        recordAccepted(
-          "inline-closed-single-use-functions",
-          result.inlinedFunctions,
-        );
-        return {
-          changed: result.changed,
-          invalidatesResolve: result.changed,
-        };
-      });
-      passes.run("inline-literal-argument-functions", (currentResolve) => {
-        const analysis = passes.analysis(
-          OPTIMIZER_ANALYSIS_CACHE_KEY,
-          analyzeOptimizerAtGeneration,
-        );
-        const result = inlineLiteralArgumentFunctions(
-          analysis.interprocedural,
-          currentResolve,
-          this.getSourceMetadata(moduleName),
-        );
-        recordAccepted(
-          "inline-literal-argument-functions",
-          result.inlinedFunctions,
-        );
-        return {
-          changed: result.changed,
-          invalidatesResolve: result.changed,
-        };
-      });
-      passes.run("inline-tail-call-functions", (currentResolve) => {
-        const analysis = passes.analysis(
-          OPTIMIZER_ANALYSIS_CACHE_KEY,
-          analyzeOptimizerAtGeneration,
-        );
-        const localResources = analyzeLocalResourceUsage(ast);
-        const runtime = runtimeEnvironmentOf(
-          this.mode.runtimeProfile ?? "lua53",
-        );
-        const result = inlineTailCallFunctions(
-          ast,
-          analysis.interprocedural,
-          currentResolve,
-          this.getSourceMetadata(moduleName),
-          {
-            maxIntroducedLocalsAt: (statement) => {
-              const active = localResources.activeLocalsBefore(statement);
-              if (active === undefined) return 0;
-              return Math.max(
-                0,
-                Math.min(
-                  runtime.resources.maxActiveLocalsPerFunction - active,
-                  runtime.resources.maxRegistersPerFunction - active,
-                ),
-              );
+      if (this.mode.functionInlining)
+        passes.run("inline-closed-single-use-functions", (currentResolve) => {
+          const analysis = passes.analysis(
+            OPTIMIZER_ANALYSIS_CACHE_KEY,
+            analyzeOptimizerAtGeneration,
+          );
+          const result = inlineClosedSingleUseFunctions(
+            analysis.interprocedural,
+            currentResolve,
+            this.getSourceMetadata(moduleName),
+          );
+          recordAccepted(
+            "inline-closed-single-use-functions",
+            result.inlinedFunctions,
+          );
+          return {
+            changed: result.changed,
+            invalidatesResolve: result.changed,
+          };
+        });
+      if (this.mode.functionInlining)
+        passes.run("inline-literal-argument-functions", (currentResolve) => {
+          const analysis = passes.analysis(
+            OPTIMIZER_ANALYSIS_CACHE_KEY,
+            analyzeOptimizerAtGeneration,
+          );
+          const result = inlineLiteralArgumentFunctions(
+            analysis.interprocedural,
+            currentResolve,
+            this.getSourceMetadata(moduleName),
+          );
+          recordAccepted(
+            "inline-literal-argument-functions",
+            result.inlinedFunctions,
+          );
+          return {
+            changed: result.changed,
+            invalidatesResolve: result.changed,
+          };
+        });
+      if (this.mode.functionInlining)
+        passes.run("inline-tail-call-functions", (currentResolve) => {
+          const analysis = passes.analysis(
+            OPTIMIZER_ANALYSIS_CACHE_KEY,
+            analyzeOptimizerAtGeneration,
+          );
+          const localResources = analyzeLocalResourceUsage(ast);
+          const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile);
+          const result = inlineTailCallFunctions(
+            ast,
+            analysis.interprocedural,
+            currentResolve,
+            this.getSourceMetadata(moduleName),
+            {
+              maxIntroducedLocalsAt: (statement) => {
+                const active = localResources.activeLocalsBefore(statement);
+                if (active === undefined) return 0;
+                return Math.max(
+                  0,
+                  Math.min(
+                    runtime.resources.maxActiveLocalsPerFunction - active,
+                    runtime.resources.maxRegistersPerFunction - active,
+                  ),
+                );
+              },
             },
-          },
-        );
-        recordAccepted("inline-tail-call-functions", result.inlinedFunctions);
-        return {
-          changed: result.changed,
-          invalidatesResolve: result.changed,
-        };
-      });
-      passes.run("inline-closed-statement-functions", (currentResolve) => {
-        const analysis = passes.analysis(
-          OPTIMIZER_ANALYSIS_CACHE_KEY,
-          analyzeOptimizerAtGeneration,
-        );
-        const result = inlineClosedStatementFunctions(
-          ast,
-          analysis.interprocedural,
-          currentResolve,
-          this.getSourceMetadata(moduleName),
-        );
-        recordAccepted(
-          "inline-closed-statement-functions",
-          result.inlinedFunctions,
-        );
-        return {
-          changed: result.changed,
-          invalidatesResolve: result.changed,
-        };
-      });
-      passes.run("inline-bound-statement-functions", (currentResolve) => {
-        const analysis = passes.analysis(
-          OPTIMIZER_ANALYSIS_CACHE_KEY,
-          analyzeOptimizerAtGeneration,
-        );
-        const localResources = analyzeLocalResourceUsage(ast);
-        const result = inlineBoundStatementFunctions(
-          ast,
-          analysis.interprocedural,
-          currentResolve,
-          this.getSourceMetadata(moduleName),
-          {
-            maxIntroducedLocalsAt: (statement) => {
-              const active = localResources.activeLocalsBefore(statement);
-              if (active === undefined) return 0;
-              return Math.max(
-                0,
-                Math.min(
-                  runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53")
-                    .resources.maxActiveLocalsPerFunction - active,
-                  runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53")
-                    .resources.maxRegistersPerFunction - active,
-                ),
-              );
+          );
+          recordAccepted("inline-tail-call-functions", result.inlinedFunctions);
+          return {
+            changed: result.changed,
+            invalidatesResolve: result.changed,
+          };
+        });
+      if (this.mode.functionInlining)
+        passes.run("inline-closed-statement-functions", (currentResolve) => {
+          const analysis = passes.analysis(
+            OPTIMIZER_ANALYSIS_CACHE_KEY,
+            analyzeOptimizerAtGeneration,
+          );
+          const result = inlineClosedStatementFunctions(
+            ast,
+            analysis.interprocedural,
+            currentResolve,
+            this.getSourceMetadata(moduleName),
+          );
+          recordAccepted(
+            "inline-closed-statement-functions",
+            result.inlinedFunctions,
+          );
+          return {
+            changed: result.changed,
+            invalidatesResolve: result.changed,
+          };
+        });
+      if (this.mode.functionInlining)
+        passes.run("inline-bound-statement-functions", (currentResolve) => {
+          const analysis = passes.analysis(
+            OPTIMIZER_ANALYSIS_CACHE_KEY,
+            analyzeOptimizerAtGeneration,
+          );
+          const localResources = analyzeLocalResourceUsage(ast);
+          const result = inlineBoundStatementFunctions(
+            ast,
+            analysis.interprocedural,
+            currentResolve,
+            this.getSourceMetadata(moduleName),
+            {
+              maxIntroducedLocalsAt: (statement) => {
+                const active = localResources.activeLocalsBefore(statement);
+                if (active === undefined) return 0;
+                return Math.max(
+                  0,
+                  Math.min(
+                    runtimeEnvironmentOf(this.mode.runtimeProfile).resources
+                      .maxActiveLocalsPerFunction - active,
+                    runtimeEnvironmentOf(this.mode.runtimeProfile).resources
+                      .maxRegistersPerFunction - active,
+                  ),
+                );
+              },
             },
-          },
-        );
-        recordAccepted(
-          "inline-bound-statement-functions",
-          result.inlinedFunctions,
-        );
-        return {
-          changed: result.changed,
-          invalidatesResolve: result.changed,
-        };
-      });
+          );
+          recordAccepted(
+            "inline-bound-statement-functions",
+            result.inlinedFunctions,
+          );
+          return {
+            changed: result.changed,
+            invalidatesResolve: result.changed,
+          };
+        });
       this.moduleResolve.set(moduleName, passes.resolved);
       if (passes.astGeneration > 0) {
         this.linkedAstGeneration += passes.astGeneration;
@@ -1163,7 +1137,7 @@ export class Minifier {
       this.diagnosticCollector?.record({
         pass: "prune-trailing-unused-parameters",
         moduleName,
-        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        runtimeProfile: this.mode.runtimeProfile,
         decision: "accepted",
         reason: "function-rewrite-applied",
         candidateSize: result.prunedParameters,
@@ -1173,7 +1147,7 @@ export class Minifier {
         this.diagnosticCollector?.record({
           pass: "whole-program-method-parameter-pruning",
           moduleName,
-          runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+          runtimeProfile: this.mode.runtimeProfile,
           decision: "accepted",
           reason: "function-rewrite-applied",
           candidateSize: result.prunedMethodParameters,
@@ -1217,7 +1191,7 @@ export class Minifier {
       this.diagnosticCollector?.record({
         pass: "whole-program-method-resolution",
         moduleName: diagnostic.moduleName,
-        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        runtimeProfile: this.mode.runtimeProfile,
         decision:
           diagnostic.reason === "resolved-method-target"
             ? "accepted"
@@ -1230,41 +1204,49 @@ export class Minifier {
   }
 
   private requiresSchedulerSelection(): boolean {
-    if (this.mode.mergeLocals !== false) return true;
-    if (this.mode.effectAwareTransforms === false) return false;
-    const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53");
+    if (this.mode.localDeclarationMerging) return true;
+    const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile);
     const lifetimeAllowed =
       !runtime.semantics.debugLocalIntrospection ||
-      this.mode.allowLocalLifetimeChanges === true;
+      this.mode.allowIntrospectionChanges === true;
     return (
       lifetimeAllowed &&
-      (this.mode.effectAwareLocalHoist !== false ||
-        this.mode.effectAwareTableReads !== false)
+      (this.mode.localDeclarationHoisting || this.mode.tableReadMerging)
     );
   }
 
   private functionRewritesEnabled(): boolean {
-    if (this.mode.effectAwareTransforms === false) return false;
-    const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53");
+    const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile);
+    return (
+      (this.mode.parameterPruning ||
+        this.mode.functionInlining ||
+        this.mode.functionSpecialization) &&
+      (!runtime.semantics.debugLocalIntrospection ||
+        this.mode.allowIntrospectionChanges === true)
+    );
+  }
+
+  private functionSpecializationEnabled(): boolean {
+    if (!this.mode.functionSpecialization) return false;
+    const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile);
     return (
       !runtime.semantics.debugLocalIntrospection ||
-      this.mode.allowLocalLifetimeChanges === true
+      this.mode.allowIntrospectionChanges === true
     );
   }
 
   private fieldFactsEnabled(): boolean {
-    return this.mode.effectAwareTransforms !== false;
+    return (
+      this.mode.fieldValuePropagation || this.mode.unusedFieldInitializerRemoval
+    );
   }
 
   private fieldRenamesEnabled(): boolean {
-    return this.mode.rename !== false;
+    return this.mode.fieldRenaming;
   }
 
   private exportDceEnabled(): boolean {
-    return (
-      this.mode.effectAwareTransforms !== false &&
-      this.mode.removeUnused !== false
-    );
+    return this.mode.unusedExportRemoval;
   }
 
   private copyDiagnosticsFrom(minifier: Minifier): void {
@@ -1307,7 +1289,7 @@ export class Minifier {
       reason,
       candidateSize: 1,
       estimatedByteSavings: byteSavings,
-      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      runtimeProfile: this.mode.runtimeProfile,
       moduleName: this.entryModule,
       sourceRange: [0, fs.readFileSync(this.entryFilePath, "utf8").length],
     });
@@ -1325,7 +1307,7 @@ export class Minifier {
       reason,
       candidateSize: 1,
       estimatedByteSavings: byteSavings,
-      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      runtimeProfile: this.mode.runtimeProfile,
       moduleName: this.entryModule,
       sourceRange: [0, fs.readFileSync(this.entryFilePath, "utf8").length],
     });
@@ -1343,7 +1325,7 @@ export class Minifier {
       reason,
       candidateSize: 1,
       estimatedByteSavings: byteSavings,
-      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      runtimeProfile: this.mode.runtimeProfile,
       moduleName: this.entryModule,
       sourceRange: [0, fs.readFileSync(this.entryFilePath, "utf8").length],
     });
@@ -1361,7 +1343,7 @@ export class Minifier {
       reason,
       candidateSize: 1,
       estimatedByteSavings: byteSavings,
-      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      runtimeProfile: this.mode.runtimeProfile,
       moduleName: this.entryModule,
       sourceRange: [0, fs.readFileSync(this.entryFilePath, "utf8").length],
     });
@@ -1379,7 +1361,7 @@ export class Minifier {
       reason,
       candidateSize: 1,
       estimatedByteSavings: byteSavings,
-      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      runtimeProfile: this.mode.runtimeProfile,
       moduleName: this.entryModule,
       sourceRange: [0, fs.readFileSync(this.entryFilePath, "utf8").length],
     });
@@ -1397,7 +1379,7 @@ export class Minifier {
       reason,
       candidateSize: 1,
       estimatedByteSavings: byteSavings,
-      runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+      runtimeProfile: this.mode.runtimeProfile,
       moduleName: this.entryModule,
       sourceRange: [0, fs.readFileSync(this.entryFilePath, "utf8").length],
     });
@@ -1411,7 +1393,7 @@ export class Minifier {
         pass: "whole-program-field-rename",
         moduleName: diagnostic.moduleName,
         fieldName: diagnostic.field,
-        runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+        runtimeProfile: this.mode.runtimeProfile,
         decision: diagnostic.accepted ? "accepted" : "rejected",
         reason: diagnostic.reason,
         candidateSize: 1,
@@ -1455,7 +1437,7 @@ export class Minifier {
    * ものをそのまま返すだけの参照用アクセサ。
    */
   getRenameResult(moduleName: string): RenameResult {
-    if (this.mode.rename === false) {
+    if (!this.mode.localRenaming && !this.mode.globalRenaming) {
       return NO_RENAME;
     }
     const cached = this.renameCache.get(moduleName);
@@ -1495,7 +1477,7 @@ export class Minifier {
    * 犠牲になるが、モジュール内でのスコープに基づく再利用は維持される）。
    */
   private renameAll() {
-    if (this.mode.rename === false) {
+    if (!this.mode.localRenaming && !this.mode.globalRenaming) {
       return;
     }
     this.linkOrder.forEach((moduleName) => {
@@ -1504,7 +1486,7 @@ export class Minifier {
       if (!ast || !resolved) {
         throw new Error(moduleName + " is not found");
       }
-      const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53");
+      const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile);
       const result =
         this.renameCache.get(moduleName) ??
         assignRenames(
@@ -1523,7 +1505,8 @@ export class Minifier {
           {
             allowLocalNameReuse:
               !runtime.semantics.debugLocalIntrospection ||
-              this.mode.allowLocalLifetimeChanges === true,
+              this.mode.allowIntrospectionChanges === true,
+            renameLocals: this.mode.localRenaming,
           },
         );
       this.renameCache.set(moduleName, result);
@@ -1569,7 +1552,7 @@ export class Minifier {
       }
 
       const passes = new PassOrchestrator(ast, resolved);
-      if (this.mode.rename !== false && this.mode.globalAlias !== false) {
+      if (this.mode.globalAliasing) {
         passes.run("global-alias", (currentResolve) => {
           const changed = insertGlobalAliases(ast, currentResolve, {
             excludeNames: excludeGlobalNames,
@@ -1578,7 +1561,7 @@ export class Minifier {
         });
       }
       resolved = passes.resolved;
-      const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile ?? "lua53");
+      const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile);
       const optimizerAnalysis = () =>
         passes.analysis(
           OPTIMIZER_ANALYSIS_CACHE_KEY,
@@ -1587,11 +1570,11 @@ export class Minifier {
               generation,
               runtime,
               assumptions:
-                this.mode.aggressiveTableReadMerges === true
+                this.mode.allowObservableTableReadChanges === true
                   ? new Map([
                       [
                         "allow-observable-table-read-changes",
-                        "explicit aggressiveTableReadMerges opt-in",
+                        "explicit allowObservableTableReadChanges opt-in",
                       ],
                     ])
                   : undefined,
@@ -1599,13 +1582,11 @@ export class Minifier {
         );
       const localResources = analyzeLocalResourceUsage(ast);
 
-      const effectAwareLocalsEnabled =
-        this.mode.effectAwareTransforms !== false &&
-        (!runtime.semantics.debugLocalIntrospection ||
-          this.mode.allowLocalLifetimeChanges === true);
-      const localNameReuseEnabled =
+      const lifetimeChangesAllowed =
         !runtime.semantics.debugLocalIntrospection ||
-        this.mode.allowLocalLifetimeChanges === true;
+        this.mode.allowIntrospectionChanges === true;
+      const localNameReuseEnabled =
+        this.mode.localNameReuse && lifetimeChangesAllowed;
       const keepNames = new Set(
         resolved.symbols.filter(
           (symbol) =>
@@ -1616,15 +1597,16 @@ export class Minifier {
       );
       if (
         this.schedulerVariant !== "baseline" &&
-        (this.mode.mergeLocals !== false ||
-          (effectAwareLocalsEnabled &&
-            (this.mode.effectAwareLocalHoist !== false ||
-              this.mode.effectAwareTableReads !== false)))
+        (this.mode.localDeclarationMerging ||
+          (lifetimeChangesAllowed &&
+            (this.mode.localDeclarationHoisting || this.mode.tableReadMerging)))
       ) {
         const provisionalAnalysis =
-          this.mode.rename === false ? undefined : optimizerAnalysis();
+          !this.mode.localRenaming && !this.mode.globalRenaming
+            ? undefined
+            : optimizerAnalysis();
         const provisionalRenames =
-          this.mode.rename === false
+          !this.mode.localRenaming && !this.mode.globalRenaming
             ? NO_RENAME
             : assignRenames(
                 ast,
@@ -1634,6 +1616,7 @@ export class Minifier {
                 keepNames,
                 {
                   allowLocalNameReuse: localNameReuseEnabled,
+                  renameLocals: this.mode.localRenaming,
                   analysis: provisionalAnalysis
                     ? {
                         facts: provisionalAnalysis.facts,
@@ -1678,22 +1661,19 @@ export class Minifier {
             outputNameLengthOf: (symbol) =>
               (provisionalRenames.nameOf(symbol.declaration) ?? symbol.name)
                 .length,
-            preserveRequireSplice: !this.mode.moduleLikeLua,
+            preserveRequireSplice: !this.mode.requireWrapper,
             enableLocalPacking:
-              effectAwareLocalsEnabled &&
-              this.mode.effectAwareLocalHoist !== false,
-            enableLexicalLocalMerge: this.mode.mergeLocals !== false,
+              lifetimeChangesAllowed && this.mode.localDeclarationHoisting,
+            enableLexicalLocalMerge: this.mode.localDeclarationMerging,
             tableEffects:
-              effectAwareLocalsEnabled &&
-              this.mode.effectAwareTableReads !== false
+              lifetimeChangesAllowed && this.mode.tableReadMerging
                 ? analysis.tableEffects
                 : undefined,
-            dirtyGranularity:
-              this.mode.fieldSensitiveTableEffects === false
-                ? "table"
-                : "static-key",
+            dirtyGranularity: !this.mode.fieldSensitiveTableEffects
+              ? "table"
+              : "static-key",
             allowObservableTableValueChanges:
-              this.mode.aggressiveTableReadMerges === true,
+              this.mode.allowObservableTableReadChanges === true,
             maxTableMergeArity:
               runtime.resources.conservativeParallelValueLimit,
             maxTableMergeArityAt: (statement) =>
@@ -1730,7 +1710,7 @@ export class Minifier {
 
       resolved = passes.resolved;
       this.moduleResolve.set(moduleName, resolved);
-      if (this.mode.rename !== false) {
+      if (this.mode.localRenaming || this.mode.globalRenaming) {
         const finalKeepNames = new Set(
           resolved.symbols.filter(
             (symbol) =>
@@ -1748,7 +1728,10 @@ export class Minifier {
           plannedIdentifiersInUse,
           this.globalRenames,
           finalKeepNames,
-          { allowLocalNameReuse: localNameReuseEnabled },
+          {
+            allowLocalNameReuse: localNameReuseEnabled,
+            renameLocals: this.mode.localRenaming,
+          },
         );
         this.renameCache.set(moduleName, finalRename);
         finalRename.usedNames.forEach((name) =>
@@ -1770,7 +1753,7 @@ export class Minifier {
    * ローカルの短縮名がグローバルの新しい短縮名と衝突しうる。
    */
   private computeGlobalRenames() {
-    if (this.mode.rename === false || this.mode.globalRename !== true) {
+    if (!this.mode.globalRenaming) {
       return;
     }
     const neverRename = new Set([
@@ -1821,42 +1804,57 @@ export class Minifier {
    * 削除に任せる。
    */
   private foldConstantsAll(): void {
-    if (this.mode.foldConstants !== true) return;
+    if (
+      !this.mode.constantExpressionEvaluation &&
+      !this.mode.localConstantPropagation &&
+      !this.mode.interproceduralConstantPropagation
+    )
+      return;
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
       const resolved = this.moduleResolve.get(moduleName);
       if (!ast || !resolved) throw new Error(moduleName + " is not found");
       const passes = new PassOrchestrator(ast, resolved);
-      passes.run("interprocedural-constants", () => {
-        const analysis = passes.analysis(
-          OPTIMIZER_ANALYSIS_CACHE_KEY,
-          analyzeOptimizerAtGeneration,
-        );
-        const changed = propagateInterproceduralConstants(
-          ast,
-          analysis.interprocedural,
-        );
-        return { changed, invalidatesResolve: changed };
-      });
-      passes.runUntilStable("fold-constants", (currentResolve) => {
-        const facts = passes.analysis(
-          OPTIMIZER_FACTS_CACHE_KEY,
-          analyzeOptimizerFactsAtGeneration,
-        );
-        const changed = foldConstants(
-          ast,
-          currentResolve,
-          this.getSourceMetadata(moduleName),
-          facts,
-        );
-        return { changed, invalidatesResolve: changed };
-      });
+      if (this.mode.interproceduralConstantPropagation)
+        passes.run("interprocedural-constants", () => {
+          const analysis = passes.analysis(
+            OPTIMIZER_ANALYSIS_CACHE_KEY,
+            analyzeOptimizerAtGeneration,
+          );
+          const changed = propagateInterproceduralConstants(
+            ast,
+            analysis.interprocedural,
+          );
+          return { changed, invalidatesResolve: changed };
+        });
+      if (
+        this.mode.constantExpressionEvaluation ||
+        this.mode.localConstantPropagation
+      )
+        passes.runUntilStable("fold-constants", (currentResolve) => {
+          const facts = passes.analysis(
+            OPTIMIZER_FACTS_CACHE_KEY,
+            analyzeOptimizerFactsAtGeneration,
+          );
+          const changed = foldConstants(
+            ast,
+            currentResolve,
+            this.getSourceMetadata(moduleName),
+            facts,
+            {
+              evaluateExpressions: this.mode.constantExpressionEvaluation,
+              propagateLocals: this.mode.localConstantPropagation,
+            },
+          );
+          return { changed, invalidatesResolve: changed };
+        });
       this.moduleResolve.set(moduleName, passes.resolved);
     });
   }
 
   private removeUnusedAll(): void {
-    if (this.mode.removeUnused === false) return;
+    if (!this.mode.unusedLocalRemoval && !this.mode.unusedFunctionRemoval)
+      return;
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
       const metadata = this.getSourceMetadata(moduleName);
@@ -1877,12 +1875,16 @@ export class Minifier {
             this.diagnosticCollector?.record({
               pass: "function-dce",
               moduleName,
-              runtimeProfile: this.mode.runtimeProfile ?? "lua53",
+              runtimeProfile: this.mode.runtimeProfile,
               decision: "accepted",
               reason: "unused-function",
               candidateSize: 1,
               sourceRange: sourceRangeOf(statement),
             }),
+          {
+            removeLocals: this.mode.unusedLocalRemoval,
+            removeFunctions: this.mode.unusedFunctionRemoval,
+          },
         );
         return { changed, invalidatesResolve: changed };
       });

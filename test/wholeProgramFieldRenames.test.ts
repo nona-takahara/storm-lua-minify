@@ -5,11 +5,12 @@ import {
 } from "./lib/minifierHarness";
 
 const mode = {
-  moduleLikeLua: true,
+  requireWrapper: true,
   runtimeProfile: "stormworks" as const,
-  mergeLocals: false,
-  effectAwareTransforms: false,
-  globalAlias: false,
+  localDeclarationMerging: false,
+  optimizations: false,
+  fieldRenaming: true,
+  globalAliasing: false,
   collectOptimizationDiagnostics: true,
 };
 
@@ -175,7 +176,7 @@ return selected.long_field_name
 
     const disabled = minifyTemporaryLuaSource(
       `local object={long_name=1} return object.long_name`,
-      { ...mode, rename: false },
+      { ...mode, fieldRenaming: false },
     );
     expect(disabled.code).toContain("long_name");
 
@@ -255,7 +256,7 @@ return object.long_field_name
           "local api={used_long_name=1,dead_long_name=2} return api",
         "main.lua": 'local api=require("dependency") return api.used_long_name',
       },
-      { ...mode, effectAwareTransforms: true },
+      { ...mode, objectOptimizations: true, unusedExportRemoval: true },
     );
     expect(result.code).not.toContain("dead_long_name");
     expect(

@@ -32,13 +32,13 @@ return depFirst+depSecond
 `;
 
 function minify(
-  moduleLikeLua: boolean,
+  requireWrapper: boolean,
   overrides: Partial<MinifierMode> = {},
 ): string {
   return minifyTemporaryLuaProject(
     { "main.lua": MAIN, "dep.lua": DEPENDENCY },
     {
-      moduleLikeLua,
+      requireWrapper,
       runtimeProfile: "stormworks",
       ...overrides,
     },
@@ -50,13 +50,13 @@ function minify(
 }
 
 function assertValidAndNonGrowing(
-  moduleLikeLua: boolean,
+  requireWrapper: boolean,
   pairwiseMode: Partial<MinifierMode> = {},
 ): void {
-  const enabled = minify(moduleLikeLua, pairwiseMode);
-  const disabled = minify(moduleLikeLua, {
+  const enabled = minify(requireWrapper, pairwiseMode);
+  const disabled = minify(requireWrapper, {
     ...pairwiseMode,
-    effectAwareTransforms: false,
+    statementOptimizations: false,
   });
 
   assert.doesNotThrow(() => Parser.parse(enabled, { luaVersion: "5.3" }));
@@ -70,26 +70,26 @@ function assertValidAndNonGrowing(
 }
 
 describe.each([false, true])(
-  "effect-aware multi-module pipeline (moduleLikeLua=%s)",
-  (moduleLikeLua) => {
+  "effect-aware multi-module pipeline (requireWrapper=%s)",
+  (requireWrapper) => {
     test("transforms candidates in both the entry and dependency modules", () => {
-      assertValidAndNonGrowing(moduleLikeLua);
+      assertValidAndNonGrowing(requireWrapper);
     });
 
     test.each([
-      ["constant folding", { foldConstants: true }],
-      ["global alias", { globalAlias: false }],
-      ["local merge", { mergeLocals: false }],
-      ["unused removal", { removeUnused: false }],
+      ["constant folding", { constantOptimizations: true }],
+      ["global alias", { globalAliasing: false }],
+      ["local merge", { localDeclarationMerging: false }],
+      ["unused removal", { unusedCodeRemoval: false }],
     ] as const)("composes pairwise with %s disabled", (_label, mode) => {
-      assertValidAndNonGrowing(moduleLikeLua, mode);
+      assertValidAndNonGrowing(requireWrapper, mode);
     });
   },
 );
 
 test("SL require statement splicing remains protected from local hoisting", () => {
   const enabled = minify(false);
-  const disabledHoist = minify(false, { effectAwareLocalHoist: false });
+  const disabledHoist = minify(false, { localDeclarationHoisting: false });
 
   assert.doesNotThrow(() => Parser.parse(enabled, { luaVersion: "5.3" }));
   assert.doesNotThrow(() => Parser.parse(disabledHoist, { luaVersion: "5.3" }));

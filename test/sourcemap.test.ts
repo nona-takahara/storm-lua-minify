@@ -37,7 +37,7 @@ test("sourcemap: mapファイルにfileフィールドが設定される", () =>
   const { map } = runMinifier({
     label: "sourcemap: mapファイルにfileフィールドが設定される",
     fixture: "multi-require",
-    mode: { moduleLikeLua: true },
+    mode: { requireWrapper: true },
   });
   assert.equal(map.file, "multi-require.min.lua");
 });
@@ -47,7 +47,7 @@ test("sourcemap: sourcesContentに各モジュールの元テキストがその�
     label:
       "sourcemap: sourcesContentに各モジュールの元テキストがそのまま埋め込まれる",
     fixture: "multi-require",
-    mode: { moduleLikeLua: true },
+    mode: { requireWrapper: true },
   });
 
   await SourceMapConsumer.with(map, null, (consumer) => {
@@ -70,7 +70,7 @@ test("sourcemap: 別モジュール由来のトークンがそれぞれ正しい
     label:
       "sourcemap: 別モジュール由来のトークンがそれぞれ正しい元ファイル・位置にマップされる",
     fixture: "multi-require",
-    mode: { moduleLikeLua: false },
+    mode: { requireWrapper: false },
   });
   // SLモードでは同一モジュールへの多重requireがそれぞれ独立して展開されるため、
   // "local a={value=42}local b={value=42}print(a.value,b.value)" のような形になる
@@ -103,7 +103,7 @@ test("sourcemap: #8bでエイリアス化された参照は、位置は元のま
     label:
       "sourcemap: #8bでエイリアス化された参照は、位置は元のままnamesフィールドに元の名前が残る",
     fixture: "global-alias",
-    mode: { moduleLikeLua: false },
+    mode: { requireWrapper: false },
   });
 
   // エイリアス化の実装用の仮名(__mergeAliasN)が最終出力のnamesに漏れていないこと
@@ -126,7 +126,7 @@ test("sourcemap: 非連続localの合成代入左辺が元の宣言位置と名�
   const { code, map } = runMinifier({
     label: "sourcemap: effect-aware local hoist",
     fixture: "effect-aware",
-    mode: { moduleLikeLua: false, runtimeProfile: "stormworks" },
+    mode: { requireWrapper: false, runtimeProfile: "stormworks" },
   });
 
   await SourceMapConsumer.with(map, null, (consumer) => {
@@ -148,9 +148,9 @@ test("sourcemap: table readを統合したlocalの変数とRHSが各元宣言へ
     label: "sourcemap: effect-aware table read merge",
     fixture: "effect-aware-table",
     mode: {
-      moduleLikeLua: false,
+      requireWrapper: false,
       runtimeProfile: "stormworks",
-      effectAwareLocalHoist: false,
+      localDeclarationHoisting: false,
     },
   });
 
@@ -189,7 +189,7 @@ test("sourcemap: ドット区切りモジュール名のsourcesはOSに依存せ
     label:
       "sourcemap: ドット区切りモジュール名のsourcesはOSに依存せず'/'区切りになる",
     fixture: "nested-module",
-    mode: { moduleLikeLua: true },
+    mode: { requireWrapper: true },
   });
   assert.ok(
     map.sources.includes("sub/deep.lua"),
@@ -216,7 +216,7 @@ test("sourcemap: if/then/elseif/else/end等のキーワードトークンが、�
     fixture: "control-flow-keywords",
     // このテストは未使用関数内の`end`も含めた位置対応を検証するため、
     // unused除去を無効にして入力中の全キーワードを出力へ残す。
-    mode: { moduleLikeLua: false, removeUnused: false },
+    mode: { requireWrapper: false, unusedCodeRemoval: false },
   });
   const source = fs.readFileSync(
     fixtureEntryPath("control-flow-keywords"),

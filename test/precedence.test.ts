@@ -16,7 +16,7 @@ function minifyExpression(exprSource: string): string {
     return new Minifier(
       filePath,
       { locations: true, luaVersion: "5.3", ranges: true, scope: true },
-      { moduleLikeLua: false },
+      { requireWrapper: false },
     )
       .parse()
       .toStringWithSourceMap({ file: "main.min.lua" }).code;
@@ -36,7 +36,7 @@ test("ビット演算子・整数除算の優先順序が壊れない (#27)", ()
     // このテストの主眼は演算子の優先順序であり、識別子リネームとは無関係。
     // #8bの外部グローバルエイリアス化がprintを短縮してしまうと下の正規表現が
     // 意味論的に無関係な理由で壊れるため、ここでは無効にしておく。
-    mode: { moduleLikeLua: false, globalAlias: false },
+    mode: { requireWrapper: false, globalAliasing: false },
   });
 
   // `&` は `|` より強いので、意味を変えずに括弧を省略できる

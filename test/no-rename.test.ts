@@ -2,14 +2,14 @@ import { test } from "vitest";
 import assert from "node:assert/strict";
 import { runMinifier } from "./lib/helpers";
 
-// #20: CLIオプション(--no-rename)相当の`mode.rename = false`で識別子の短縮を
+// #20: `identifierOptimizations = false`で識別子の短縮を
 // 無効化できることを確認する（デバッグ用途）。局所変数名は元のまま出力され、
 // 空白の除去などそれ以外のminify処理はそのまま行われる。
 test("mode.rename = false disables identifier shortening", () => {
   const { code } = runMinifier({
     label: "single-file (no rename)",
     fixture: "single-file",
-    mode: { moduleLikeLua: false, rename: false },
+    mode: { requireWrapper: false, identifierOptimizations: false },
   });
 
   assert.match(code, /local\nfunction\nadd\(first,second\)/);

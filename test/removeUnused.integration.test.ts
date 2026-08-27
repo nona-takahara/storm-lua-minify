@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import Parser from "luaparse";
 import { SourceMapConsumer } from "source-map";
 import { runMinifier } from "./lib/helpers";
+import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
 
 test("stage 4 composes with require splicing, comments, rename, and local merging", async () => {
   const { code, map } = runMinifier({
     label: "unused stage 4 integration",
     fixture: "unused-stage4",
-    mode: { moduleLikeLua: false },
+    mode: { requireWrapper: false },
   });
 
   assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
@@ -39,16 +40,16 @@ test("stage 4 composes with require splicing, comments, rename, and local mergin
   });
 });
 
-test("removeUnused false disables all stage 4 transformations", () => {
+test("unusedCodeRemoval false disables all stage 4 transformations", () => {
   const { code } = runMinifier({
     label: "unused stage 4 disabled",
     fixture: "unused-stage4",
     mode: {
-      moduleLikeLua: true,
-      removeUnused: false,
-      rename: false,
-      mergeLocals: false,
-      globalAlias: false,
+      requireWrapper: true,
+      unusedCodeRemoval: false,
+      identifierOptimizations: false,
+      localDeclarationMerging: false,
+      globalAliasing: false,
     },
   });
   assert.match(
@@ -57,4 +58,26 @@ test("removeUnused false disables all stage 4 transformations", () => {
   );
   assert.match(code, /local\nremovableName=1/);
   assert.match(code, /local\nretained,removable=produce\(\),2/);
+});
+
+test("unused local and unused function removal can be selected independently", () => {
+  const source =
+    "local function unusedFunction()end local unusedValue=1 return 2";
+  const functionOnly = minifyTemporaryLuaSource(source, {
+    requireWrapper: false,
+    identifierOptimizations: false,
+    unusedLocalRemoval: false,
+    unusedFunctionRemoval: true,
+  }).code;
+  const localOnly = minifyTemporaryLuaSource(source, {
+    requireWrapper: false,
+    identifierOptimizations: false,
+    unusedLocalRemoval: true,
+    unusedFunctionRemoval: false,
+  }).code;
+
+  assert.doesNotMatch(functionOnly, /unusedFunction/);
+  assert.match(functionOnly, /unusedValue=1/);
+  assert.match(localOnly, /unusedFunction/);
+  assert.doesNotMatch(localOnly, /unusedValue/);
 });

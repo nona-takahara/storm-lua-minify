@@ -3,9 +3,11 @@
 import fs from "fs";
 import path from "path";
 import { Options } from "luaparse";
-import { Minifier, MinifierMode } from "./minifier";
+import { Minifier } from "./minifier";
 import { buildMinifiedOutput, SourceMappingUrlStyle } from "./output";
 import { createCliProgram } from "./cliOptions";
+import { loadConfiguration } from "./config";
+import { MinifierMode, resolveMinifierMode } from "./options";
 
 const program = createCliProgram();
 
@@ -20,61 +22,36 @@ const luaparseSetting: Partial<Options> = {
   scope: true,
 };
 
-interface CliOptions extends MinifierMode {
-  singleLineSourceMappingUrl?: boolean;
-  strictSourceMappingUrl?: boolean;
-  reservedGlobalsConfig?: string;
-}
-
-interface ReservedGlobalsConfig {
-  neverRenameGlobals: string[];
-}
-
-function isReservedGlobalsConfig(
-  value: unknown,
-): value is ReservedGlobalsConfig {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const candidate = value as { neverRenameGlobals?: unknown };
-  return (
-    Array.isArray(candidate.neverRenameGlobals) &&
-    candidate.neverRenameGlobals.every((name) => typeof name === "string")
-  );
-}
-
-function loadNeverRenameGlobals(configPath: string): Set<string> {
-  if (!fs.existsSync(configPath)) {
-    throw new Error("Reserved globals config not found: " + configPath);
-  }
-  const parsed: unknown = JSON.parse(fs.readFileSync(configPath).toString());
-  if (!isReservedGlobalsConfig(parsed)) {
-    throw new Error(
-      configPath +
-        ' must be a JSON object of the form {"neverRenameGlobals": ["name", ...]}',
-    );
-  }
-  return new Set(parsed.neverRenameGlobals);
-}
+type CliOptions = Omit<MinifierMode, "requiredWhitespace"> & {
+  config?: string;
+  neverRenameGlobal?: string[];
+  requiredWhitespace?: "space" | "lf";
+  sourceMappingUrlStyle?: SourceMappingUrlStyle;
+};
 
 const {
-  singleLineSourceMappingUrl,
-  strictSourceMappingUrl,
-  reservedGlobalsConfig,
-  ...mode
+  config: configPath,
+  neverRenameGlobal,
+  requiredWhitespace,
+  sourceMappingUrlStyle: cliSourceMappingUrlStyle,
+  ...cliModeOptions
 }: CliOptions = program.opts();
+const cliMode: MinifierMode = cliModeOptions;
+if (neverRenameGlobal !== undefined)
+  cliMode.neverRenameGlobals = new Set(neverRenameGlobal);
+if (requiredWhitespace !== undefined)
+  cliMode.requiredWhitespace = requiredWhitespace === "space" ? " " : "\n";
 
-if (reservedGlobalsConfig) {
-  mode.neverRenameGlobals = loadNeverRenameGlobals(reservedGlobalsConfig);
-}
-
-// 既定は旧バージョンと互換の複数行ブロックコメント("legacy")。
-// --strict-source-mapping-url > --single-line-source-mapping-url の優先順で上書きする。
-const sourceMappingUrlStyle: SourceMappingUrlStyle = strictSourceMappingUrl
-  ? "strict"
-  : singleLineSourceMappingUrl
-    ? "line"
-    : "legacy";
+const configuration = configPath
+  ? loadConfiguration(configPath)
+  : { mode: {} as MinifierMode };
+const mode = resolveMinifierMode({
+  config: configuration.mode,
+  cli: cliMode,
+  defaults: { requireWrapper: false, runtimeProfile: "stormworks" },
+});
+const sourceMappingUrlStyle: SourceMappingUrlStyle =
+  cliSourceMappingUrlStyle ?? configuration.sourceMappingUrlStyle ?? "legacy";
 
 luaFiles.forEach((fileName) => {
   const parsedFileName = path.parse(fileName);

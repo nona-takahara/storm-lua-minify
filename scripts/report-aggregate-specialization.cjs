@@ -14,7 +14,7 @@ const parseSettings = {
   ranges: true,
 };
 const mode = {
-  moduleLikeLua: true,
+  requireWrapper: true,
   runtimeProfile: "stormworks",
   collectOptimizationDiagnostics: true,
 };

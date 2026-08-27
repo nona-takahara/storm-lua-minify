@@ -3,13 +3,13 @@ import { describe, expect, test } from "vitest";
 import { minifyTemporaryLuaProject } from "./lib/minifierHarness";
 
 const mode = {
-  moduleLikeLua: true,
+  requireWrapper: true,
   runtimeProfile: "stormworks" as const,
-  mergeLocals: false,
-  effectAwareLocalHoist: false,
-  effectAwareTableReads: false,
-  globalAlias: false,
-  rename: false,
+  localDeclarationMerging: false,
+  localDeclarationHoisting: false,
+  tableReadMerging: false,
+  globalAliasing: false,
+  identifierOptimizations: false,
   collectOptimizationDiagnostics: true,
 };
 
@@ -214,7 +214,7 @@ function exports.dead() return 2 end
 return exports
 `,
       `local dependency=require("dependency") return dependency.used()`,
-      { rename: true },
+      { identifierOptimizations: true },
     );
     expect(result.code).toContain("descriptive_helper");
     expect(result.code).not.toContain("exports.dead");
@@ -264,12 +264,12 @@ return exports
   });
 
   test.each([true, false])(
-    "preserves require caching and output semantics with moduleLikeLua=%s",
-    (moduleLikeLua) => {
+    "preserves require caching and output semantics with requireWrapper=%s",
+    (requireWrapper) => {
       const result = minify(
         `count=count+1 local exports={used=count,unused=2} return exports`,
         `count=0 local first=require("dependency") local second=require("dependency") return first.used,second.used,count`,
-        { moduleLikeLua },
+        { requireWrapper },
       );
       expect(result.code).toContain("count=count+1");
       expect(result.code).not.toContain("unused=2");

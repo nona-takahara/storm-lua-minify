@@ -44,7 +44,7 @@ try {
       entry,
       { luaVersion: "5.3" },
       {
-        moduleLikeLua: false,
+        requireWrapper: false,
         runtimeProfile: "stormworks",
         collectOptimizationDiagnostics: true,
       },
@@ -55,12 +55,12 @@ try {
       entryFilePath: entry,
       luaParseSettings: { luaVersion: "5.3" },
       baselineMode: {
-        moduleLikeLua: false,
+        requireWrapper: false,
         runtimeProfile: "stormworks",
-        effectAwareTransforms: false,
+        statementOptimizations: false,
       },
       trialMode: {
-        moduleLikeLua: false,
+        requireWrapper: false,
         runtimeProfile: "stormworks",
       },
     });

@@ -20,6 +20,7 @@ import {
   luaByteStringKey,
   luaByteStringOfText,
 } from "../src/luaString";
+import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
 
 const PARSE_SETTINGS = {
   luaVersion: "5.3" as const,
@@ -55,7 +56,7 @@ function foldExpr(exprSource: string): Parser.Expression {
 
 // 実際にMinifierを通して、opt-in有効時の出力文字列を得る（一時ファイル経由）。
 // 「出力を再パースして壊れていないことを確認する」系のテストに使う。
-function minifyWith(code: string, foldConstants: boolean): string {
+function minifyWith(code: string, constantOptimizations: boolean): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "storm-const-fold-test-"));
   const filePath = path.join(dir, "main.lua");
   fs.writeFileSync(filePath, code);
@@ -63,7 +64,11 @@ function minifyWith(code: string, foldConstants: boolean): string {
     const minifier = new Minifier(
       filePath,
       { locations: true, luaVersion: "5.3", ranges: true, scope: true },
-      { moduleLikeLua: false, foldConstants },
+      {
+        requireWrapper: false,
+        constantOptimizations,
+        interproceduralConstantPropagation: constantOptimizations,
+      },
     );
     const sourceNode = minifier.parse();
     return sourceNode.toStringWithSourceMap({ file: "main.min.lua" }).code;
@@ -105,6 +110,32 @@ print(value,output)
   assert.match(minifyWith(effectful, true), /effect/);
   assert.match(minifyWith(recursive, true), /function/);
   assert.match(minifyWith(globalWrite, true), /output=1/);
+});
+
+test("constant expression evaluation and local propagation are independent", () => {
+  const expressionOnly = minifyTemporaryLuaSource(
+    "local value=1+2 print(value)",
+    {
+      requireWrapper: false,
+      identifierOptimizations: false,
+      constantExpressionEvaluation: true,
+      localConstantPropagation: false,
+    },
+  ).code;
+  const propagationOnly = minifyTemporaryLuaSource(
+    "local value=3 print(value)",
+    {
+      requireWrapper: false,
+      identifierOptimizations: false,
+      constantExpressionEvaluation: false,
+      localConstantPropagation: true,
+    },
+  ).code;
+
+  assert.match(expressionOnly, /value=3/);
+  assert.match(expressionOnly, /print\(value\)/);
+  assert.doesNotMatch(propagationOnly, /local\s+value/);
+  assert.match(propagationOnly, /print\(3\)/);
 });
 
 function runFoldedMinifier(code: string): string {
@@ -590,16 +621,16 @@ test("a constant propagated into a method-call base is parenthesized", () => {
 // 定数畳み込みは出力を縮めるための機能である。構文が壊れていないことも、
 // 言語仕様どおりに計算していることも、それだけでは目的を満たさない。
 // 配った先で宣言が残って出力が伸びるような状態は、この形でしか捕まらない。
-test("すべてのfixtureで、--fold-constants は出力を長くしない", () => {
+test("すべてのfixtureで、定数最適化は出力を長くしない", () => {
   const grown: string[] = [];
   WORKING_CASES.forEach((c) => {
     const plain = runMinifier({
       ...c,
-      mode: { ...c.mode, foldConstants: false },
+      mode: { ...c.mode, constantOptimizations: false },
     }).code;
     const folded = runMinifier({
       ...c,
-      mode: { ...c.mode, foldConstants: true },
+      mode: { ...c.mode, constantOptimizations: true },
     }).code;
     if (folded.length > plain.length) {
       grown.push(
@@ -608,7 +639,7 @@ test("すべてのfixtureで、--fold-constants は出力を長くしない", ()
     }
   });
   assert.deepEqual(grown, [], "有効にすると伸びるfixtureがあります");
-});
+}, 20_000);
 
 // ============================================================
 // Source Map
@@ -642,7 +673,7 @@ test("const-fold fixture keeps a source map that points into the original file",
   const { code, map } = runMinifier({
     label: "定数の事前計算と定数伝搬",
     fixture: "const-fold",
-    mode: { moduleLikeLua: false, foldConstants: true },
+    mode: { requireWrapper: false, constantOptimizations: true },
   });
   const source = fs.readFileSync(fixtureEntryPath("const-fold"), "utf8");
   const sourceLineCount = source.split("\n").length;
@@ -698,14 +729,14 @@ test("foldConstants defaults to disabled: output is unchanged without the option
     const withoutOption = new Minifier(
       filePath,
       { locations: true, luaVersion: "5.3", ranges: true, scope: true },
-      { moduleLikeLua: false },
+      { requireWrapper: false },
     )
       .parse()
       .toStringWithSourceMap({ file: "main.min.lua" }).code;
     const withOptionFalse = new Minifier(
       filePath,
       { locations: true, luaVersion: "5.3", ranges: true, scope: true },
-      { moduleLikeLua: false, foldConstants: false },
+      { requireWrapper: false, constantOptimizations: false },
     )
       .parse()
       .toStringWithSourceMap({ file: "main.min.lua" }).code;

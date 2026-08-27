@@ -70,6 +70,10 @@ function removeFromBlock(
   metadata: SourceMetadata,
   facts: OptimizerFacts,
   onRemoveLocalFunction?: (statement: Parser.FunctionDeclaration) => void,
+  options: {
+    readonly removeLocals: boolean;
+    readonly removeFunctions: boolean;
+  } = { removeLocals: true, removeFunctions: true },
 ): boolean {
   let changed = false;
   body.forEach((statement) => {
@@ -81,6 +85,7 @@ function removeFromBlock(
           metadata,
           facts,
           onRemoveLocalFunction,
+          options,
         ) || changed;
     });
   });
@@ -89,6 +94,7 @@ function removeFromBlock(
   body.forEach((statement) => {
     if (metadata.annotationsOf(statement).keep) return;
     if (
+      options.removeFunctions &&
       statement.type === "FunctionDeclaration" &&
       statement.isLocal &&
       statement.identifier?.type === "Identifier"
@@ -101,7 +107,7 @@ function removeFromBlock(
         return;
       }
     }
-    if (statement.type !== "LocalStatement") return;
+    if (!options.removeLocals || statement.type !== "LocalStatement") return;
 
     const unused = statement.variables.map((variable) => {
       const symbol = resolved.symbolOf(variable);
@@ -198,6 +204,10 @@ export function removeUnusedLocals(
   metadata: SourceMetadata,
   facts: OptimizerFacts,
   onRemoveLocalFunction?: (statement: Parser.FunctionDeclaration) => void,
+  options?: {
+    readonly removeLocals: boolean;
+    readonly removeFunctions: boolean;
+  },
 ): boolean {
   return removeFromBlock(
     chunk.body,
@@ -205,5 +215,6 @@ export function removeUnusedLocals(
     metadata,
     facts,
     onRemoveLocalFunction,
+    options,
   );
 }

@@ -1,7 +1,7 @@
 {
   "name": "storm-lua-minify",
   "description": "A Lua minifier also outputs source map",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "packageManager": "pnpm@11.21.0",
   "engines": {
     "node": ">=22"
