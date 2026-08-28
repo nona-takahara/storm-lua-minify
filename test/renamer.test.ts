@@ -74,6 +74,28 @@ describe("local identifier renaming", () => {
     assert.equal(result.nameOf(first), result.nameOf(second));
   });
 
+  test("a later declaration cannot shadow a revived same-scope binding", () => {
+    const chunk = parse(`
+    local revived
+    local intervening = true
+    revived = 1
+    print(revived)
+  `);
+    const resolved = resolveScopes(chunk);
+    const result = assignRenames(
+      chunk,
+      resolved,
+      new Set(),
+      undefined,
+      new Set(),
+      { allowLocalNameReuse: true },
+    );
+    const revived = (chunk.body[0] as Parser.LocalStatement).variables[0];
+    const intervening = (chunk.body[1] as Parser.LocalStatement).variables[0];
+
+    assert.notEqual(result.nameOf(revived), result.nameOf(intervening));
+  });
+
   test("branch join and loop back-edge keep simultaneously live symbols apart", () => {
     const chunk = parse(`
     local branchValue = 0

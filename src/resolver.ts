@@ -39,6 +39,9 @@ export interface ResolveResult {
   // チャンク全体で宣言された全シンボル（宣言順）
   readonly symbols: Symbol[];
   readonly globals: Map<string, GlobalBinding>;
+  // Resolveが宣言・参照を訪れた順序。同一scope内で、後続のlocal宣言が
+  // 先行bindingの後続参照をshadowするか判定するために使う。
+  resolutionOrderOf(identifier: Parser.Identifier): number | undefined;
   // 宣言・参照どちらの識別子ノードからも対応するシンボルを引ける。
   // グローバル参照やフィールド名など、シンボルを持たない識別子はundefinedを返す。
   symbolOf(identifier: Parser.Identifier): Symbol | undefined;
@@ -72,6 +75,8 @@ export function resolveScopes(
   const allSymbols: Symbol[] = [];
   const globals = new Map<string, GlobalBinding>();
   const identifierSymbols = new WeakMap<Parser.Identifier, Symbol>();
+  const identifierResolutionOrders = new WeakMap<Parser.Identifier, number>();
+  let nextResolutionOrder = 0;
   const globalReferenceNodes = new WeakSet<Parser.Identifier>();
   const functionScopes = new WeakMap<Parser.FunctionDeclaration, Scope>();
   const identifierName =
@@ -100,6 +105,7 @@ export function resolveScopes(
     kind: SymbolKind,
     implicit = false,
   ): Symbol {
+    identifierResolutionOrders.set(node, nextResolutionOrder++);
     const name = identifierName(node);
     const symbol: Symbol = {
       id: nextSymbolId++,
@@ -119,6 +125,7 @@ export function resolveScopes(
   }
 
   function declareLabel(scope: MutableScope, node: Parser.Identifier): Symbol {
+    identifierResolutionOrders.set(node, nextResolutionOrder++);
     const name = identifierName(node);
     const symbol: Symbol = {
       id: nextSymbolId++,
@@ -163,6 +170,7 @@ export function resolveScopes(
     node: Parser.Identifier,
     isWrite = false,
   ) {
+    identifierResolutionOrders.set(node, nextResolutionOrder++);
     const name = identifierName(node);
     const symbol = lookupBinding(scope, name);
     if (symbol) {
@@ -288,6 +296,7 @@ export function resolveScopes(
         // hoistLabelsで宣言済みのため、ここでは何もしない
         return;
       case "GotoStatement": {
+        identifierResolutionOrders.set(statement.label, nextResolutionOrder++);
         const symbol = lookupLabel(scope, identifierName(statement.label));
         if (symbol) {
           symbol.references.push(statement.label);
@@ -424,6 +433,8 @@ export function resolveScopes(
     chunkScope,
     symbols: allSymbols,
     globals,
+    resolutionOrderOf: (identifier) =>
+      identifierResolutionOrders.get(identifier),
     symbolOf: (identifier) => identifierSymbols.get(identifier),
     isGlobalReference: (identifier) => globalReferenceNodes.has(identifier),
     scopeOfFunction: (fn) => functionScopes.get(fn),
