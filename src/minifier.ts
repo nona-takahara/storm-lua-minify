@@ -3,7 +3,7 @@ import path from "path";
 import fs from "fs";
 import { SourceNode } from "source-map";
 import { Chunk, MinifyFile } from "./ast2lua";
-import { findModuleReferences } from "./linker";
+import { findModuleReferences, ModuleReference } from "./linker";
 import { resolveScopes, ResolveResult } from "./resolver";
 import { assignRenames, RenameResult } from "./renamer";
 import {
@@ -83,6 +83,14 @@ const NO_RENAME: RenameResult = {
   usedNames: new Set(),
 };
 
+interface ParsedModuleInput {
+  readonly sourceText: string;
+  readonly ast: Chunk;
+  readonly references: readonly ModuleReference[];
+}
+
+type MinifierInputCache = Map<string, ParsedModuleInput>;
+
 function sourceRangeOf(node: object): [number, number] | undefined {
   return (node as { range?: [number, number] }).range;
 }
@@ -120,6 +128,10 @@ export class Minifier {
   private readonly exportDceVariant?: "baseline" | "trial";
   private readonly fieldRenameVariant?: "baseline" | "trial";
   private readonly progress?: CompilationProgress;
+  // Transactional variants mutate independent AST copies, but their source
+  // bytes and initial parse are identical. Keep one untouched parse template
+  // for the whole variant tree and clone it at each link boundary.
+  private readonly inputCache: MinifierInputCache;
   private linkedAstGeneration = 0;
   private wholeProgramObjectsValue?: WholeProgramObjectAnalysis;
   private wholeProgramFieldsValue?: WholeProgramFieldAnalysis;
@@ -138,6 +150,7 @@ export class Minifier {
     exportDceVariant?: "baseline" | "trial",
     fieldRenameVariant?: "baseline" | "trial",
     progress?: CompilationProgress,
+    inputCache?: MinifierInputCache,
   ) {
     this.schedulerVariant =
       typeof schedulerVariantOrProgress === "string"
@@ -152,6 +165,7 @@ export class Minifier {
       typeof schedulerVariantOrProgress === "object"
         ? schedulerVariantOrProgress
         : progress;
+    this.inputCache = inputCache ?? new Map<string, ParsedModuleInput>();
     this.entryFilePath = entryFilePath;
     this.identifiersInUse = new Set<string>();
     this.moduleSourceText = new Map<string, string>();
@@ -239,6 +253,7 @@ export class Minifier {
       undefined,
       "baseline",
       this.progress,
+      this.inputCache,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -257,6 +272,7 @@ export class Minifier {
         undefined,
         "trial",
         this.progress,
+        this.inputCache,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -299,6 +315,7 @@ export class Minifier {
         "trial",
         this.fieldRenameVariant,
         this.progress,
+        this.inputCache,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -315,6 +332,7 @@ export class Minifier {
         "baseline",
         this.fieldRenameVariant,
         this.progress,
+        this.inputCache,
       );
       const baseline = baselineMinifier.parse();
       this.copyDiagnosticsFrom(baselineMinifier);
@@ -339,6 +357,7 @@ export class Minifier {
       "baseline",
       this.fieldRenameVariant,
       this.progress,
+      this.inputCache,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -371,6 +390,7 @@ export class Minifier {
       this.exportDceVariant,
       this.fieldRenameVariant,
       this.progress,
+      this.inputCache,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -389,6 +409,7 @@ export class Minifier {
         this.exportDceVariant,
         this.fieldRenameVariant,
         this.progress,
+        this.inputCache,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -425,6 +446,7 @@ export class Minifier {
       this.exportDceVariant,
       this.fieldRenameVariant,
       this.progress,
+      this.inputCache,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -443,6 +465,7 @@ export class Minifier {
         this.exportDceVariant,
         this.fieldRenameVariant,
         this.progress,
+        this.inputCache,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -485,6 +508,7 @@ export class Minifier {
       this.exportDceVariant,
       this.fieldRenameVariant,
       this.progress,
+      this.inputCache,
     );
     const baseline = baselineMinifier.parse();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -503,6 +527,7 @@ export class Minifier {
         this.exportDceVariant,
         this.fieldRenameVariant,
         this.progress,
+        this.inputCache,
       );
       trial = trialMinifier.parse();
     } catch {
@@ -542,6 +567,7 @@ export class Minifier {
       this.exportDceVariant,
       this.fieldRenameVariant,
       this.progress,
+      this.inputCache,
     );
     const baseline = baselineMinifier.parseOnce();
     const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
@@ -560,6 +586,7 @@ export class Minifier {
         this.exportDceVariant,
         this.fieldRenameVariant,
         this.progress,
+        this.inputCache,
       );
       trial = trialMinifier.parseOnce();
     } catch {
@@ -2015,11 +2042,22 @@ export class Minifier {
 
       const fullResolvePath =
         path.join(this.dir, ...moduleName.split(".")) + ".lua";
-      if (!fs.existsSync(fullResolvePath)) {
-        throw new Error(moduleName + " is not found");
+      let input = this.inputCache.get(fullResolvePath);
+      if (!input) {
+        if (!fs.existsSync(fullResolvePath)) {
+          throw new Error(moduleName + " is not found");
+        }
+        const sourceText = fs.readFileSync(fullResolvePath).toString();
+        const ast = Parser.parse(sourceText, this.luaParseSettings) as Chunk;
+        input = {
+          sourceText,
+          ast,
+          references: findModuleReferences(ast),
+        };
+        this.inputCache.set(fullResolvePath, input);
       }
-      const code = fs.readFileSync(fullResolvePath).toString();
-      const ast = Parser.parse(code, this.luaParseSettings) as Chunk;
+      const code = input.sourceText;
+      const ast = structuredClone(input.ast);
 
       this.moduleMetadata.set(moduleName, new SourceMetadata(ast, code));
 
@@ -2037,7 +2075,7 @@ export class Minifier {
         moduleName.replaceAll(".", "/") + ".lua",
       );
 
-      findModuleReferences(ast).forEach((ref) => {
+      input.references.forEach((ref) => {
         visit(ref.moduleName);
       });
 
