@@ -319,11 +319,17 @@ function addEdge(
 /** Deterministic weighted DSATUR coloring. */
 function colorGraph(graph: InterferenceGraph): Map<Symbol, number> {
   const colors = new Map<Symbol, number>();
+  // Keep the colored-neighbor set incrementally. Recomputing it inside the
+  // sort comparator makes dense module graphs dominate the whole pipeline.
+  const saturationColors = new Map(
+    [...graph.keys()].map((symbol) => [symbol, new Set<number>()]),
+  );
   while (colors.size < graph.size) {
     const remaining = [...graph.keys()].filter((symbol) => !colors.has(symbol));
     remaining.sort((left, right) => {
       const saturationDifference =
-        saturation(graph, colors, right) - saturation(graph, colors, left);
+        (saturationColors.get(right)?.size ?? 0) -
+        (saturationColors.get(left)?.size ?? 0);
       if (saturationDifference !== 0) return saturationDifference;
       const weightDifference = weightOf(right) - weightOf(left);
       if (weightDifference !== 0) return weightDifference;
@@ -332,30 +338,15 @@ function colorGraph(graph: InterferenceGraph): Map<Symbol, number> {
       return degreeDifference !== 0 ? degreeDifference : left.id - right.id;
     });
     const symbol = remaining[0];
-    const unavailable = new Set(
-      [...(graph.get(symbol) ?? [])].flatMap((neighbor) => {
-        const color = colors.get(neighbor);
-        return color === undefined ? [] : [color];
-      }),
-    );
+    const unavailable = saturationColors.get(symbol) ?? new Set<number>();
     let color = 0;
     while (unavailable.has(color)) color++;
     colors.set(symbol, color);
+    graph.get(symbol)?.forEach((neighbor) => {
+      if (!colors.has(neighbor)) saturationColors.get(neighbor)?.add(color);
+    });
   }
   return colors;
-}
-
-function saturation(
-  graph: InterferenceGraph,
-  colors: ReadonlyMap<Symbol, number>,
-  symbol: Symbol,
-): number {
-  return new Set(
-    [...(graph.get(symbol) ?? [])].flatMap((neighbor) => {
-      const color = colors.get(neighbor);
-      return color === undefined ? [] : [color];
-    }),
-  ).size;
 }
 
 function weightOf(symbol: Symbol): number {
