@@ -21,6 +21,8 @@ export interface Symbol {
   readonly declaration: Parser.Identifier;
   // このシンボルを指す参照（宣言箇所自体は含まない）
   readonly references: Parser.Identifier[];
+  /** Lua declares this binding without an identifier token (currently colon-method self). */
+  readonly implicit?: true;
 }
 
 export interface GlobalBinding {
@@ -45,6 +47,14 @@ export interface ResolveResult {
   // グローバルが存在してもここではfalseになる（#8a: ノード同一性ベースで
   // 判定するため、名前文字列だけを見た誤リネームを防ぐ）。
   isGlobalReference(identifier: Parser.Identifier): boolean;
+  // 関数本体の字句scope。upvalue/capture解析がAST範囲や宣言名を再推測せず、
+  // Resolveと同じ束縛境界を参照するために公開する。
+  scopeOfFunction(fn: Parser.FunctionDeclaration): Scope | undefined;
+}
+
+export interface ResolveOptions {
+  /** Resolve an identifier using its emitted spelling without mutating the AST. */
+  readonly identifierName?: (identifier: Parser.Identifier) => string;
 }
 
 interface MutableScope extends Scope {
@@ -54,12 +64,19 @@ interface MutableScope extends Scope {
   readonly labels: Map<string, Symbol>;
 }
 
-export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
+export function resolveScopes(
+  chunk: Parser.Chunk,
+  options: ResolveOptions = {},
+): ResolveResult {
   let nextSymbolId = 0;
   const allSymbols: Symbol[] = [];
   const globals = new Map<string, GlobalBinding>();
   const identifierSymbols = new WeakMap<Parser.Identifier, Symbol>();
   const globalReferenceNodes = new WeakSet<Parser.Identifier>();
+  const functionScopes = new WeakMap<Parser.FunctionDeclaration, Scope>();
+  const identifierName =
+    options.identifierName ??
+    ((identifier: Parser.Identifier) => identifier.name);
 
   function createScope(
     kind: Scope["kind"],
@@ -81,34 +98,38 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
     scope: MutableScope,
     node: Parser.Identifier,
     kind: SymbolKind,
+    implicit = false,
   ): Symbol {
+    const name = identifierName(node);
     const symbol: Symbol = {
       id: nextSymbolId++,
-      name: node.name,
+      name,
       kind,
       scope,
       declaration: node,
       references: [],
+      ...(implicit ? { implicit: true as const } : {}),
     };
     // 同名の再宣言はスコープ内の以後の参照から見た束縛を上書きする（Luaの通常のシャドーイング）
     scope.symbols.push(symbol);
-    scope.bindings.set(node.name, symbol);
+    scope.bindings.set(name, symbol);
     allSymbols.push(symbol);
     identifierSymbols.set(node, symbol);
     return symbol;
   }
 
   function declareLabel(scope: MutableScope, node: Parser.Identifier): Symbol {
+    const name = identifierName(node);
     const symbol: Symbol = {
       id: nextSymbolId++,
-      name: node.name,
+      name,
       kind: "label",
       scope,
       declaration: node,
       references: [],
     };
     scope.symbols.push(symbol);
-    scope.labels.set(node.name, symbol);
+    scope.labels.set(name, symbol);
     allSymbols.push(symbol);
     identifierSymbols.set(node, symbol);
     return symbol;
@@ -142,16 +163,17 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
     node: Parser.Identifier,
     isWrite = false,
   ) {
-    const symbol = lookupBinding(scope, node.name);
+    const name = identifierName(node);
+    const symbol = lookupBinding(scope, name);
     if (symbol) {
       symbol.references.push(node);
       identifierSymbols.set(node, symbol);
       return;
     }
-    let binding = globals.get(node.name);
+    let binding = globals.get(name);
     if (!binding) {
-      binding = { name: node.name, references: [], writes: [] };
-      globals.set(node.name, binding);
+      binding = { name, references: [], writes: [] };
+      globals.set(name, binding);
     }
     binding.references.push(node);
     if (isWrite) {
@@ -266,7 +288,7 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
         // hoistLabelsで宣言済みのため、ここでは何もしない
         return;
       case "GotoStatement": {
-        const symbol = lookupLabel(scope, statement.label.name);
+        const symbol = lookupLabel(scope, identifierName(statement.label));
         if (symbol) {
           symbol.references.push(statement.label);
           identifierSymbols.set(statement.label, symbol);
@@ -300,6 +322,16 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
       }
     }
     const inner = createScope("function", scope);
+    functionScopes.set(fn, inner);
+    if (
+      fn.identifier?.type === "MemberExpression" &&
+      fn.identifier.indexer === ":"
+    ) {
+      // `function object:method(...)` declares an implicit first parameter. It has no
+      // declaration token in the AST, but it must still own every `self` reference so
+      // global analysis, aliases, summaries, and binding validation share Lua's binding.
+      declare(inner, { type: "Identifier", name: "self" }, "param", true);
+    }
     fn.parameters.forEach((parameter) => {
       if (parameter.type === "Identifier") {
         declare(inner, parameter, "param");
@@ -354,6 +386,7 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
         return;
       case "FunctionDeclaration": {
         const inner = createScope("function", scope);
+        functionScopes.set(expr, inner);
         expr.parameters.forEach((parameter) => {
           if (parameter.type === "Identifier") {
             declare(inner, parameter, "param");
@@ -393,5 +426,6 @@ export function resolveScopes(chunk: Parser.Chunk): ResolveResult {
     globals,
     symbolOf: (identifier) => identifierSymbols.get(identifier),
     isGlobalReference: (identifier) => globalReferenceNodes.has(identifier),
+    scopeOfFunction: (fn) => functionScopes.get(fn),
   };
 }

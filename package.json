@@ -1,7 +1,7 @@
 {
   "name": "storm-lua-minify",
   "description": "A Lua minifier also outputs source map",
-  "version": "0.3.0",
+  "version": "0.9.0",
   "packageManager": "pnpm@11.21.0",
   "engines": {
     "node": ">=22"
@@ -31,9 +31,18 @@
     "start": "node ./dist/cli.js",
     "build": "tsc",
     "test": "tsc -p tsconfig.eslint.json && npx vitest run",
+    "test:smoke": "pnpm run build && vitest run --config vitest.smoke.config.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "verify:lua-budget": "node scripts/verify-lua-resource-budget.cjs",
+    "report:optimizer": "pnpm run build && node scripts/report-optimizer-diagnostics.cjs",
+    "report:whole-program-objects": "pnpm run build && node scripts/report-whole-program-objects.cjs",
+    "report:whole-program-fields": "pnpm run build && node scripts/report-whole-program-fields.cjs",
+    "report:aggregate-specialization": "pnpm run build && node scripts/report-aggregate-specialization.cjs",
+    "report:whole-program-exports": "pnpm run build && node scripts/report-whole-program-exports.cjs",
+    "report:whole-program-field-renames": "pnpm run build && node scripts/report-whole-program-field-renames.cjs",
+    "verify:effect-semantics": "pnpm run build && node scripts/verify-effect-semantics.cjs",
     "prepack": "pnpm run build"
   },
   "author": "Nona Takahara <nona_t_2612@yahoo.co.jp>",

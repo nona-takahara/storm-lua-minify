@@ -1,0 +1,2 @@
+dependencyEffect()
+return 42

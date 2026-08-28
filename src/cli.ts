@@ -2,45 +2,15 @@
 
 import fs from "fs";
 import path from "path";
-import { Command } from "commander";
 import { Options } from "luaparse";
-import { Minifier, MinifierMode } from "./minifier";
+import { Minifier } from "./minifier";
 import { buildMinifiedOutput, SourceMappingUrlStyle } from "./output";
+import { createCliProgram } from "./cliOptions";
+import { loadConfiguration } from "./config";
+import { MinifierMode, resolveMinifierMode } from "./options";
+import { CliProgress, progressEnabled } from "./cliProgress";
 
-const program = new Command();
-
-program
-  .version("0.3.0")
-  .description("A Lua minifier also outputs source map")
-  .option(
-    "-m, --module-like-lua",
-    "require・dofileの動作を実際のLuaに近づけます",
-  )
-  .option("--no-rename", "識別子の短縮(リネーム)を無効にします（デバッグ用途）")
-  .option(
-    "--no-global-rename",
-    "内部でのみ使用するグローバル識別子の短縮を無効にします（デバッグ用途）",
-  )
-  .option(
-    "--no-merge-locals",
-    "連続するローカル変数宣言のまとめ上げを無効にします（デバッグ用途）",
-  )
-  .option(
-    "--no-global-alias",
-    "外部グローバル識別子（リネームできないもの）のローカル代入短縮を無効にします（デバッグ用途）",
-  )
-  .option(
-    "--reserved-globals-config <path>",
-    '代入されていても短縮しないグローバル名を列挙したJSON設定ファイルのパス（{"neverRenameGlobals":["onTick",...]}形式）。エンジン側のコールバック規約名など、常に元の名前のまま残す必要がある識別子を指定します',
-  )
-  .option(
-    "--single-line-source-mapping-url",
-    "sourceMappingURLアノテーションを単一行の--コメントで出力します（Source Map仕様の「最終行」ルールに従いますが、既定の複数行ブロックコメント形式を前提とするツールとは組み合わせられません）",
-  )
-  .option(
-    "--strict-source-mapping-url",
-    "sourceMappingURLアノテーションをLuaコメントで一切包まず、Source Map仕様のマーカー文字列(//# sourceMappingURL=...)そのままを出力します。Luaの文法上この形式と有効なLuaコードは両立できないため、出力ファイルの最終行は有効なLua文ではなくなります",
-  );
+const program = createCliProgram();
 
 program.parse(process.argv);
 
@@ -53,86 +23,88 @@ const luaparseSetting: Partial<Options> = {
   scope: true,
 };
 
-interface CliOptions extends MinifierMode {
-  singleLineSourceMappingUrl?: boolean;
-  strictSourceMappingUrl?: boolean;
-  reservedGlobalsConfig?: string;
-}
-
-interface ReservedGlobalsConfig {
-  neverRenameGlobals: string[];
-}
-
-function isReservedGlobalsConfig(
-  value: unknown,
-): value is ReservedGlobalsConfig {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const candidate = value as { neverRenameGlobals?: unknown };
-  return (
-    Array.isArray(candidate.neverRenameGlobals) &&
-    candidate.neverRenameGlobals.every((name) => typeof name === "string")
-  );
-}
-
-function loadNeverRenameGlobals(configPath: string): Set<string> {
-  if (!fs.existsSync(configPath)) {
-    throw new Error("Reserved globals config not found: " + configPath);
-  }
-  const parsed: unknown = JSON.parse(fs.readFileSync(configPath).toString());
-  if (!isReservedGlobalsConfig(parsed)) {
-    throw new Error(
-      configPath +
-        ' must be a JSON object of the form {"neverRenameGlobals": ["name", ...]}',
-    );
-  }
-  return new Set(parsed.neverRenameGlobals);
-}
+type CliOptions = Omit<MinifierMode, "requiredWhitespace"> & {
+  config?: string;
+  neverRenameGlobal?: string[];
+  progress?: boolean;
+  requiredWhitespace?: "space" | "lf";
+  sourceMappingUrlStyle?: SourceMappingUrlStyle;
+};
 
 const {
-  singleLineSourceMappingUrl,
-  strictSourceMappingUrl,
-  reservedGlobalsConfig,
-  ...mode
+  config: configPath,
+  neverRenameGlobal,
+  progress: progressOption,
+  requiredWhitespace,
+  sourceMappingUrlStyle: cliSourceMappingUrlStyle,
+  ...cliModeOptions
 }: CliOptions = program.opts();
+const cliMode: MinifierMode = cliModeOptions;
+if (neverRenameGlobal !== undefined)
+  cliMode.neverRenameGlobals = new Set(neverRenameGlobal);
+if (requiredWhitespace !== undefined)
+  cliMode.requiredWhitespace = requiredWhitespace === "space" ? " " : "\n";
 
-if (reservedGlobalsConfig) {
-  mode.neverRenameGlobals = loadNeverRenameGlobals(reservedGlobalsConfig);
-}
+const configuration = configPath
+  ? loadConfiguration(configPath)
+  : { mode: {} as MinifierMode };
+const mode = resolveMinifierMode({
+  config: configuration.mode,
+  cli: cliMode,
+  defaults: { requireWrapper: false, runtimeProfile: "stormworks" },
+});
+const sourceMappingUrlStyle: SourceMappingUrlStyle =
+  cliSourceMappingUrlStyle ?? configuration.sourceMappingUrlStyle ?? "legacy";
 
-// 既定は旧バージョンと互換の複数行ブロックコメント("legacy")。
-// --strict-source-mapping-url > --single-line-source-mapping-url の優先順で上書きする。
-const sourceMappingUrlStyle: SourceMappingUrlStyle = strictSourceMappingUrl
-  ? "strict"
-  : singleLineSourceMappingUrl
-    ? "line"
-    : "legacy";
-
-luaFiles.forEach((fileName) => {
+luaFiles.forEach((fileName, fileIndex) => {
   const parsedFileName = path.parse(fileName);
 
   if (fs.existsSync(fileName)) {
-    const map = new Minifier(fileName, luaparseSetting, mode).parse();
-    const minFileName = path.format({
-      dir: parsedFileName.dir,
-      name: parsedFileName.name + ".min",
-      ext: ".lua",
-    });
-    const mapFileName = path.format({
-      dir: parsedFileName.dir,
-      name: parsedFileName.name,
-      ext: parsedFileName.ext + ".map",
-    });
-    const { code, map: mapJson } = buildMinifiedOutput(
-      map,
-      minFileName,
-      mapFileName,
-      { sourceMappingUrlStyle },
-    );
+    const progress = progressEnabled(progressOption, process.stderr)
+      ? new CliProgress({
+          fileName,
+          fileIndex: fileIndex + 1,
+          fileCount: luaFiles.length,
+          output: process.stderr,
+        })
+      : undefined;
+    const startedAt = performance.now();
+    try {
+      const map = new Minifier(
+        fileName,
+        luaparseSetting,
+        mode,
+        progress,
+      ).parse();
+      const minFileName = path.format({
+        dir: parsedFileName.dir,
+        name: parsedFileName.name + ".min",
+        ext: ".lua",
+      });
+      const mapFileName = path.format({
+        dir: parsedFileName.dir,
+        name: parsedFileName.name,
+        ext: parsedFileName.ext + ".map",
+      });
+      progress?.addSteps(1);
+      progress?.startStep("Write Lua and source map files");
+      const { code, map: mapJson } = buildMinifiedOutput(
+        map,
+        minFileName,
+        mapFileName,
+        { sourceMappingUrlStyle },
+      );
 
-    fs.writeFileSync(minFileName, code);
-    fs.writeFileSync(mapFileName, mapJson);
+      fs.writeFileSync(minFileName, code);
+      fs.writeFileSync(mapFileName, mapJson);
+      progress?.finish(
+        [minFileName, mapFileName],
+        performance.now() - startedAt,
+      );
+    } catch (error) {
+      progress?.fail();
+      throw error;
+    }
   } else {
     console.error("No such file: " + fileName);
   }

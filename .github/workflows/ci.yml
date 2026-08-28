@@ -11,7 +11,29 @@ on:
       - develop
 
 jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Smoke test (5 second test timeout)
+        run: pnpm run test:smoke
+
   build-lint-test:
+    needs: smoke
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -1,31 +1,72 @@
-import { test } from "vitest";
+import { describe, test } from "vitest";
 import assert from "node:assert/strict";
+import Parser from "luaparse";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import { runMinifier } from "./lib/helpers";
+import { Minifier } from "../src/minifier";
 
-// #27: PRECEDENCE テーブルにビット演算子(| ~ & << >>)と整数除算(//)が
-// 定義されておらず、比較結果が常に偽になることで必要な括弧が失われ、
-// 意味が変わってしまうバグの回帰防止テスト。
-// 括弧が必要な箇所では保持され、不要な箇所では省略されることを確認する。
-test("ビット演算子・整数除算の優先順序が壊れない (#27)", () => {
-  const { code } = runMinifier({
-    label: "bitwise-precedence",
-    fixture: "bitwise-precedence",
-    // このテストの主眼は演算子の優先順序であり、識別子リネームとは無関係。
-    // #8bの外部グローバルエイリアス化がprintを短縮してしまうと下の正規表現が
-    // 意味論的に無関係な理由で壊れるため、ここでは無効にしておく。
-    mode: { moduleLikeLua: false, globalAlias: false },
+function minifyExpression(exprSource: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "storm-precedence-"));
+  const filePath = path.join(dir, "main.lua");
+  fs.writeFileSync(filePath, "return " + exprSource + "\n");
+  try {
+    return new Minifier(
+      filePath,
+      { locations: true, luaVersion: "5.3", ranges: true, scope: true },
+      { requireWrapper: false },
+    )
+      .parse()
+      .toStringWithSourceMap({ file: "main.min.lua" }).code;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe("expression precedence in minified output", () => {
+  test("preserves bitwise and floor-division precedence", () => {
+    const { code } = runMinifier({
+      label: "bitwise-precedence",
+      fixture: "bitwise-precedence",
+      // Keep the assertions focused on operators rather than renamed globals.
+      mode: { requireWrapper: false, globalAliasing: false },
+    });
+
+    // `&` binds more tightly than `|`, so only the second form needs parentheses.
+    assert.match(code, /print\(a\|b&c\)/);
+    assert.match(code, /print\(\(a\|b\)&c\)/);
+    assert.match(code, /print\(a&b\|c\)/);
+    assert.match(code, /print\(a~b&c\)/);
+    // `+` binds more tightly than `<<`, so only the second form needs parentheses.
+    assert.match(code, /print\(a<<b\+c\)/);
+    assert.match(code, /print\(\(a<<b\)\+c\)/);
+    assert.match(code, /print\(a\/\/b\/\/c\)/);
+    assert.match(code, /print\(~a&b\)/);
   });
 
-  // `&` は `|` より強いので、意味を変えずに括弧を省略できる
-  assert.match(code, /print\(a\|b&c\)/);
-  // `(a|b)&c` は括弧を落とすと意味が変わるため保持する必要がある
-  assert.match(code, /print\(\(a\|b\)&c\)/);
-  assert.match(code, /print\(a&b\|c\)/);
-  assert.match(code, /print\(a~b&c\)/);
-  // `+` は `<<` より強いので括弧を省略できる
-  assert.match(code, /print\(a<<b\+c\)/);
-  // `(a<<b)+c` は括弧を落とすと意味が変わるため保持する必要がある
-  assert.match(code, /print\(\(a<<b\)\+c\)/);
-  assert.match(code, /print\(a\/\/b\/\/c\)/);
-  assert.match(code, /print\(~a&b\)/);
+  test("keeps concatenation parenthesized under higher-precedence operators", () => {
+    assert.match(minifyExpression("0.5 % (2 .. 16)"), /0\.5%\(2[ \n]\.\.16\)/);
+    assert.match(minifyExpression("(1 .. 2) + 3"), /\(1[ \n]\.\.2\)\+3/);
+    assert.match(minifyExpression("-(1 .. 2)"), /-\(1[ \n]\.\.2\)/);
+    assert.match(minifyExpression("#(1 .. 2)"), /#\(1[ \n]\.\.2\)/);
+
+    // The opposite precedence direction and right associativity need no grouping.
+    assert.match(minifyExpression("(1 .. 2) < 3"), /1[ \n]\.\.2<3/);
+    assert.match(minifyExpression("(1 + 2) .. 3"), /1\+2[ \n]\.\.3/);
+    assert.match(minifyExpression("1 .. (2 .. 3)"), /1[ \n]\.\.2[ \n]\.\.3/);
+  });
+
+  test("keeps left-side parentheses for right-associative exponentiation", () => {
+    assert.match(minifyExpression("(1 ^ 2) ^ 3"), /\(1\^2\)\^3/);
+    assert.match(minifyExpression("1 ^ (2 ^ 3)"), /1\^2\^3/);
+  });
+
+  // Lua can read a trailing dot after a hexadecimal literal as part of the number.
+  test("separates concatenation from a hexadecimal literal ending in a-f", () => {
+    const hex = minifyExpression('0xff .. "x"');
+    assert.doesNotThrow(() => Parser.parse(hex, { luaVersion: "5.3" }));
+    const dec = minifyExpression('255 .. "x"');
+    assert.doesNotThrow(() => Parser.parse(dec, { luaVersion: "5.3" }));
+  });
 });

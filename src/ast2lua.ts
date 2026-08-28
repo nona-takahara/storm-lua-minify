@@ -8,6 +8,8 @@ import { Minifier, MinifierMode } from "./minifier";
 import { staticStringArgument } from "./linker";
 import { KeywordLocator } from "./keywordLocator";
 import { originalNameOf } from "./transform";
+import { isPreservedComment } from "./sourceMetadata";
+import { GeneratedStatement } from "./generatedAst";
 
 export type Chunk = Parser.Chunk & {
   globals?: (Parser.Base<"Identifer"> & {
@@ -155,6 +157,11 @@ export function isKeyword(id: string) {
   return false;
 }
 
+// 末尾が16進整数リテラル（0x/0Xの後に16進数字が1つ以上続く）かどうか。
+// a〜fは識別子の文字集合とも重なるため、isNeedSeparatorのalpha分岐だけでは
+// 区別できない（#53）。
+const HEX_INT_LITERAL_TAIL = /0[xX][0-9a-fA-F]+$/;
+
 function isNeedSeparator(a: string, b: string) {
   const lastCharA = a.slice(-1);
   const firstCharB = b.charAt(0);
@@ -171,11 +178,16 @@ function isNeedSeparator(a: string, b: string) {
       // e.g. `while` + `1`
       // e.g. `local a` + `local b`
       return true;
-    } else {
-      // e.g. `not` + `(2>3 or 3<2)`
-      // e.g. `x` + `^`
-      return false;
     }
+    if (firstCharB == "." && HEX_INT_LITERAL_TAIL.test(a)) {
+      // e.g. `0xff` + `..` : 16進の浮動小数点(`0xff.8`)も読めてしまうため、
+      // 続く`.`をそのまま出すと`0xff.`まで数値として読まれ、10進では起きない
+      // 区切り落ち（malformed number）になる（#53）。
+      return true;
+    }
+    // e.g. `not` + `(2>3 or 3<2)`
+    // e.g. `x` + `^`
+    return false;
   }
   if (regexDigits.test(lastCharA)) {
     if (
@@ -214,10 +226,22 @@ interface ExpressionOptoions {
   parent?: string | undefined;
 }
 
+const requiredWhitespaceByNode = new WeakMap<SourceNode, " " | "\n">();
+
+function whitespaceOf(...values: (string | SourceNode)[]): " " | "\n" {
+  for (const value of values) {
+    if (value instanceof SourceNode) {
+      const whitespace = requiredWhitespaceByNode.get(value);
+      if (whitespace) return whitespace;
+    }
+  }
+  return "\n";
+}
+
 function addWithSeparator(
   val: SourceNode,
   adding: (string | SourceNode)[] | SourceNode | string,
-  separator = " ",
+  separator = whitespaceOf(val),
 ) {
   if (
     isNeedSeparator(
@@ -236,7 +260,7 @@ function addWithSeparator(
 function prependWithSeparator(
   val: SourceNode,
   prepending: (string | SourceNode)[] | SourceNode | string,
-  separator = " ",
+  separator = whitespaceOf(val),
 ) {
   if (
     isNeedSeparator(
@@ -255,7 +279,7 @@ function prependWithSeparator(
 function insertSeparator(
   a: string | SourceNode,
   b: string | SourceNode,
-  separator = " ",
+  separator = whitespaceOf(a, b),
 ) {
   return isNeedSeparator(a.toString(), b.toString()) ? separator : undefined;
 }
@@ -266,6 +290,7 @@ export class MinifyFile {
   private ast: Chunk;
   private minifier: Minifier;
   private mode: MinifierMode;
+  private requiredWhitespace: " " | "\n";
 
   constructor(
     fileName: string,
@@ -279,22 +304,24 @@ export class MinifyFile {
     this.ast = ast;
     this.minifier = minifier;
     this.mode = mode;
+    this.requiredWhitespace = mode.requiredWhitespace ?? "\n";
   }
 
-  parse(noComment: boolean) {
+  /** 合成文同士の境界も、通常の文リストと同じ区切り判定で出力する。 */
+  printGeneratedStatements(statements: GeneratedStatement[]): SourceNode {
+    return this.formatStatementList(statements);
+  }
+
+  parse() {
     const body = this.formatStatementList(this.ast.body);
-    if (!noComment && this.ast.comments) {
-      const comments = this.ast.comments;
-      comments
-        .reverse()
-        .filter((v) => v.raw.includes("--#") || v.raw.includes("[[#"))
-        .forEach((comment) => {
-          body.prepend([this.sourceNodeHelper(comment, comment.raw), "\n"]);
-        });
-      return body;
-    } else {
-      return body;
-    }
+    this.minifier
+      .getSourceMetadata(this.moduleName)
+      .afterModuleComments()
+      .filter(isPreservedComment)
+      .forEach((comment) => {
+        body.add(["\n", this.sourceNodeHelper(comment, comment.raw)]);
+      });
+    return body;
   }
 
   /**
@@ -303,9 +330,8 @@ export class MinifyFile {
    * 展開したい呼び出し側（#29のレビュー対応）が利用する。
    * 該当しない場合はundefinedを返し、呼び出し側はIIFE方式へフォールバックする。
    */
-  parseAsStatementsAndFinalExpression(
-    noComment: boolean,
-  ): { statements: SourceNode; finalExpression: SourceNode } | undefined {
+  parseAsStatementsAndFinalExpression():
+    { statements: SourceNode; finalExpression: SourceNode } | undefined {
     const body = this.ast.body;
     const last = body[body.length - 1];
     if (
@@ -317,18 +343,21 @@ export class MinifyFile {
     }
 
     const statements = this.formatStatementList(body.slice(0, -1));
-    if (!noComment && this.ast.comments) {
-      this.ast.comments
-        .slice()
-        .reverse()
-        .filter((v) => v.raw.includes("--#") || v.raw.includes("[[#"))
-        .forEach((comment) => {
-          statements.prepend([
-            this.sourceNodeHelper(comment, comment.raw),
-            "\n",
-          ]);
-        });
-    }
+
+    const metadata = this.minifier.getSourceMetadata(this.moduleName);
+    [
+      ...metadata.beforeOf(last),
+      ...metadata.trailingOf(last),
+      ...metadata.afterModuleComments(),
+    ]
+      .filter(isPreservedComment)
+      .forEach((comment) => {
+        statements.add([
+          "\n",
+          this.sourceNodeHelper(comment, comment.raw),
+          "\n",
+        ]);
+      });
 
     const finalExpression = this.formatExpression(last.arguments[0]);
     return { statements, finalExpression };
@@ -343,13 +372,15 @@ export class MinifyFile {
     const column = node?.loc?.start.column;
     // this.fileNameは常にこのMinifyFileインスタンスが担当するモジュール自身の
     // ファイル名（Linkパスで解決済み）なので、ここで出力するノードの由来ファイルとして正しい。
-    return new SourceNode(
+    const sourceNode = new SourceNode(
       line == undefined ? null : line,
       column == undefined ? null : column,
       this.fileName,
       chuncks,
       name,
     );
+    requiredWhitespaceByNode.set(sourceNode, this.requiredWhitespace);
+    return sourceNode;
   }
 
   private _keywordLocator: KeywordLocator | undefined;
@@ -382,6 +413,9 @@ export class MinifyFile {
    * （入れ子の`if...then`等）を誤って拾うことはない。
    */
   private keywordAfter(anchor: Parser.Node, value: string): SourceNode {
+    if (!anchor.loc?.end) {
+      return this.sourceNodeHelper(undefined, value);
+    }
     return this.keywordFrom(anchor.loc?.end, value);
   }
 
@@ -414,10 +448,32 @@ export class MinifyFile {
     );
   }
 
-  private formatStatementList(body: Parser.Statement[] | Parser.Statement) {
+  private formatStatementList(body: GeneratedStatement[] | GeneratedStatement) {
     const result = this.sourceNodeHelper(undefined, []);
+    const metadata = this.minifier.getSourceMetadata(this.moduleName);
     wrapArray(body).forEach((statement) => {
-      addWithSeparator(result, this.formatStatement(statement), "\n");
+      const statementNode = this.sourceNodeHelper(undefined, []);
+      const sourceStatement =
+        statement.type === "ModuleSplice" ? undefined : statement;
+      (sourceStatement ? metadata.beforeOf(sourceStatement) : [])
+        .filter(isPreservedComment)
+        .forEach((comment) => {
+          statementNode.add([
+            this.sourceNodeHelper(comment, comment.raw),
+            "\n",
+          ]);
+        });
+      statementNode.add(this.formatStatement(statement));
+      (sourceStatement ? metadata.trailingOf(sourceStatement) : [])
+        .filter(isPreservedComment)
+        .forEach((comment) => {
+          statementNode.add([
+            this.requiredWhitespace,
+            this.sourceNodeHelper(comment, comment.raw),
+            "\n",
+          ]);
+        });
+      addWithSeparator(result, statementNode, "\n");
     });
     return result;
   }
@@ -435,7 +491,7 @@ export class MinifyFile {
   private trySpliceRequireStatement(
     statement: Parser.LocalStatement | Parser.AssignmentStatement,
   ): SourceNode | undefined {
-    if (this.mode.moduleLikeLua) {
+    if (this.mode.requireWrapper) {
       return undefined;
     }
     if (statement.variables.length !== 1 || statement.init.length !== 1) {
@@ -462,7 +518,10 @@ export class MinifyFile {
 
     const result = this.sourceNodeHelper(statement, []);
     addWithSeparator(result, spliced.statements);
-    addWithSeparator(result, isLocal ? ["local ", targetNode] : [targetNode]);
+    if (isLocal) {
+      addWithSeparator(result, "local");
+    }
+    addWithSeparator(result, targetNode);
     addWithSeparator(result, "=");
     addWithSeparator(result, spliced.finalExpression);
     return result;
@@ -479,17 +538,29 @@ export class MinifyFile {
       | Parser.StringCallExpression
       | Parser.TableCallExpression,
   ): SourceNode | undefined {
-    if (this.mode.moduleLikeLua) {
+    if (this.mode.requireWrapper) {
       return undefined;
     }
     const moduleRef = this.matchModuleCallExpression(expr);
     if (!moduleRef || moduleRef.kind !== "require") {
       return undefined;
     }
+    // 戻り値を使わないrequireでは、依存モジュール末尾のreturn式も不要になる。
+    // return文ごと展開すると呼び出し元を途中でreturnし、後続文がある場合は
+    // 構文上も不正になるため、分離可能なら副作用を持つ先行文だけを出力する。
+    const spliced = this.minifier.splitModuleForStatementSplice(
+      moduleRef.moduleName,
+    );
+    if (spliced) {
+      return spliced.statements;
+    }
     return this.minifier.printModuleInline(moduleRef.moduleName);
   }
 
-  private formatStatement(statement: Parser.Statement): SourceNode {
+  private formatStatement(statement: GeneratedStatement): SourceNode {
+    if (statement.type === "ModuleSplice") {
+      return this.minifier.printModuleInline(statement.moduleName);
+    }
     if (
       statement.type == "AssignmentStatement" ||
       statement.type == "LocalStatement"
@@ -522,10 +593,11 @@ export class MinifyFile {
       const variables = statement.variables
         .map((variable) => [this.formatExpression(variable), ","])
         .flat();
-      const result = this.sourceNodeHelper(statement, [
-        "local ",
+      const result = this.sourceNodeHelper(statement, "local");
+      addWithSeparator(
+        result,
         this.sourceNodeHelper(undefined, variables.slice(0, -1)),
-      ]);
+      );
 
       if (statement.init.length) {
         const inits = statement.init
@@ -611,8 +683,11 @@ export class MinifyFile {
     } else if (statement.type == "FunctionDeclaration") {
       const result = this.sourceNodeHelper(
         statement,
-        (statement.isLocal ? "local " : "") + "function ",
+        statement.isLocal ? "local" : "function",
       );
+      if (statement.isLocal) {
+        addWithSeparator(result, "function");
+      }
       if (statement.identifier) {
         addWithSeparator(result, this.formatExpression(statement.identifier));
       }
@@ -688,10 +763,9 @@ export class MinifyFile {
       ]);
     } else if (statement.type == "GotoStatement") {
       // The identifier names in a `GotoStatement` can safely be renamed
-      return this.sourceNodeHelper(statement, [
-        "goto ",
-        this.generateIdentifier(statement.label),
-      ]);
+      const result = this.sourceNodeHelper(statement, "goto");
+      addWithSeparator(result, this.generateIdentifier(statement.label));
+      return result;
     } else {
       throw TypeError(
         "Unknown statement type: `" + JSON.stringify(statement) + "`",
@@ -709,8 +783,16 @@ export class MinifyFile {
   ): SourceNode {
     if (expression.type == "Identifier") {
       return this.generateIdentifier(expression);
+    } else if (expression.type == "StringLiteral") {
+      const fieldRename = this.minifier.getFieldRename(expression);
+      return fieldRename
+        ? this.sourceNodeHelper(
+            expression,
+            JSON.stringify(fieldRename.name),
+            fieldRename.originalName,
+          )
+        : this.sourceNodeHelper(expression, expression.raw);
     } else if (
-      expression.type == "StringLiteral" ||
       expression.type == "NumericLiteral" ||
       expression.type == "BooleanLiteral" ||
       expression.type == "NilLiteral" ||
@@ -742,7 +824,12 @@ export class MinifyFile {
       });
       if (operator == "^" || operator == "..") {
         associativity = "right";
-      } else if (
+      }
+      // 上のif（結合則の決定）とは独立に判定する必要がある。else ifだと`^`と`..`が
+      // ここに来ず、優先順位の高い演算子の中に現れても丸括弧が付かなくなる
+      // （#52。例: `0.5 % (2 .. 16)`が`0.5%2 ..16`になり、`%`の方が優先順位が
+      // 高いため意味の違うコードとして読み直されてしまっていた）。
+      if (
         currentPrecedence < options.precedence ||
         (currentPrecedence == options.precedence &&
           associativity != options.direction &&
@@ -846,12 +933,19 @@ export class MinifyFile {
         "]",
       ]);
     } else if (expression.type == "MemberExpression") {
+      const fieldRename = this.minifier.getFieldRename(expression.identifier);
       return this.sourceNodeHelper(expression, [
         this.formatBase(expression.base),
         expression.indexer,
-        this.formatExpression(expression.identifier, {
-          preserveIdentifiers: true,
-        }),
+        fieldRename
+          ? this.sourceNodeHelper(
+              expression.identifier,
+              fieldRename.name,
+              fieldRename.originalName,
+            )
+          : this.formatExpression(expression.identifier, {
+              preserveIdentifiers: true,
+            }),
       ]);
     } else if (expression.type == "FunctionDeclaration") {
       const result = this.sourceNodeHelper(expression, ["function", "("]);
@@ -911,10 +1005,19 @@ export class MinifyFile {
           } else {
             // at this point, `field.type == 'TableKeyString'`
             // TODO: keep track of nested scopes (#18)
+            const fieldRename = this.minifier.getFieldRename(field.key);
             return this.sourceNodeHelper(
               field,
               [
-                this.formatExpression(field.key, { preserveIdentifiers: true }),
+                fieldRename
+                  ? this.sourceNodeHelper(
+                      field.key,
+                      fieldRename.name,
+                      fieldRename.originalName,
+                    )
+                  : this.formatExpression(field.key, {
+                      preserveIdentifiers: true,
+                    }),
                 "=",
                 this.formatExpression(field.value),
                 comma,
@@ -935,17 +1038,26 @@ export class MinifyFile {
     }
   }
 
+  /**
+   * インデックス・メンバー参照・呼び出しの基底を出力する。
+   *
+   * Luaの文法で基底にそのまま置けるのは、変数・インデックス式・関数呼び出しだけで
+   * ある。それ以外の式は丸括弧で包まないと基底に置けない（`3 .x` も `"a":upper()`
+   * も構文エラーになる）。そのため、包む必要のある型を数え上げるのではなく、
+   * そのまま置ける形かどうかだけを見る。式の種類が増えても、元のソースには現れない
+   * 式を基底へ置く変換（定数畳み込みなど）が入っても、この判定だけで正しい括弧が付く。
+   */
   private formatBase(base: Parser.Expression): SourceNode {
     const type = base.type;
-    const needsParens =
+    const canStandAsBase =
+      type == "Identifier" ||
+      type == "MemberExpression" ||
+      type == "IndexExpression" ||
       type == "CallExpression" ||
-      type == "BinaryExpression" ||
-      type == "FunctionDeclaration" ||
-      type == "TableConstructorExpression" ||
-      type == "LogicalExpression" ||
-      type == "StringLiteral";
+      type == "StringCallExpression" ||
+      type == "TableCallExpression";
     const result = this.sourceNodeHelper(base, this.formatExpression(base));
-    if (needsParens) {
+    if (!canStandAsBase) {
       prependWithSeparator(result, "(");
       addWithSeparator(result, ")");
     }
@@ -994,16 +1106,16 @@ export class MinifyFile {
       return this.minifier.printModuleInline(ref.moduleName);
     }
 
-    if (!this.mode.moduleLikeLua) {
+    if (!this.mode.requireWrapper) {
       // SLモード（無オプション）: requireもキャッシュせずその場展開する
       // （挙動互換性のため、ホイストした共有ローカルへの参照にはしない）。
       // 式の位置に置けるようにIIFEで包む。
       const body = this.minifier.printModuleInline(ref.moduleName);
-      return this.sourceNodeHelper(expression, [
-        "(function() ",
-        body,
-        " end)()",
-      ]);
+      const result = this.sourceNodeHelper(expression, "(function()");
+      addWithSeparator(result, body);
+      addWithSeparator(result, "end");
+      result.add(")()");
+      return result;
     }
 
     // -mモードのrequireはそのまま呼び出しとして出力し、実行時のrequire関数に委ねる

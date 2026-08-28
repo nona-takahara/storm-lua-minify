@@ -1,1 +1,3 @@
-local a={value=42}local b={value=42}print(a.value,b.value)
+local
+a={a=42}local
+b={a=42}print(a.a,b.a)
