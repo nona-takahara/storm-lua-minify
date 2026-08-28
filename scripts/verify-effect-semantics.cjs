@@ -210,7 +210,10 @@ local source={long_field_name=3,second_field_name=4}
 local target={}
 for key,value in next,source do target[key]=source[key] end
 print(target.long_field_name,target["second_field_name"])
-for key,value in pairs(source) do print(key,value) end
+local keys={}
+for key in pairs(source) do keys[#keys+1]=key end
+table.sort(keys)
+for _,key in ipairs(keys) do print(key,source[key]) end
 `;
   const entry = path.join(fixtureDirectory, "main.lua");
   const minifiedFile = path.join(fixtureDirectory, "main.min.lua");
