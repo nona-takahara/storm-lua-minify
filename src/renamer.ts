@@ -205,8 +205,56 @@ function buildVariableInterference(
     });
   });
 
+  // Liveness alone does not model Lua's lexical shadowing. An earlier local
+  // may be dead at a later declaration and then be assigned again; if both
+  // declarations receive one spelling, the later declaration captures that
+  // assignment and every following reference. Preserve reuse when all uses of
+  // the earlier binding precede the later declaration, but add an edge when
+  // any use follows it.
+  const declarationOrder = new Map(
+    symbols.map((symbol) => [
+      symbol,
+      requireResolutionOrder(resolved, symbol.declaration),
+    ]),
+  );
+  const lastReferenceOrder = new Map(
+    symbols.map((symbol) => [
+      symbol,
+      symbol.references.reduce(
+        (last, reference) =>
+          Math.max(last, requireResolutionOrder(resolved, reference)),
+        -1,
+      ),
+    ]),
+  );
+  for (let left = 0; left < symbols.length; left++) {
+    for (let right = left + 1; right < symbols.length; right++) {
+      const first = symbols[left];
+      const last = symbols[right];
+      if (first.scope !== last.scope) continue;
+      const firstDeclarationOrder = declarationOrder.get(first) ?? -1;
+      const lastDeclarationOrder = declarationOrder.get(last) ?? -1;
+      const [earlier, laterDeclarationOrder] =
+        firstDeclarationOrder < lastDeclarationOrder
+          ? [first, lastDeclarationOrder]
+          : [last, firstDeclarationOrder];
+      if ((lastReferenceOrder.get(earlier) ?? -1) > laterDeclarationOrder)
+        addEdge(graph, first, last);
+    }
+  }
+
   addLexicalEdges(graph, symbols, allowLocalNameReuse);
   return graph;
+}
+
+function requireResolutionOrder(
+  resolved: ResolveResult,
+  identifier: Parser.Identifier,
+): number {
+  const order = resolved.resolutionOrderOf(identifier);
+  if (order === undefined)
+    throw new Error("Resolved identifier has no resolution order");
+  return order;
 }
 
 function buildLexicalGraph(
@@ -386,10 +434,19 @@ function validateBindings(
       return;
     }
     [symbol.declaration, ...symbol.references].forEach((identifier) => {
-      if (recolored.symbolOf(identifier)?.declaration !== symbol.declaration)
+      const rebound = recolored.symbolOf(identifier);
+      if (rebound?.declaration !== symbol.declaration) {
+        const reboundOriginal = rebound
+          ? original.symbolOf(rebound.declaration)
+          : undefined;
         throw new Error(
-          `Identifier coloring changed binding for symbol ${String(symbol.id)}`,
+          `Identifier coloring changed binding for symbol ${String(symbol.id)} ` +
+            `(${symbol.name} -> ${names.get(symbol) ?? symbol.name}, ` +
+            `declaration ${formatIdentifierLocation(symbol.declaration)}, ` +
+            `reference ${formatIdentifierLocation(identifier)}, ` +
+            `rebound to ${reboundOriginal ? `symbol ${String(reboundOriginal.id)} (${reboundOriginal.name} -> ${names.get(reboundOriginal) ?? reboundOriginal.name}) at ${formatIdentifierLocation(reboundOriginal.declaration)}` : "global"})`,
         );
+      }
     });
   });
   original.globals.forEach((binding) => {
@@ -398,4 +455,11 @@ function validateBindings(
         throw new Error(`Identifier coloring captured global ${binding.name}`);
     });
   });
+}
+
+function formatIdentifierLocation(identifier: Parser.Identifier): string {
+  const location = identifier.loc?.start;
+  return location
+    ? `${String(location.line)}:${String(location.column)}`
+    : "unknown";
 }
