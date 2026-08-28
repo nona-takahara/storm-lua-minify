@@ -20,8 +20,6 @@ npx storm-lua-minify script.lua
 
 `--no-progress`で表示を無効化できます。パイプやCIなどの非対話環境では既定で無効ですが、`--progress`を指定するとステップの開始と完了を通常のログ行として標準エラーへ出力します。
 
-スピナーの最短更新間隔は、`src/cliProgress.ts`の`CLI_PROGRESS_INTERVAL_MS`を変更して再ビルドすることで調整できます。
-
 ## v1オプション体系
 
 最適化オプションは、個別スイッチ、機能グループ、最上位の`optimizations`という階層を持ちます。すべてのboolean CLIスイッチに肯定形と否定形があります。
@@ -69,36 +67,6 @@ storm-lua-minify --config storm-lua-minify.json --no-function-inlining script.lu
 | `unused-code-removal`      | `unused-local-removal`, `unused-function-removal`, `unused-field-initializer-removal`                            |
 
 `global-renaming`と三つの定数最適化は既定で無効です。それ以外の実装済み末端最適化は既定で有効ですが、安全性の条件を満たさない候補は実行されません。
-
-### 切り離しの判断基準
-
-個別スイッチは、実装上の関数の数ではなく、利用者が別々に許可・拒否したい意味変化を境界にします。同じ解析や変換パスを共有していても、次のいずれかが異なるなら別スイッチにします。
-
-- 式や文の評価順・評価回数を変えるか
-- metatable、debug API、外部から保持されたtableやglobal名を通じて変化を観測できるか
-- 一つのファイル内の事実だけで判断できるか、リンクされた全モジュールの仮定が必要か
-- 変換そのものを選ぶ設定か、変換を安全とみなすための仮定か
-
-現在の末端スイッチは、この基準で次のように分けています。
-
-| 変換単位                                                            | 主な境界                                                                                                                                 |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `local-renaming`, `global-renaming`, `field-renaming`               | local、global、fieldでは名前を外部から観測する経路が異なる。globalとfieldはリンクされた全モジュールを調べる                              |
-| `local-name-reuse`                                                  | 名前を短くすることとは別に、異なる生存期間で同じ名前を再利用する。debug introspectionからの観測条件を持つ                                |
-| `global-aliasing`                                                   | global名自体の変更ではなく、localへの読取りを追加する。alias宣言を後続の文結合より先に実行する                                           |
-| `local-declaration-merging`                                         | 隣接宣言を一つの並列代入へ変える。初期化式の評価順と束縛前参照を保存できる候補に限る                                                     |
-| `local-declaration-hoisting`                                        | 離れた宣言を移動するため、localの生存期間と文の実行順を変え得る                                                                          |
-| `table-read-merging`                                                | table readをwriteの前後で移動し得る。値の観測可能性は`allow-observable-table-read-changes`で別に許可する                                 |
-| `field-sensitive-table-effects`                                     | 変換の有無ではなく、table全体かstatic field単位かというwrite影響範囲の精度を選ぶ                                                         |
-| `constant-expression-evaluation`                                    | リテラルだけの演算を先に計算する。metamethodや暗黙の文字列数値変換を伴う式は対象にせず、実行順を変えても新しい効果が生じない範囲に閉じる |
-| `local-constant-propagation`                                        | 定数式の計算とは別に、local宣言を参照先へ伝搬する。宣言の削除やdebugからの観測が異なる                                                   |
-| `interprocedural-constant-propagation`                              | 関数要約を介してモジュール内外へ定数を伝えるため、局所伝搬と分ける                                                                       |
-| `parameter-pruning`, `function-inlining`, `function-specialization` | 引数評価を残してparameterだけ減らす、呼出しを本体へ置換する、複数呼出しを集約して専用化する、という実行構造の違いで分ける                |
-| `field-value-propagation`                                           | 全モジュールのconstructorとescapeを解析し、安定したfield readを値へ置換する                                                              |
-| `unused-local-removal`, `unused-function-removal`                   | 同じ未使用解析を使っても、値宣言とfunction宣言では削除対象・観測経路が異なる                                                             |
-| `unused-field-initializer-removal`, `unused-export-removal`         | 前者はconstructor field、後者はentryから到達不能なexportを全プログラム解析で削除する。initializerの効果は残す                            |
-
-新しい変換を追加するときは、まず既存の末端スイッチと上記の境界が一致するかを確認します。一致する場合はその変換単位へ挿入し、異なる仮定や観測経路を持つ場合は新しい末端スイッチを作ります。単に同じファイルへ実装されていることは、スイッチをまとめる理由にしません。
 
 ### 実行環境と仮定
 
@@ -176,37 +144,6 @@ EmmyLuaの`class`／継承、`field`、`param`／`return`／`type`、`alias`／`
 
 そのような規約がある場合は`global-renaming`を無効にするか、保護する名前を`never-rename-globals`へ列挙してください。
 
-# 開発・テスト
+# 開発に参加する
 
-開発はpnpmに変更になっています（v0.3.0リリース時点より）
-
-```
-pnpm ci
-pnpm run build
-pnpm run test:smoke     # 配布CLIの最小動作を5秒タイムアウトで確認
-pnpm test
-pnpm run verify:lua-budget       # Windowsのluac53で49/50/51境界を確認
-pnpm run verify:effect-semantics # Windowsのlua53で変換前後を差分実行
-pnpm run report:optimizer        # 候補・拒否理由・最終byte比較をJSON出力
-pnpm run report:whole-program-exports -- <entry.lua> # module export到達性と最終byte比較
-```
-
-テストは、内部の解析・変換境界を直接観測するホワイトボックステスト、公開された入力と出力を仕様として記述する契約テスト、配布CLIが起動してLuaとSource Mapを生成できることだけを先に確かめるスモークテストに分けています。通常の`pnpm test`は前二者を実行し、`pnpm run test:smoke`はビルド後にスモークテストだけを実行します。CIではスモークテストが成功した場合に限り、lint・format・全テストへ進みます。
-
-optimizerの文移動とlocal宣言packingは、共通のCFG・liveness・文間依存DAGを使います。通常のminifyでもschedulerなしのbaselineとschedulerありのtrialを別々の`Minifier`で最終Rename／Printまで評価し、trialがUTF-8 byte数で厳密に短い場合だけ採用します。同長・増加・trial失敗時は、AST、Resolve、SourceMetadata、Source Mapを共有していないbaselineへ戻ります。
-
-ライブラリAPIで`collectOptimizationDiagnostics: true`を指定すると、`Minifier.optimizationDiagnostics`からruntime／module／pass別の候補採否、依存DAG上の拒否理由、最終cost gateの判断を取得できます。既定はoffで、on/offによって生成コードとSource Mapは変化しません。`selectTransactionalMinifierVariant`は任意のmode同士を同じ条件で比較する調査用APIとして引き続き利用できます。
-
-# Lint / Format
-
-```
-pnpm run lint          # ESLint
-pnpm run format:check  # Prettierのフォーマットチェック
-pnpm run format        # Prettierでフォーマット
-```
-
-`test/` 以下にスナップショット・ラウンドトリップパース・識別子衝突検知のテストがあります。
-既知バグ（#11, #12 など）の再現ケースは `test.todo` として登録されており、`npm test` は成功しますが、
-修正が入るまではそのテスト自体は失敗した状態のまま todo 扱いになります。
-
-スナップショットを更新する場合は `UPDATE_SNAPSHOTS=1 npm test` を実行してください。
+開発環境の構築、テスト構成、最適化を追加するときの判断基準、`scripts/`の調査・検証コマンドについては[開発者向けガイド](DEVELOPMENT.md)を参照してください。
