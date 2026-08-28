@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import Parser from "luaparse";
 import { resolveScopes } from "../src/resolver";
 import { insertGlobalAliases } from "../src/transform";
+import { minifyTemporaryLuaProject } from "./lib/minifierHarness";
 import { runMinifier } from "./lib/helpers";
 
 describe("global alias insertion", () => {
@@ -79,6 +80,43 @@ describe("global alias insertion", () => {
 
     // Assigned globals belong to global renaming, not alias insertion.
     assert.equal(chunk.body.length, 5);
+  });
+
+  test("a global written by another module is not captured before that module runs", () => {
+    const { code } = minifyTemporaryLuaProject(
+      {
+        "main.lua": `
+          function onTick()
+            calculateTick()
+            calculateTick()
+            calculateTick()
+            calculateTick()
+            calculateTick()
+          end
+          require("implementation")
+        `,
+        "implementation.lua": `
+          function calculateTick()
+            return 1
+          end
+        `,
+      },
+      {
+        requireWrapper: false,
+        optimizations: false,
+        localRenaming: true,
+        globalRenaming: false,
+        globalAliasing: true,
+        neverRenameGlobals: new Set(["onTick"]),
+      },
+    );
+
+    assert.equal(
+      /local\s+\w+\s*=\s*calculateTick/.test(code),
+      false,
+      `program-owned global must not be captured as an external alias: ${code}`,
+    );
+    assert.match(code, /calculateTick\(\)/);
   });
 
   test("require and dofile are never aliased even when referenced frequently", () => {
