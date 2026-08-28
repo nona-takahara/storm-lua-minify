@@ -87,13 +87,17 @@ describe.each([false, true])(
   },
 );
 
-test("SL require statement splicing remains protected from local hoisting", () => {
-  const enabled = minify(false);
-  const disabledHoist = minify(false, { localDeclarationHoisting: false });
+describe("direct require splicing", () => {
+  test("remains protected from local hoisting", () => {
+    const enabled = minify(false);
+    const disabledHoist = minify(false, { localDeclarationHoisting: false });
 
-  assert.doesNotThrow(() => Parser.parse(enabled, { luaVersion: "5.3" }));
-  assert.doesNotThrow(() => Parser.parse(disabledHoist, { luaVersion: "5.3" }));
-  assert.doesNotMatch(enabled, /require\s*\(?["']dep["']/);
-  assert.match(enabled, /depStep\(\)/);
-  assert.match(enabled, /mainStep\(\)/);
+    assert.doesNotThrow(() => Parser.parse(enabled, { luaVersion: "5.3" }));
+    assert.doesNotThrow(() =>
+      Parser.parse(disabledHoist, { luaVersion: "5.3" }),
+    );
+    assert.doesNotMatch(enabled, /require\s*\(?["']dep["']/);
+    assert.match(enabled, /depStep\(\)/);
+    assert.match(enabled, /mainStep\(\)/);
+  });
 });

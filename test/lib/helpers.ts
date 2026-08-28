@@ -48,100 +48,92 @@ export function runMinifier(c: FixtureCase): {
   return { code, map: map.toJSON() };
 }
 
-// require() / require "m" / dofile が正しく解決される、動作が確認できているケース。
-// スナップショット・ラウンドトリップ・識別子衝突検知の全テストで「衝突・構文エラーが無い」ことを期待する。
+// Every case satisfies the approved-output, parseability, and binding contracts.
 export const WORKING_CASES: FixtureCase[] = [
   {
-    label: "単一ファイル",
+    label: "single file",
     fixture: "single-file",
     mode: { requireWrapper: false },
   },
   {
-    label: 'require("m") 構文 (-m モード)',
+    label: 'require("m") call syntax (wrapper mode)',
     fixture: "require-call",
     mode: { requireWrapper: true },
   },
   {
-    label: "dofile (SLモード)",
+    label: "dofile (direct-splice mode)",
     fixture: "dofile",
     mode: { requireWrapper: false },
   },
   {
-    label: "同一モジュールの多重require (-m モード)",
+    label: "repeated require of one module (wrapper mode)",
     fixture: "multi-require",
     mode: { requireWrapper: true },
   },
   {
-    label: "エントリ直下で多数のrequire (-m モード, #12回帰防止)",
+    label: "many top-level requires (wrapper mode)",
     fixture: "entry-scope-many-requires",
     mode: { requireWrapper: true },
   },
   {
-    label: "ビット演算子・整数除算の優先順序 (#27回帰防止)",
+    label: "bitwise and floor-division precedence (issue #27 regression)",
     fixture: "bitwise-precedence",
     mode: { requireWrapper: false },
   },
   {
-    label:
-      'require "m" (括弧なし文字列呼び出し構文) が解決される (-m モード, #18/#11修正確認)',
+    label: 'require "m" string-call syntax resolves in wrapper mode',
     fixture: "require-string-call",
     mode: { requireWrapper: true },
   },
   {
-    label:
-      "SLモードでrequireしたモジュールが文としてその場展開される (#18/#11修正確認)",
+    label: "direct-splice mode expands a required module at the call site",
     fixture: "require-call",
     mode: { requireWrapper: false },
   },
   {
-    label:
-      "SLモードで同一モジュールを多重requireすると呼び出しごとに独立して文展開される (#18/#11修正確認)",
+    label: "direct-splice mode expands repeated requires independently",
     fixture: "multi-require",
     mode: { requireWrapper: false },
   },
   {
     label:
-      "SLモードで戻り値を使わない単独のrequire文はdofileと同様functionで包まずそのまま展開される (#29対応確認)",
+      "direct-splice mode expands a bare require without a function wrapper",
     fixture: "bare-require",
     mode: { requireWrapper: false },
   },
   {
     label:
-      "SLモードでrequireが式の一部（ネスト位置）に現れる場合はIIFEにフォールバックする (#29対応確認)",
+      "direct-splice mode falls back to an IIFE for a nested require expression",
     fixture: "require-in-expression",
     mode: { requireWrapper: false },
   },
   {
-    label:
-      "ドット区切りのモジュール名（サブディレクトリ）が解決される (-m モード, #21 Source Map確認)",
+    label: "a dotted module name resolves to a subdirectory in wrapper mode",
     fixture: "nested-module",
     mode: { requireWrapper: true },
   },
   {
     label:
-      "連続するrequire文はまとめ上げられるが、参照順序ハザードのある宣言は分割のまま (-m モード, #9確認)",
+      "wrapper mode merges adjacent requires but preserves reference-order hazards",
     fixture: "merge-locals",
     mode: { requireWrapper: true },
   },
   {
-    label:
-      "SLモードでは連続するrequire文はrequire splice最適化(#29)を優先しまとめ上げない (#9確認)",
+    label: "direct-splice mode keeps adjacent requires separate for splicing",
     fixture: "merge-locals",
     mode: { requireWrapper: false },
   },
   {
-    label:
-      "頻出するリネーム不可グローバルはローカル代入エイリアスに短縮される (#8b確認)",
+    label: "a frequent non-renamable global receives a local alias",
     fixture: "global-alias",
     mode: { requireWrapper: false },
   },
   {
-    label: "定数の事前計算と定数伝搬 (#44)",
+    label: "constant evaluation and propagation",
     fixture: "const-fold",
     mode: { requireWrapper: false, constantOptimizations: true },
   },
 ];
 
-// 既知バグの再現ケース。現状は failing のため `test.todo` で登録する。
-// 修正が入ったら .todo を外して WORKING_CASES に合流させること。
+// These fixtures join WORKING_CASES once they satisfy the shared contracts.
 export const KNOWN_BUG_CASES: KnownBugCase[] = [];

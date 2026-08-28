@@ -10,7 +10,7 @@ function minify(source: string, mode: Partial<MinifierMode>): string {
   ).code;
 }
 
-describe("Issue #42 local-run planner profiles", () => {
+describe("local-run planner profiles", () => {
   test("keeps pure-Lua independent merging as an opt-out", () => {
     const source = "local first=f() local second=g() use(first,second)";
     const enabled = minify(source, {

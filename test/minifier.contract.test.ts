@@ -37,7 +37,7 @@ describe("minified output contract", () => {
 
   for (const fixture of KNOWN_BUG_CASES) {
     test.todo(
-      `${fixture.label} satisfies the output contract after issue #${String(fixture.issue)} is fixed`,
+      `${fixture.label} satisfies the output contract (issue #${String(fixture.issue)})`,
     );
   }
 });
