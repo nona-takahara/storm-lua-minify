@@ -78,36 +78,36 @@ storm-lua-minify --config storm-lua-minify.json --no-function-inlining script.lu
 
 これらの機能は実際のコードに対して、圧縮が強まる仮定を置く機能です。仮定が誤っているとコードの結果が変化することがあるため、注意してください。
 
-| 仮定 | 既定 | 説明 |
-| --- | --- | --- |
-| `allow-introspection-changes` | `lua53`: OFF<br>`stormworks`: ON | local名・生存期間、parameter、stack frameなどdebug APIから観測できる変更を許可します。<br>**現時点では`stormworks`プロファイルではOFFできません** |
-| `assume-annotations` | OFF | EmmyLuaアノテーションを最適化の変換根拠として信頼します |
-| `allow-observable-table-read-changes` | OFF | テーブルから読み取ってlocal変数を初期化する処理について、テーブルへの書き込み前へ移動する候補を許可します。local変数の値がテーブルへの書き込み前の値に変わる可能性があります |
+| 仮定                                  | 既定                             | 説明                                                                                                                                                                         |
+| ------------------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allow-introspection-changes`         | `lua53`: OFF<br>`stormworks`: ON | local名・生存期間、parameter、stack frameなどdebug APIから観測できる変更を許可します。<br>**現時点では`stormworks`プロファイルではOFFできません**                            |
+| `assume-annotations`                  | OFF                              | EmmyLuaアノテーションを最適化の変換根拠として信頼します                                                                                                                      |
+| `allow-observable-table-read-changes` | OFF                              | テーブルから読み取ってlocal変数を初期化する処理について、テーブルへの書き込み前へ移動する候補を許可します。local変数の値がテーブルへの書き込み前の値に変わる可能性があります |
 
 ### 個別スイッチ
 
-| スイッチ | 既定 | 説明 |
-| --- | --- | --- |
-| `local-renaming` | ON | local名を短くします |
-| `local-name-reuse` | ON | 生存期間が重ならないlocalで同じ名前を再利用します |
-| `global-renaming` | **OFF** | 内部で使うglobal名を短くします（※1） |
-| `field-renaming` | ON | 安全に変更できるfield名を短くします |
-| `global-aliasing` | ON | 繰り返し参照するglobalへ短いlocal名を割り当てます |
-| `local-declaration-merging` | ON | 連続するlocal宣言をまとめます |
-| `local-declaration-hoisting` | ON | local宣言を移動してまとめやすくします |
-| `table-read-merging` | ON | tableを読み取るlocal宣言をまとめます |
-| `field-sensitive-table-effects` | ON | tableへの書き込みの影響をfield単位で判定します |
-| `constant-expression-evaluation` | **OFF** | 定数だけからなる式を事前に計算します |
-| `local-constant-propagation` | **OFF** | 再代入されないlocalの定数を参照先へ伝えます |
-| `interprocedural-constant-propagation` | **OFF** | 関数の呼び出しを越えて定数を伝えます |
-| `parameter-pruning` | ON | 使われない関数parameterを取り除きます |
-| `function-inlining` | ON | 関数呼び出しを関数本体で置き換えます |
-| `function-specialization` | ON | 呼び出し方に合わせて関数を特殊化します |
-| `field-value-propagation` | ON | 安定したfieldの値を参照先へ伝えます |
-| `unused-local-removal` | ON | 未使用のlocalを取り除きます |
-| `unused-function-removal` | ON | 未使用のlocal関数を取り除きます |
-| `unused-field-initializer-removal` | ON | 読み取られないfieldの初期化を取り除きます |
-| `unused-export-removal` | ON | entryから到達できないmodule exportを取り除きます |
+| スイッチ                               | 既定    | 説明                                              |
+| -------------------------------------- | ------- | ------------------------------------------------- |
+| `local-renaming`                       | ON      | local名を短くします                               |
+| `local-name-reuse`                     | ON      | 生存期間が重ならないlocalで同じ名前を再利用します |
+| `global-renaming`                      | **OFF** | 内部で使うglobal名を短くします（※1）              |
+| `field-renaming`                       | ON      | 安全に変更できるfield名を短くします               |
+| `global-aliasing`                      | ON      | 繰り返し参照するglobalへ短いlocal名を割り当てます |
+| `local-declaration-merging`            | ON      | 連続するlocal宣言をまとめます                     |
+| `local-declaration-hoisting`           | ON      | local宣言を移動してまとめやすくします             |
+| `table-read-merging`                   | ON      | tableを読み取るlocal宣言をまとめます              |
+| `field-sensitive-table-effects`        | ON      | tableへの書き込みの影響をfield単位で判定します    |
+| `constant-expression-evaluation`       | **OFF** | 定数だけからなる式を事前に計算します              |
+| `local-constant-propagation`           | **OFF** | 再代入されないlocalの定数を参照先へ伝えます       |
+| `interprocedural-constant-propagation` | **OFF** | 関数の呼び出しを越えて定数を伝えます              |
+| `parameter-pruning`                    | ON      | 使われない関数parameterを取り除きます             |
+| `function-inlining`                    | ON      | 関数呼び出しを関数本体で置き換えます              |
+| `function-specialization`              | ON      | 呼び出し方に合わせて関数を特殊化します            |
+| `field-value-propagation`              | ON      | 安定したfieldの値を参照先へ伝えます               |
+| `unused-local-removal`                 | ON      | 未使用のlocalを取り除きます                       |
+| `unused-function-removal`              | ON      | 未使用のlocal関数を取り除きます                   |
+| `unused-field-initializer-removal`     | ON      | 読み取られないfieldの初期化を取り除きます         |
+| `unused-export-removal`                | ON      | entryから到達できないmodule exportを取り除きます  |
 
 安全性の条件を満たさない候補は、スイッチが有効でも実行されません。
 
@@ -123,16 +123,16 @@ storm-lua-minify --config storm-lua-minify.json --no-function-inlining script.lu
 
 機能グループのスイッチを設定すると、個別スイッチをまとめてオンオフします。
 
-| 機能グループ | 個別スイッチ |
-| --- | --- |
-| `optimizations` | 以下の全機能グループ（他の機能グループ設定の方が優先されます） |
-| `identifier-optimizations` | `local-renaming`, `local-name-reuse`, `global-renaming`, `field-renaming`, `global-aliasing` |
-| `statement-optimizations` | `local-declaration-merging`, `local-declaration-hoisting`, `table-read-merging`, `field-sensitive-table-effects` |
-| `constant-optimizations` | `constant-expression-evaluation`, `local-constant-propagation`, `interprocedural-constant-propagation` |
-| `function-optimizations` | `parameter-pruning`, `function-inlining`, `function-specialization` |
-| `object-optimizations` | `field-value-propagation` |
-| `dead-code-optimizations` | `unused-code-removal`, `unused-export-removal` |
-| `unused-code-removal` | `unused-local-removal`, `unused-function-removal`, `unused-field-initializer-removal` |
+| 機能グループ               | 個別スイッチ                                                                                                     |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `optimizations`            | 以下の全機能グループ（他の機能グループ設定の方が優先されます）                                                   |
+| `identifier-optimizations` | `local-renaming`, `local-name-reuse`, `global-renaming`, `field-renaming`, `global-aliasing`                     |
+| `statement-optimizations`  | `local-declaration-merging`, `local-declaration-hoisting`, `table-read-merging`, `field-sensitive-table-effects` |
+| `constant-optimizations`   | `constant-expression-evaluation`, `local-constant-propagation`, `interprocedural-constant-propagation`           |
+| `function-optimizations`   | `parameter-pruning`, `function-inlining`, `function-specialization`                                              |
+| `object-optimizations`     | `field-value-propagation`                                                                                        |
+| `dead-code-optimizations`  | `unused-code-removal`, `unused-export-removal`                                                                   |
+| `unused-code-removal`      | `unused-local-removal`, `unused-function-removal`, `unused-field-initializer-removal`                            |
 
 ## Source Map
 
