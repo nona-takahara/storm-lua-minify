@@ -1,20 +1,12 @@
-import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
-import { analyzeOptimizer } from "../src/optimizerAnalysis";
-import { resolveScopes } from "../src/resolver";
 import {
   applyStatementSchedule,
   planStatementSchedule,
 } from "../src/statementScheduler";
+import { analyzeLua } from "./lib/optimizerHarness";
 
 function plan(source: string) {
-  const chunk = Parser.parse(source, {
-    luaVersion: "5.3",
-    locations: true,
-    ranges: true,
-  });
-  const resolved = resolveScopes(chunk);
-  const analysis = analyzeOptimizer(chunk, resolved);
+  const { chunk, resolved, analysis } = analyzeLua(source);
   const schedule = planStatementSchedule(chunk, resolved, {
     facts: analysis.facts,
     dataflow: analysis.statementDataflow,

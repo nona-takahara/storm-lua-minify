@@ -1,20 +1,18 @@
 import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
 import { resolveScopes } from "../src/resolver";
-import { analyzeOptimizer } from "../src/optimizerAnalysis";
 import {
   applyStatementSchedule,
   planStatementSchedule,
 } from "../src/statementScheduler";
+import { analyzeLua } from "./lib/optimizerHarness";
 
 function plan(
   source: string,
   dirtyGranularity: "table" | "static-key" = "table",
   maxMergeArityAt?: (statement: Parser.LocalStatement) => number,
 ) {
-  const chunk = Parser.parse(source, { luaVersion: "5.3" });
-  const resolved = resolveScopes(chunk);
-  const analysis = analyzeOptimizer(chunk, resolved);
+  const { chunk, resolved, analysis } = analyzeLua(source);
   const schedule = planStatementSchedule(chunk, resolved, {
     facts: analysis.facts,
     dataflow: analysis.statementDataflow,

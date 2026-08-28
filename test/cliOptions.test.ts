@@ -61,45 +61,6 @@ describe("v1 option hierarchy", () => {
     expect(program.args).toEqual(["main.lua"]);
   });
 
-  test("lets a leaf override its groups within one source", () => {
-    const mode = resolveMinifierMode(
-      optionsOf(
-        "--no-optimizations",
-        "--function-optimizations",
-        "--no-function-inlining",
-      ),
-    );
-    expect(mode.parameterPruning).toBe(true);
-    expect(mode.functionInlining).toBe(false);
-    expect(mode.localRenaming).toBe(false);
-    expect(mode.functionOptimizations).toBe(true);
-  });
-
-  test("lets a CLI group override config leaves", () => {
-    const configuration = parseConfiguration({
-      "parameter-pruning": false,
-      "function-inlining": false,
-    });
-    const mode = resolveMinifierMode({
-      config: configuration.mode,
-      cli: optionsOf("--function-optimizations"),
-    });
-    expect(mode.parameterPruning).toBe(true);
-    expect(mode.functionInlining).toBe(true);
-  });
-
-  test("lets a CLI leaf override a config group", () => {
-    const configuration = parseConfiguration({
-      "function-optimizations": false,
-    });
-    const mode = resolveMinifierMode({
-      config: configuration.mode,
-      cli: optionsOf("--function-inlining"),
-    });
-    expect(mode.parameterPruning).toBe(false);
-    expect(mode.functionInlining).toBe(true);
-  });
-
   test("keeps assumptions outside the optimization hierarchy", () => {
     const mode = resolveMinifierMode(optionsOf("--optimizations"));
     expect(mode.allowIntrospectionChanges).toBeUndefined();

@@ -12,12 +12,8 @@ interface Declaration {
   original: string | null;
 }
 
-// 出力（minify後）のLuaコードを対象に、同一スコープ内で同じ短縮名が
-// 「別のオリジナル識別子」に割り当てられていないかを検証する（#12の回帰防止）。
-//
-// 既知の制限（テストハーネスの簡易実装）:
-// - 文（Statement）としてのスコープのみを辿る。式中の無名関数
-//   （例: `local t = { f = function() ... end }`）の内部は対象外。
+// Detect distinct source bindings that receive the same name in one output scope.
+// The harness follows statement scopes and excludes functions nested in expressions.
 export async function findIdentifierCollisions(
   code: string,
   rawMap: RawSourceMap,
