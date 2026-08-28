@@ -20,19 +20,33 @@ import { ResolveResult } from "./resolver";
 import { generateCandidate, isAvailable } from "./renamer";
 import { RESERVED_MODULE_FUNCTION_NAMES } from "./linker";
 
+/**
+ * Returns names whose shared global binding is written by any linked module.
+ * A module that only reads one of these names must not mistake it for a
+ * read-only value supplied by the runtime environment.
+ */
+export function collectProgramWrittenGlobals(
+  moduleResolve: ReadonlyMap<string, ResolveResult>,
+): Set<string> {
+  const written = new Set<string>();
+  moduleResolve.forEach((resolved) => {
+    resolved.globals.forEach((binding) => {
+      if (binding.writes.length > 0) written.add(binding.name);
+    });
+  });
+  return written;
+}
+
 export function classifyAndRenameGlobals(
   moduleResolve: ReadonlyMap<string, ResolveResult>,
   neverRename: ReadonlySet<string>,
   reserved: ReadonlySet<string>,
 ): Map<string, string> {
-  const everWritten = new Set<string>();
+  const everWritten = collectProgramWrittenGlobals(moduleResolve);
   const totalReferenceCount = new Map<string, number>();
 
   moduleResolve.forEach((resolved) => {
     resolved.globals.forEach((binding) => {
-      if (binding.writes.length > 0) {
-        everWritten.add(binding.name);
-      }
       totalReferenceCount.set(
         binding.name,
         (totalReferenceCount.get(binding.name) ?? 0) +

@@ -6,7 +6,10 @@ import { Chunk, MinifyFile } from "./ast2lua";
 import { findModuleReferences } from "./linker";
 import { resolveScopes, ResolveResult } from "./resolver";
 import { assignRenames, RenameResult } from "./renamer";
-import { classifyAndRenameGlobals } from "./globalRename";
+import {
+  classifyAndRenameGlobals,
+  collectProgramWrittenGlobals,
+} from "./globalRename";
 import { insertGlobalAliases } from "./transform";
 import { SourceMetadata } from "./sourceMetadata";
 import { removeUnusedLocals } from "./removeUnused";
@@ -1605,10 +1608,18 @@ export class Minifier {
    * なり）、意味が壊れる（要修正が発覚した実例）。
    */
   private transformAll() {
+    // Global bindings are shared across linked modules. A name written in one
+    // module is therefore program-owned even when another module only reads it;
+    // treating that reader as an external-global alias candidate can capture
+    // the value before the defining module runs (#102).
+    const programWrittenGlobals = collectProgramWrittenGlobals(
+      this.moduleResolve,
+    );
     // globalRenames.keys()は8aが実際にリネームした（=代入もされていた）名前のみ。
     // neverRenameGlobalsは代入されていない名前にも及ぶ保護指定なので、8bのエイリアス化
     // が誤ってそれらを書き換えてしまわないよう、必ず両方をあわせてexcludeNamesに渡す。
     const excludeGlobalNames = new Set([
+      ...programWrittenGlobals,
       ...this.globalRenames.keys(),
       ...(this.mode.neverRenameGlobals ?? []),
       ...this.annotationProtectedGlobals(),

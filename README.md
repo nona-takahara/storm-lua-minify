@@ -86,28 +86,28 @@ storm-lua-minify --config storm-lua-minify.json --no-function-inlining script.lu
 
 ### 個別スイッチ
 
-| スイッチ                               | 既定    | 説明                                              |
-| -------------------------------------- | ------- | ------------------------------------------------- |
-| `local-renaming`                       | ON      | local名を短くします                               |
-| `local-name-reuse`                     | ON      | 生存期間が重ならないlocalで同じ名前を再利用します |
-| `global-renaming`                      | **OFF** | 内部で使うglobal名を短くします（※1）              |
-| `field-renaming`                       | ON      | 安全に変更できるfield名を短くします               |
-| `global-aliasing`                      | ON      | 繰り返し参照するglobalへ短いlocal名を割り当てます |
-| `local-declaration-merging`            | ON      | 連続するlocal宣言をまとめます                     |
-| `local-declaration-hoisting`           | ON      | local宣言を移動してまとめやすくします             |
-| `table-read-merging`                   | ON      | tableを読み取るlocal宣言をまとめます              |
-| `field-sensitive-table-effects`        | ON      | tableへの書き込みの影響をfield単位で判定します    |
-| `constant-expression-evaluation`       | **OFF** | 定数だけからなる式を事前に計算します              |
-| `local-constant-propagation`           | **OFF** | 再代入されないlocalの定数を参照先へ伝えます       |
-| `interprocedural-constant-propagation` | **OFF** | 関数の呼び出しを越えて定数を伝えます              |
-| `parameter-pruning`                    | ON      | 使われない関数parameterを取り除きます             |
-| `function-inlining`                    | ON      | 関数呼び出しを関数本体で置き換えます              |
-| `function-specialization`              | ON      | 呼び出し方に合わせて関数を特殊化します            |
-| `field-value-propagation`              | ON      | 安定したfieldの値を参照先へ伝えます               |
-| `unused-local-removal`                 | ON      | 未使用のlocalを取り除きます                       |
-| `unused-function-removal`              | ON      | 未使用のlocal関数を取り除きます                   |
-| `unused-field-initializer-removal`     | ON      | 読み取られないfieldの初期化を取り除きます         |
-| `unused-export-removal`                | ON      | entryから到達できないmodule exportを取り除きます  |
+| スイッチ                               | 既定    | 説明                                                                        |
+| -------------------------------------- | ------- | --------------------------------------------------------------------------- |
+| `local-renaming`                       | ON      | local名を短くします                                                         |
+| `local-name-reuse`                     | ON      | 生存期間が重ならないlocalで同じ名前を再利用します                           |
+| `global-renaming`                      | **OFF** | 内部で使うglobal名を短くします（※1）                                        |
+| `field-renaming`                       | ON      | 安全に変更できるfield名を短くします                                         |
+| `global-aliasing`                      | ON      | プログラム内で代入されず、繰り返し参照するglobalへ短いlocal名を割り当てます |
+| `local-declaration-merging`            | ON      | 連続するlocal宣言をまとめます                                               |
+| `local-declaration-hoisting`           | ON      | local宣言を移動してまとめやすくします                                       |
+| `table-read-merging`                   | ON      | tableを読み取るlocal宣言をまとめます                                        |
+| `field-sensitive-table-effects`        | ON      | tableへの書き込みの影響をfield単位で判定します                              |
+| `constant-expression-evaluation`       | **OFF** | 定数だけからなる式を事前に計算します                                        |
+| `local-constant-propagation`           | **OFF** | 再代入されないlocalの定数を参照先へ伝えます                                 |
+| `interprocedural-constant-propagation` | **OFF** | 関数の呼び出しを越えて定数を伝えます                                        |
+| `parameter-pruning`                    | ON      | 使われない関数parameterを取り除きます                                       |
+| `function-inlining`                    | ON      | 関数呼び出しを関数本体で置き換えます                                        |
+| `function-specialization`              | ON      | 呼び出し方に合わせて関数を特殊化します                                      |
+| `field-value-propagation`              | ON      | 安定したfieldの値を参照先へ伝えます                                         |
+| `unused-local-removal`                 | ON      | 未使用のlocalを取り除きます                                                 |
+| `unused-function-removal`              | ON      | 未使用のlocal関数を取り除きます                                             |
+| `unused-field-initializer-removal`     | ON      | 読み取られないfieldの初期化を取り除きます                                   |
+| `unused-export-removal`                | ON      | entryから到達できないmodule exportを取り除きます                            |
 
 安全性の条件を満たさない候補は、スイッチが有効でも実行されません。
 
