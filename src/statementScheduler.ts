@@ -284,11 +284,19 @@ export function applyStatementSchedule(
   const actions = [
     ...schedule.localGroups.map((group) => ({ kind: "local" as const, group })),
     ...schedule.tableGroups.map((group) => ({ kind: "table" as const, group })),
-  ].sort((left, right) => {
-    if (left.group.body !== right.group.body) return 0;
-    return right.group.indexes[0] - left.group.indexes[0];
-  });
+  ];
+  const actionsByBody = new Map<Parser.Statement[], typeof actions>();
   actions.forEach((action) => {
+    const bodyActions = actionsByBody.get(action.group.body) ?? [];
+    bodyActions.push(action);
+    actionsByBody.set(action.group.body, bodyActions);
+  });
+  const orderedActions = [...actionsByBody.values()].flatMap((bodyActions) =>
+    bodyActions.sort(
+      (left, right) => right.group.indexes[0] - left.group.indexes[0],
+    ),
+  );
+  orderedActions.forEach((action) => {
     if (action.kind === "table") {
       const group = action.group;
       const combined: Parser.LocalStatement = {

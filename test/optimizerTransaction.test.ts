@@ -52,6 +52,39 @@ describe("transactional final-output selection", () => {
     );
   });
 
+  test("scheduler trial keeps a parameter distinct from a hoisted local", () => {
+    const source = `
+function run(parameter)
+  local first=makeFirst()
+  tick()
+  local later=parameter
+  use(first,later)
+end
+use(run)
+`;
+    const selected = minifyTemporaryLuaSource(source, {
+      requireWrapper: false,
+      runtimeProfile: "stormworks",
+      optimizations: false,
+      identifierOptimizations: true,
+      statementOptimizations: true,
+      collectOptimizationDiagnostics: true,
+    });
+
+    expect(selected.minifier.optimizationDiagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pass: "statement-scheduler-final-cost",
+          decision: "accepted",
+          reason: "final-output-shorter",
+        }),
+      ]),
+    );
+    expect(selected.code).toMatch(
+      /function\s+\w+\((\w+)\)local\s+(\w+),(\w+)=makeFirst\(\).*?\3=\1/s,
+    );
+  });
+
   test("normal Minifier path keeps baseline when final output is not shorter", () => {
     const source = "return value";
     const selected = minifyTemporaryLuaSource(
