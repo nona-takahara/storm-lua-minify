@@ -55,9 +55,11 @@ pnpm run format
 
 ### baselineとtrial
 
-optimizerの文移動とlocal宣言packingは、共通のCFG、liveness、文間依存DAGを使います。通常のminifyでも、schedulerなしのbaselineとschedulerありのtrialを別々の`Minifier`で最終Rename／Printまで評価し、trialがUTF-8 byte数で厳密に短い場合だけ採用します。同長、増加、trial失敗の場合は、AST、Resolve、SourceMetadata、Source Mapを共有していないbaselineへ戻ります。
+最終cost gateの対象となる変換は、個別のbaseline／trialを直積にせず、一つの共同trialとして最終Rename／Printまで評価します。その後、最終出力に近い変換から順に一つずつ無効化し、UTF-8 byte数が厳密に短くなる無効化だけを採用します。単独では効果が見えない変換も共同trialには含まれるため、function specializationとfield cleanupのような相乗効果を評価できます。
 
-ライブラリAPIで`collectOptimizationDiagnostics: true`を指定すると、`Minifier.optimizationDiagnostics`からruntime、module、pass別の候補採否、依存DAG上の拒否理由、最終cost gateの判断を取得できます。既定はoffで、on／offによって生成コードとSource Mapは変化しません。`selectTransactionalMinifierVariant`は、任意のmode同士を同じ条件で比較する調査用APIです。
+対象gateがN個なら、評価する`Minifier`はall-off baseline、共同trial、各gateを一度ずつ外す候補の最大N+2個です。任意の変換間相互作用を認めながら全組合せの厳密な最小を求めるには2^N評価が必要になるため、ここでは最終出力側からの決定論的な単調削除経路上で最小の候補を選びます。最後にall-off baselineと比較し、厳密に短い候補だけを採用します。同長、増加、共同trial失敗の場合は、AST、Resolve、SourceMetadata、Source Mapを共有していないbaselineへ戻ります。
+
+ライブラリAPIで`collectOptimizationDiagnostics: true`を指定すると、`Minifier.optimizationDiagnostics`からruntime、module、pass別の候補採否、依存DAG上の拒否理由、gate別の最終採否、共同trial全体の`optimizer-final-cost`判断を取得できます。候補発見の診断は共同trialから、公開されるASTと解析stateは実際に選んだ候補から取得します。共同trial全体のbyte差は`optimizer-final-cost`だけに記録し、gateごとに重複計上しません。診断は既定offで、on／offによって生成コードとSource Mapは変化しません。`selectTransactionalMinifierVariant`は、任意のmode同士を同じ条件で比較する調査用APIです。
 
 ### オプションを切り離す判断基準
 
