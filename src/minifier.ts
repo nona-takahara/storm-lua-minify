@@ -91,6 +91,69 @@ interface ParsedModuleInput {
 
 type MinifierInputCache = Map<string, ParsedModuleInput>;
 
+type CostGateVariant = "baseline" | "trial";
+type CostGateKey =
+  | "fieldRename"
+  | "scheduler"
+  | "exportDce"
+  | "fieldFact"
+  | "aggregateSpecialization"
+  | "functionRewrite";
+
+interface CostGateVariants {
+  readonly fieldRename: CostGateVariant;
+  readonly scheduler: CostGateVariant;
+  readonly exportDce: CostGateVariant;
+  readonly fieldFact: CostGateVariant;
+  readonly aggregateSpecialization: CostGateVariant;
+  readonly functionRewrite: CostGateVariant;
+}
+
+interface EvaluatedCostVariant {
+  readonly minifier: Minifier;
+  readonly output: SourceNode;
+  readonly byteLength: number;
+  readonly variants: CostGateVariants;
+}
+
+class CostVariantProgress implements CompilationProgress {
+  private pendingSteps = 0;
+
+  constructor(private readonly target: CompilationProgress) {}
+
+  addSteps(count: number): void {
+    this.pendingSteps += count;
+    this.target.addSteps(count);
+  }
+
+  startStep(label: string): void {
+    if (this.pendingSteps > 0) this.pendingSteps--;
+    this.target.startStep(label);
+  }
+
+  tick(): void {
+    this.target.tick();
+  }
+
+  finishFailedCandidate(): void {
+    while (this.pendingSteps > 0) {
+      this.pendingSteps--;
+      this.target.startStep("Skip remaining failed cost-gate work");
+    }
+  }
+}
+
+// Remove consumers before producers. A producer is therefore measured while
+// every downstream transformation that may expose its savings is still active.
+const COST_GATE_ABLATION_ORDER: readonly CostGateKey[] = [
+  "fieldRename",
+  "scheduler",
+  "exportDce",
+  "fieldFact",
+  "aggregateSpecialization",
+  "functionRewrite",
+];
+
 function sourceRangeOf(node: object): [number, number] | undefined {
   return (node as { range?: [number, number] }).range;
 }
@@ -137,7 +200,6 @@ export class Minifier {
   private wholeProgramFieldsValue?: WholeProgramFieldAnalysis;
   private wholeProgramExportsValue?: WholeProgramExportAnalysis;
   private wholeProgramFieldRenamesValue?: WholeProgramFieldRenamePlan;
-  private exportDceChanged = false;
 
   constructor(
     entryFilePath: string,
@@ -209,404 +271,243 @@ export class Minifier {
   }
 
   parse(): SourceNode {
-    if (this.fieldRenameVariant === undefined && this.fieldRenamesEnabled()) {
-      return this.parseWithFieldRenameSelection();
-    }
-    if (this.exportDceVariant === undefined && this.exportDceEnabled()) {
-      return this.parseWithExportDceSelection();
-    }
-    if (this.fieldFactVariant === undefined && this.fieldFactsEnabled()) {
-      return this.parseWithFieldFactSelection();
-    }
-    if (
-      this.aggregateSpecializationVariant === undefined &&
-      this.functionSpecializationEnabled()
-    ) {
-      return this.parseWithAggregateSpecializationSelection();
-    }
-    if (
-      this.functionRewriteVariant === undefined &&
-      this.functionRewritesEnabled()
-    ) {
-      return this.parseWithFunctionRewriteSelection();
-    }
-    if (
-      this.schedulerVariant === undefined &&
-      this.requiresSchedulerSelection()
-    ) {
-      return this.parseWithSchedulerSelection();
-    }
+    if (this.costGatesToSelect().length > 0)
+      return this.parseWithCostGateSelection();
     return this.parseOnce();
   }
 
-  private parseWithFieldRenameSelection(): SourceNode {
-    this.progress?.addSteps(2);
-    this.progress?.startStep("Evaluate field renaming baseline");
-    const baselineMinifier = new Minifier(
-      this.entryFilePath,
-      this.luaParseSettings,
-      this.mode,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      "baseline",
-      this.progress,
-      this.inputCache,
+  /**
+   * Evaluate cost-gated transforms as one coalition, then remove a gate only
+   * when its absence makes the complete final output strictly shorter.
+   *
+   * An arbitrary final-byte cost function still requires 2^N evaluations to
+   * find its global minimum. This deterministic backward sweep deliberately
+   * chooses a narrower contract: it keeps interactions present in the full
+   * trial and finds the best point on one monotonic deletion path in at most
+   * N+2 evaluations. The all-off baseline remains the final upper bound.
+   */
+  private parseWithCostGateSelection(): SourceNode {
+    const gates = this.costGatesToSelect();
+    const evaluated = new Map<string, EvaluatedCostVariant>();
+    const baseline = this.evaluateCostVariant(
+      this.costGateVariants("baseline"),
+      "Evaluate cost-gated baseline",
+      evaluated,
     );
-    const baseline = baselineMinifier.parse();
-    const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
-    let trialMinifier: Minifier;
-    let trial: SourceNode;
+    let fullTrial: EvaluatedCostVariant;
     try {
-      this.progress?.startStep("Evaluate field renaming trial");
-      trialMinifier = new Minifier(
-        this.entryFilePath,
-        this.luaParseSettings,
-        this.mode,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        "trial",
-        this.progress,
-        this.inputCache,
+      fullTrial = this.evaluateCostVariant(
+        this.costGateVariants("trial"),
+        "Evaluate joint cost-gated trial",
+        evaluated,
       );
-      trial = trialMinifier.parse();
     } catch {
-      this.copyDiagnosticsFrom(baselineMinifier);
-      this.recordFinalFieldRenameDecision("rejected", "trial-failed");
-      return this.adoptVariant(baselineMinifier, baseline);
+      this.copyDiagnosticsFrom(baseline.minifier);
+      gates.forEach((gate) => {
+        this.recordFinalGateDecision(gate, "rejected", "trial-failed");
+      });
+      this.recordFinalCostDecision("rejected", "trial-failed");
+      return this.adoptVariant(baseline.minifier, baseline.output);
     }
-    const trialBytes = new TextEncoder().encode(trial.toString()).length;
-    if (trialBytes >= baselineBytes) {
-      this.copyDiagnosticsFrom(trialMinifier);
-      this.recordFinalFieldRenameDecision(
-        "rejected",
-        "final-output-not-shorter",
+    let current = fullTrial;
+
+    for (const gate of COST_GATE_ABLATION_ORDER) {
+      if (!gates.includes(gate) || current.variants[gate] === "baseline")
+        continue;
+      const variants: CostGateVariants = {
+        ...current.variants,
+        [gate]: "baseline",
+        // Specialization is executed inside the function-rewrite pipeline;
+        // keep the mask and final diagnostics closed over that dependency.
+        ...(gate === "functionRewrite"
+          ? { aggregateSpecialization: "baseline" as const }
+          : {}),
+      };
+      let withoutGate: EvaluatedCostVariant;
+      try {
+        withoutGate = this.evaluateCostVariant(
+          variants,
+          `Evaluate joint trial without ${this.costGateLabel(gate)}`,
+          evaluated,
+        );
+      } catch {
+        continue;
+      }
+      // Keep ties in the joint trial: a gate whose isolated contribution is
+      // hidden can still participate in a later transformation's savings.
+      if (withoutGate.byteLength < current.byteLength) current = withoutGate;
+    }
+
+    const accepted = current.byteLength < baseline.byteLength;
+    const selected = accepted ? current : baseline;
+    // Successful trial diagnostics describe attempted opportunities even when
+    // the corresponding AST is not selected, matching the former gate policy.
+    this.copyDiagnosticsFrom(fullTrial.minifier);
+    gates.forEach((gate) => {
+      this.recordFinalGateDecision(
+        gate,
+        accepted && current.variants[gate] === "trial"
+          ? "accepted"
+          : "rejected",
+        accepted && current.variants[gate] === "trial"
+          ? "final-output-shorter"
+          : "final-output-not-shorter",
       );
-      return this.adoptVariant(baselineMinifier, baseline);
-    }
-    this.copyDiagnosticsFrom(trialMinifier);
-    this.recordFinalFieldRenameDecision(
-      "accepted",
-      "final-output-shorter",
-      baselineBytes - trialBytes,
+    });
+    this.recordFinalCostDecision(
+      accepted ? "accepted" : "rejected",
+      accepted ? "final-output-shorter" : "final-output-not-shorter",
+      accepted ? baseline.byteLength - current.byteLength : undefined,
     );
-    return this.adoptVariant(trialMinifier, trial);
+    return this.adoptVariant(selected.minifier, selected.output);
   }
 
-  private parseWithExportDceSelection(): SourceNode {
+  private evaluateCostVariant(
+    variants: CostGateVariants,
+    label: string,
+    evaluated: Map<string, EvaluatedCostVariant>,
+  ): EvaluatedCostVariant {
+    const key = COST_GATE_ABLATION_ORDER.map((gate) =>
+      variants[gate] === "trial" ? "1" : "0",
+    ).join("");
+    const cached = evaluated.get(key);
+    if (cached) return cached;
     this.progress?.addSteps(1);
-    let trialMinifier: Minifier;
-    let trial: SourceNode;
-    try {
-      this.progress?.startStep("Evaluate unused export removal trial");
-      trialMinifier = new Minifier(
-        this.entryFilePath,
-        this.luaParseSettings,
-        this.mode,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        "trial",
-        this.fieldRenameVariant,
-        this.progress,
-        this.inputCache,
-      );
-      trial = trialMinifier.parse();
-    } catch {
-      this.progress?.addSteps(1);
-      this.progress?.startStep("Evaluate unused export removal baseline");
-      const baselineMinifier = new Minifier(
-        this.entryFilePath,
-        this.luaParseSettings,
-        this.mode,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        "baseline",
-        this.fieldRenameVariant,
-        this.progress,
-        this.inputCache,
-      );
-      const baseline = baselineMinifier.parse();
-      this.copyDiagnosticsFrom(baselineMinifier);
-      this.recordFinalExportDceDecision("rejected", "trial-failed");
-      return this.adoptVariant(baselineMinifier, baseline);
-    }
-    if (!trialMinifier.exportDceChanged) {
-      this.copyDiagnosticsFrom(trialMinifier);
-      this.recordFinalExportDceDecision("rejected", "final-output-not-shorter");
-      return this.adoptVariant(trialMinifier, trial);
-    }
-    this.progress?.addSteps(1);
-    this.progress?.startStep("Evaluate unused export removal baseline");
-    const baselineMinifier = new Minifier(
+    this.progress?.startStep(label);
+    const candidateProgress = this.progress
+      ? new CostVariantProgress(this.progress)
+      : undefined;
+    const minifier = new Minifier(
       this.entryFilePath,
       this.luaParseSettings,
       this.mode,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      "baseline",
-      this.fieldRenameVariant,
-      this.progress,
+      variants.scheduler,
+      variants.functionRewrite,
+      variants.fieldFact,
+      variants.aggregateSpecialization,
+      variants.exportDce,
+      variants.fieldRename,
+      candidateProgress,
       this.inputCache,
     );
-    const baseline = baselineMinifier.parse();
-    const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
-    const trialBytes = new TextEncoder().encode(trial.toString()).length;
-    if (trialBytes >= baselineBytes) {
-      this.copyDiagnosticsFrom(trialMinifier);
-      this.recordFinalExportDceDecision("rejected", "final-output-not-shorter");
-      return this.adoptVariant(baselineMinifier, baseline);
-    }
-    this.copyDiagnosticsFrom(trialMinifier);
-    this.recordFinalExportDceDecision(
-      "accepted",
-      "final-output-shorter",
-      baselineBytes - trialBytes,
-    );
-    return this.adoptVariant(trialMinifier, trial);
-  }
-
-  private parseWithFieldFactSelection(): SourceNode {
-    this.progress?.addSteps(2);
-    this.progress?.startStep("Evaluate field optimization baseline");
-    const baselineMinifier = new Minifier(
-      this.entryFilePath,
-      this.luaParseSettings,
-      this.mode,
-      undefined,
-      undefined,
-      "baseline",
-      this.aggregateSpecializationVariant,
-      this.exportDceVariant,
-      this.fieldRenameVariant,
-      this.progress,
-      this.inputCache,
-    );
-    const baseline = baselineMinifier.parse();
-    const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
-    let trialMinifier: Minifier;
-    let trial: SourceNode;
+    let output: SourceNode;
     try {
-      this.progress?.startStep("Evaluate field optimization trial");
-      trialMinifier = new Minifier(
-        this.entryFilePath,
-        this.luaParseSettings,
-        this.mode,
-        undefined,
-        undefined,
-        "trial",
-        this.aggregateSpecializationVariant,
-        this.exportDceVariant,
-        this.fieldRenameVariant,
-        this.progress,
-        this.inputCache,
-      );
-      trial = trialMinifier.parse();
-    } catch {
-      this.copyDiagnosticsFrom(baselineMinifier);
-      this.recordFinalFieldFactDecision("rejected", "trial-failed");
-      return this.adoptVariant(baselineMinifier, baseline);
+      output = minifier.parseOnce();
+    } catch (error) {
+      candidateProgress?.finishFailedCandidate();
+      throw error;
     }
-    const trialBytes = new TextEncoder().encode(trial.toString()).length;
-    if (trialBytes >= baselineBytes) {
-      this.copyDiagnosticsFrom(trialMinifier);
-      this.recordFinalFieldFactDecision("rejected", "final-output-not-shorter");
-      return this.adoptVariant(baselineMinifier, baseline);
-    }
-    this.copyDiagnosticsFrom(trialMinifier);
-    this.recordFinalFieldFactDecision(
-      "accepted",
-      "final-output-shorter",
-      baselineBytes - trialBytes,
-    );
-    return this.adoptVariant(trialMinifier, trial);
+    const result = {
+      minifier,
+      output,
+      byteLength: new TextEncoder().encode(output.toString()).length,
+      variants,
+    };
+    evaluated.set(key, result);
+    return result;
   }
 
-  private parseWithAggregateSpecializationSelection(): SourceNode {
-    this.progress?.addSteps(2);
-    this.progress?.startStep("Evaluate function specialization baseline");
-    const baselineMinifier = new Minifier(
-      this.entryFilePath,
-      this.luaParseSettings,
-      this.mode,
-      undefined,
-      undefined,
-      this.fieldFactVariant,
-      "baseline",
-      this.exportDceVariant,
-      this.fieldRenameVariant,
-      this.progress,
-      this.inputCache,
-    );
-    const baseline = baselineMinifier.parse();
-    const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
-    let trialMinifier: Minifier;
-    let trial: SourceNode;
-    try {
-      this.progress?.startStep("Evaluate function specialization trial");
-      trialMinifier = new Minifier(
-        this.entryFilePath,
-        this.luaParseSettings,
-        this.mode,
-        undefined,
-        undefined,
-        this.fieldFactVariant,
-        "trial",
-        this.exportDceVariant,
-        this.fieldRenameVariant,
-        this.progress,
-        this.inputCache,
-      );
-      trial = trialMinifier.parse();
-    } catch {
-      this.copyDiagnosticsFrom(baselineMinifier);
-      this.recordFinalAggregateSpecializationDecision(
-        "rejected",
-        "trial-failed",
-      );
-      return this.adoptVariant(baselineMinifier, baseline);
-    }
-    const trialBytes = new TextEncoder().encode(trial.toString()).length;
-    if (trialBytes >= baselineBytes) {
-      this.copyDiagnosticsFrom(trialMinifier);
-      this.recordFinalAggregateSpecializationDecision(
-        "rejected",
-        "final-output-not-shorter",
-      );
-      return this.adoptVariant(baselineMinifier, baseline);
-    }
-    this.copyDiagnosticsFrom(trialMinifier);
-    this.recordFinalAggregateSpecializationDecision(
-      "accepted",
-      "final-output-shorter",
-      baselineBytes - trialBytes,
-    );
-    return this.adoptVariant(trialMinifier, trial);
-  }
-
-  private parseWithFunctionRewriteSelection(): SourceNode {
-    this.progress?.addSteps(2);
-    this.progress?.startStep("Evaluate function rewrites baseline");
-    const baselineMinifier = new Minifier(
-      this.entryFilePath,
-      this.luaParseSettings,
-      this.mode,
-      undefined,
-      "baseline",
-      this.fieldFactVariant,
-      this.aggregateSpecializationVariant,
-      this.exportDceVariant,
-      this.fieldRenameVariant,
-      this.progress,
-      this.inputCache,
-    );
-    const baseline = baselineMinifier.parse();
-    const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
-    let trialMinifier: Minifier;
-    let trial: SourceNode;
-    try {
-      this.progress?.startStep("Evaluate function rewrites trial");
-      trialMinifier = new Minifier(
-        this.entryFilePath,
-        this.luaParseSettings,
-        this.mode,
-        undefined,
-        "trial",
-        this.fieldFactVariant,
-        this.aggregateSpecializationVariant,
-        this.exportDceVariant,
-        this.fieldRenameVariant,
-        this.progress,
-        this.inputCache,
-      );
-      trial = trialMinifier.parse();
-    } catch {
-      this.copyDiagnosticsFrom(baselineMinifier);
-      this.recordFinalFunctionRewriteDecision("rejected", "trial-failed");
-      return this.adoptVariant(baselineMinifier, baseline);
-    }
-    const trialBytes = new TextEncoder().encode(trial.toString()).length;
-    if (trialBytes >= baselineBytes) {
-      this.copyDiagnosticsFrom(trialMinifier);
-      this.recordFinalFunctionRewriteDecision(
-        "rejected",
-        "final-output-not-shorter",
-      );
-      return this.adoptVariant(baselineMinifier, baseline);
-    }
-    this.copyDiagnosticsFrom(trialMinifier);
-    this.recordFinalFunctionRewriteDecision(
-      "accepted",
-      "final-output-shorter",
-      baselineBytes - trialBytes,
-    );
-    return this.adoptVariant(trialMinifier, trial);
-  }
-
-  private parseWithSchedulerSelection(): SourceNode {
-    this.progress?.addSteps(2);
-    this.progress?.startStep("Evaluate statement scheduling baseline");
-    const baselineMinifier = new Minifier(
-      this.entryFilePath,
-      this.luaParseSettings,
-      this.mode,
-      "baseline",
+  private costGateVariants(fallback: CostGateVariant): CostGateVariants {
+    const selected = new Set(this.costGatesToSelect());
+    const variant = (
+      gate: CostGateKey,
+      explicit: CostGateVariant | undefined,
+    ): CostGateVariant =>
+      explicit ?? (selected.has(gate) ? fallback : "baseline");
+    const functionRewrite = variant(
+      "functionRewrite",
       this.functionRewriteVariant,
-      this.fieldFactVariant,
-      this.aggregateSpecializationVariant,
-      this.exportDceVariant,
-      this.fieldRenameVariant,
-      this.progress,
-      this.inputCache,
     );
-    const baseline = baselineMinifier.parseOnce();
-    const baselineBytes = new TextEncoder().encode(baseline.toString()).length;
-    let trialMinifier: Minifier;
-    let trial: SourceNode;
-    try {
-      this.progress?.startStep("Evaluate statement scheduling trial");
-      trialMinifier = new Minifier(
-        this.entryFilePath,
-        this.luaParseSettings,
-        this.mode,
-        "trial",
-        this.functionRewriteVariant,
-        this.fieldFactVariant,
-        this.aggregateSpecializationVariant,
-        this.exportDceVariant,
-        this.fieldRenameVariant,
-        this.progress,
-        this.inputCache,
-      );
-      trial = trialMinifier.parseOnce();
-    } catch {
-      this.copyDiagnosticsFrom(baselineMinifier);
-      this.recordFinalSchedulerDecision("rejected", "trial-failed");
-      return this.adoptVariant(baselineMinifier, baseline);
+    return {
+      fieldRename: variant("fieldRename", this.fieldRenameVariant),
+      scheduler: variant("scheduler", this.schedulerVariant),
+      exportDce: variant("exportDce", this.exportDceVariant),
+      fieldFact: variant("fieldFact", this.fieldFactVariant),
+      aggregateSpecialization:
+        functionRewrite === "baseline"
+          ? "baseline"
+          : variant(
+              "aggregateSpecialization",
+              this.aggregateSpecializationVariant,
+            ),
+      functionRewrite,
+    };
+  }
+
+  private costGatesToSelect(): CostGateKey[] {
+    return COST_GATE_ABLATION_ORDER.filter((gate) => {
+      switch (gate) {
+        case "fieldRename":
+          return (
+            this.fieldRenameVariant === undefined && this.fieldRenamesEnabled()
+          );
+        case "scheduler":
+          return (
+            this.schedulerVariant === undefined &&
+            this.requiresSchedulerSelection()
+          );
+        case "exportDce":
+          return this.exportDceVariant === undefined && this.exportDceEnabled();
+        case "fieldFact":
+          return (
+            this.fieldFactVariant === undefined && this.fieldFactsEnabled()
+          );
+        case "aggregateSpecialization":
+          return (
+            this.aggregateSpecializationVariant === undefined &&
+            this.functionSpecializationEnabled()
+          );
+        case "functionRewrite":
+          return (
+            this.functionRewriteVariant === undefined &&
+            this.functionRewritesEnabled()
+          );
+      }
+    });
+  }
+
+  private costGateLabel(gate: CostGateKey): string {
+    switch (gate) {
+      case "fieldRename":
+        return "field renaming";
+      case "scheduler":
+        return "statement scheduling";
+      case "exportDce":
+        return "unused export removal";
+      case "fieldFact":
+        return "field optimization";
+      case "aggregateSpecialization":
+        return "function specialization";
+      case "functionRewrite":
+        return "function rewrites";
     }
-    const trialBytes = new TextEncoder().encode(trial.toString()).length;
-    if (trialBytes >= baselineBytes) {
-      this.copyDiagnosticsFrom(trialMinifier);
-      this.recordFinalSchedulerDecision("rejected", "final-output-not-shorter");
-      return this.adoptVariant(baselineMinifier, baseline);
+  }
+
+  private recordFinalGateDecision(
+    gate: CostGateKey,
+    decision: "accepted" | "rejected",
+    reason:
+      "final-output-shorter" | "final-output-not-shorter" | "trial-failed",
+  ): void {
+    switch (gate) {
+      case "fieldRename":
+        this.recordFinalFieldRenameDecision(decision, reason);
+        return;
+      case "scheduler":
+        this.recordFinalSchedulerDecision(decision, reason);
+        return;
+      case "exportDce":
+        this.recordFinalExportDceDecision(decision, reason);
+        return;
+      case "fieldFact":
+        this.recordFinalFieldFactDecision(decision, reason);
+        return;
+      case "aggregateSpecialization":
+        this.recordFinalAggregateSpecializationDecision(decision, reason);
+        return;
+      case "functionRewrite":
+        this.recordFinalFunctionRewriteDecision(decision, reason);
     }
-    this.copyDiagnosticsFrom(trialMinifier);
-    this.recordFinalSchedulerDecision(
-      "accepted",
-      "final-output-shorter",
-      baselineBytes - trialBytes,
-    );
-    return this.adoptVariant(trialMinifier, trial);
   }
 
   private parseOnce(): SourceNode {
@@ -744,7 +645,6 @@ export class Minifier {
       }),
     );
     if (!result.changed) return;
-    this.exportDceChanged = true;
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
       if (!ast) throw new Error(moduleName + " is not found");
@@ -1374,7 +1274,6 @@ export class Minifier {
     this.wholeProgramFieldsValue = minifier.wholeProgramFieldsValue;
     this.wholeProgramExportsValue = minifier.wholeProgramExportsValue;
     this.wholeProgramFieldRenamesValue = minifier.wholeProgramFieldRenamesValue;
-    this.exportDceChanged = minifier.exportDceChanged;
     return output;
   }
 
@@ -1386,6 +1285,24 @@ export class Minifier {
   ): void {
     this.diagnosticCollector?.record({
       pass: "statement-scheduler-final-cost",
+      decision,
+      reason,
+      candidateSize: 1,
+      estimatedByteSavings: byteSavings,
+      runtimeProfile: this.mode.runtimeProfile,
+      moduleName: this.entryModule,
+      sourceRange: [0, fs.readFileSync(this.entryFilePath, "utf8").length],
+    });
+  }
+
+  private recordFinalCostDecision(
+    decision: "accepted" | "rejected",
+    reason:
+      "final-output-shorter" | "final-output-not-shorter" | "trial-failed",
+    byteSavings?: number,
+  ): void {
+    this.diagnosticCollector?.record({
+      pass: "optimizer-final-cost",
       decision,
       reason,
       candidateSize: 1,
