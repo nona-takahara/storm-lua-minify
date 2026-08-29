@@ -33,11 +33,15 @@ describe("minifier progress", () => {
       scope: true,
     };
     const progress = new RecordingProgress();
+    const mode = {
+      runtimeProfile: "stormworks" as const,
+      allowIntrospectionChanges: true,
+    };
 
-    const observed = new Minifier(input, parseSettings, {}, progress)
+    const observed = new Minifier(input, parseSettings, mode, progress)
       .parse()
       .toString();
-    const unobserved = new Minifier(input, parseSettings, {})
+    const unobserved = new Minifier(input, parseSettings, mode)
       .parse()
       .toString();
 
@@ -46,5 +50,11 @@ describe("minifier progress", () => {
     expect(progress.ticks).toBeGreaterThan(0);
     expect(progress.labels).toContain("Load and parse modules");
     expect(progress.labels).toContain("Generate Lua and source map");
+    expect(progress.labels).toContain("Evaluate joint cost-gated trial");
+    const evaluatedVariants = progress.labels.filter(
+      (label) => label === "Load and parse modules",
+    ).length;
+    expect(evaluatedVariants).toBeGreaterThanOrEqual(2);
+    expect(evaluatedVariants).toBeLessThanOrEqual(8);
   });
 });
