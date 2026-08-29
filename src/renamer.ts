@@ -325,19 +325,16 @@ function colorGraph(graph: InterferenceGraph): Map<Symbol, number> {
     [...graph.keys()].map((symbol) => [symbol, new Set<number>()]),
   );
   while (colors.size < graph.size) {
-    const remaining = [...graph.keys()].filter((symbol) => !colors.has(symbol));
-    remaining.sort((left, right) => {
-      const saturationDifference =
-        (saturationColors.get(right)?.size ?? 0) -
-        (saturationColors.get(left)?.size ?? 0);
-      if (saturationDifference !== 0) return saturationDifference;
-      const weightDifference = weightOf(right) - weightOf(left);
-      if (weightDifference !== 0) return weightDifference;
-      const degreeDifference =
-        (graph.get(right)?.size ?? 0) - (graph.get(left)?.size ?? 0);
-      return degreeDifference !== 0 ? degreeDifference : left.id - right.id;
+    let symbol: Symbol | undefined;
+    graph.forEach((_neighbors, candidate) => {
+      if (colors.has(candidate)) return;
+      if (
+        symbol === undefined ||
+        coloringPriority(candidate, symbol, graph, saturationColors) < 0
+      )
+        symbol = candidate;
     });
-    const symbol = remaining[0];
+    if (symbol === undefined) throw new Error("Uncolored symbol not found");
     const unavailable = saturationColors.get(symbol) ?? new Set<number>();
     let color = 0;
     while (unavailable.has(color)) color++;
@@ -347,6 +344,23 @@ function colorGraph(graph: InterferenceGraph): Map<Symbol, number> {
     });
   }
   return colors;
+}
+
+function coloringPriority(
+  left: Symbol,
+  right: Symbol,
+  graph: InterferenceGraph,
+  saturationColors: ReadonlyMap<Symbol, ReadonlySet<number>>,
+): number {
+  const saturationDifference =
+    (saturationColors.get(right)?.size ?? 0) -
+    (saturationColors.get(left)?.size ?? 0);
+  if (saturationDifference !== 0) return saturationDifference;
+  const weightDifference = weightOf(right) - weightOf(left);
+  if (weightDifference !== 0) return weightDifference;
+  const degreeDifference =
+    (graph.get(right)?.size ?? 0) - (graph.get(left)?.size ?? 0);
+  return degreeDifference !== 0 ? degreeDifference : left.id - right.id;
 }
 
 function weightOf(symbol: Symbol): number {
