@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import Parser from "luaparse";
 import {
   applyStatementSchedule,
   planStatementSchedule,
@@ -17,6 +18,57 @@ function plan(source: string) {
 }
 
 describe("statement scheduler local packing", () => {
+  test("applies each body's groups from the end when actions are interleaved", () => {
+    const chunk = Parser.parse(
+      "local a=f() tick() local b=g() use(a,b) local c=h() tick() local d=i() use(c,d)",
+      { luaVersion: "5.3" },
+    );
+    const nested = Parser.parse("local x=f() local y=g()", {
+      luaVersion: "5.3",
+    });
+    const outerLocals = [0, 2, 4, 6].map(
+      (index) => chunk.body[index] as Parser.LocalStatement,
+    );
+    const nestedLocals = nested.body as Parser.LocalStatement[];
+    const group = (
+      body: Parser.Statement[],
+      statements: Parser.LocalStatement[],
+      indexes: number[],
+    ) => ({
+      body,
+      statements,
+      indexes,
+      symbols: [],
+      mode: "merge-initializers" as const,
+      byteSavings: 5,
+    });
+
+    applyStatementSchedule({
+      generation: 0,
+      localGroups: [
+        group(chunk.body, outerLocals.slice(0, 2), [0, 2]),
+        group(nested.body, nestedLocals, [0, 1]),
+        group(chunk.body, outerLocals.slice(2), [4, 6]),
+      ],
+      tableGroups: [],
+    });
+
+    expect(
+      chunk.body
+        .filter(
+          (statement): statement is Parser.LocalStatement =>
+            statement.type === "LocalStatement",
+        )
+        .map((statement) =>
+          statement.variables.map((variable) => variable.name),
+        ),
+    ).toEqual([
+      ["a", "b"],
+      ["c", "d"],
+    ]);
+    expect(chunk.body).toHaveLength(6);
+  });
+
   test("reserves adjacent declarations for the cheaper lexical merge", () => {
     const { schedule } = plan("local first=f() local second=g()");
 
