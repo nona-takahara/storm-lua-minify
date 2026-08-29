@@ -23,7 +23,7 @@ function addBooleanSwitch(
 /** Build the v1 CLI surface without materializing inherited defaults. */
 export function createCliProgram(): Command {
   const command = new Command()
-    .version("0.9.0")
+    .version("0.9.1")
     .description("A Lua minifier also outputs source map")
     .option("--config <path>", "JSON configuration file")
     .addOption(
