@@ -61,18 +61,19 @@ export function finiteOptimizerValue(
   unknownReasons: readonly string[] = [],
   limits: OptimizerValueDomainLimits = DEFAULT_OPTIMIZER_VALUE_DOMAIN_LIMITS,
 ): FiniteOptimizerValue {
-  validateLimits(limits);
+  validateCustomLimits(limits);
   const normalizedAtoms = uniqueSorted(atoms, atomKey);
   const normalizedReasons = uniqueSorted(unknownReasons, (reason) => reason);
   const atomOverflow = normalizedAtoms.length > limits.maxAtoms;
   const reasons = atomOverflow
-    ? [...normalizedReasons, "atom-cap-exceeded"]
-    : normalizedReasons;
+    ? capReasons(
+        [...normalizedReasons, "atom-cap-exceeded"],
+        limits.maxUnknownReasons,
+      )
+    : capNormalizedReasons(normalizedReasons, limits.maxUnknownReasons);
   return Object.freeze({
     atoms: Object.freeze(normalizedAtoms.slice(0, limits.maxAtoms)),
-    unknownReasons: Object.freeze(
-      capReasons(reasons, limits.maxUnknownReasons),
-    ),
+    unknownReasons: Object.freeze(reasons),
   });
 }
 
@@ -99,7 +100,7 @@ export function finiteOptimizerTuple(
   tail: OptimizerTupleTail = { kind: "none" },
   limits: OptimizerValueDomainLimits = DEFAULT_OPTIMIZER_VALUE_DOMAIN_LIMITS,
 ): FiniteOptimizerTuple {
-  validateLimits(limits);
+  validateCustomLimits(limits);
   const normalizedPrefix = prefix
     .slice(0, limits.maxTuplePrefix)
     .map((value) =>
@@ -150,7 +151,7 @@ export function joinOptimizerTuples(
   tuples: readonly FiniteOptimizerTuple[],
   limits: OptimizerValueDomainLimits = DEFAULT_OPTIMIZER_VALUE_DOMAIN_LIMITS,
 ): FiniteOptimizerTuple {
-  validateLimits(limits);
+  validateCustomLimits(limits);
   if (tuples.length === 0) return EMPTY_OPTIMIZER_TUPLE;
   const prefixLength = Math.min(
     Math.max(...tuples.map((tuple) => tuple.prefix.length)),
@@ -263,6 +264,14 @@ function uniqueSorted<T>(
   values: readonly T[],
   keyOf: (value: T) => string,
 ): T[] {
+  if (values.length === 0) return [];
+  if (values.length === 1) return [values[0]];
+  if (values.length === 2) {
+    const firstKey = keyOf(values[0]);
+    const lastKey = keyOf(values[1]);
+    if (firstKey === lastKey) return [values[1]];
+    return firstKey < lastKey ? [values[0], values[1]] : [values[1], values[0]];
+  }
   const byKey = new Map<string, T>();
   values.forEach((value) => byKey.set(keyOf(value), value));
   return [...byKey.entries()]
@@ -270,14 +279,30 @@ function uniqueSorted<T>(
     .map(([, value]) => value);
 }
 
-function capReasons(reasons: readonly string[], maximum: number): string[] {
+function capReasons(
+  reasons: readonly string[],
+  maximum: number,
+): readonly string[] {
   const normalized = uniqueSorted(reasons, (reason) => reason);
+  return capNormalizedReasons(normalized, maximum);
+}
+
+function capNormalizedReasons(
+  normalized: readonly string[],
+  maximum: number,
+): readonly string[] {
   if (normalized.length <= maximum) return normalized;
   if (maximum === 0) return [];
   return [
     ...normalized.slice(0, Math.max(0, maximum - 1)),
     "reason-cap-exceeded",
   ];
+}
+
+function validateCustomLimits(limits: OptimizerValueDomainLimits): void {
+  // The default is a module-owned frozen literal that satisfies the invariants.
+  // Nearly every optimizer value uses it, so do not enumerate its fields again.
+  if (limits !== DEFAULT_OPTIMIZER_VALUE_DOMAIN_LIMITS) validateLimits(limits);
 }
 
 function validateLimits(limits: OptimizerValueDomainLimits): void {

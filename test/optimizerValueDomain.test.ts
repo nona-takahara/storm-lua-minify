@@ -14,6 +14,34 @@ const limits = {
 };
 
 describe("finite optimizer value domain", () => {
+  test("normalizes empty, singleton, and two-value fast paths", () => {
+    expect(finiteOptimizerValue()).toEqual({
+      atoms: [],
+      unknownReasons: [],
+    });
+    expect(
+      finiteOptimizerValue([
+        { kind: "string", value: "last" },
+        { kind: "boolean", value: true },
+      ]).atoms,
+    ).toEqual([
+      { kind: "boolean", value: true },
+      { kind: "string", value: "last" },
+    ]);
+    expect(
+      finiteOptimizerValue(
+        [
+          { kind: "number", raw: "42" },
+          { kind: "number", raw: "42" },
+        ],
+        ["same", "same"],
+      ),
+    ).toEqual({
+      atoms: [{ kind: "number", raw: "42" }],
+      unknownReasons: ["same"],
+    });
+  });
+
   test("joins atoms and unknown knowledge independently and deterministically", () => {
     const joined = joinOptimizerValues(
       [
