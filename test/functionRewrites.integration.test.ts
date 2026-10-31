@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 import { SourceMapConsumer } from "source-map";
-import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
+import {
+  minifyTemporaryLuaProject,
+  minifyTemporaryLuaSource,
+} from "./lib/minifierHarness";
 
 describe("function rewrites integration", () => {
   test("prunes a trailing unused parameter but leaves surplus actual evaluation", () => {
@@ -322,6 +325,67 @@ return choose(true,1)+choose(true,2)+choose(true,3)
       }),
     );
     expect(result.code.match(/external\(\)/g)).toHaveLength(1);
+  });
+
+  test("does not treat a colon-call receiver as a missing argument when inferring constant parameters", () => {
+    const result = minifyTemporaryLuaProject(
+      {
+        "obj.lua": `
+local O={}
+function O.create_instance(target,classObj)
+  for k,v in pairs(classObj) do
+    if k~="new" and type(v)=="function" then target[k]=v end
+  end
+  return target
+end
+return O`,
+        "info.lua": `
+local Info={}
+local function load_axles(vehicle_id,vdata)
+  return server.getVehiclePos(vehicle_id,vdata)
+end
+function Info.new(vehicle_id,sw)
+  local obj={}
+  obj.axles=load_axles(vehicle_id,sw)
+  return obj
+end
+return Info`,
+        "bridge.lua": `
+local Info=require("info")
+local O=require("obj")
+local Bridge={}
+function Bridge.new() local obj=O.create_instance({},Bridge) obj.vehicles={} return obj end
+function Bridge:load_vehicle(vehicle_id)
+  self.vehicles[vehicle_id]=Info.new(vehicle_id,self)
+end
+return Bridge`,
+        "main.lua": `
+local bridge=require("bridge").new()
+function onVehicleSpawn(id) bridge:load_vehicle(id) end
+function onButtonPress(id) bridge:load_vehicle(id) end`,
+      },
+      {
+        requireWrapper: true,
+        runtimeProfile: "stormworks",
+        collectOptimizationDiagnostics: true,
+      },
+    );
+    expect(result.code).not.toMatch(/getVehiclePos\(nil/);
+  });
+
+  test("does not treat a missing parameter as nil when the last actual can return several values", () => {
+    const result = minifyTemporaryLuaSource(
+      `
+local function pair() return 1,2 end
+local function f(a,b) return server.use(a,b) end
+local x=f(pair())
+local y=f(pair())
+local z=f(pair())
+return x+y+z
+`,
+      { requireWrapper: false, runtimeProfile: "stormworks" },
+    );
+    expect(result.code).not.toMatch(/server\.use\([a-z],nil\)/);
   });
 
   test("keeps callee and call-site provenance in a specialized variant", async () => {
