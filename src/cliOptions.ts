@@ -82,6 +82,11 @@ export function createCliProgram(): Command {
   );
   addBooleanSwitch(
     command,
+    "hoist-preserved-comments",
+    "Move --# comments to the top of the output",
+  );
+  addBooleanSwitch(
+    command,
     "collect-optimization-diagnostics",
     "Collect optimizer decision diagnostics",
   );

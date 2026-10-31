@@ -194,8 +194,13 @@ export interface SemanticAssumptions {
   assumeAnnotations?: boolean;
 }
 
+export interface OutputOptions {
+  /** `--#`コメントを出力の先頭へ集める。未指定はtrue。 */
+  hoistPreservedComments?: boolean;
+}
+
 export interface MinifierMode
-  extends OptimizationOverrides, SemanticAssumptions {
+  extends OptimizationOverrides, SemanticAssumptions, OutputOptions {
   requireWrapper?: boolean;
   runtimeProfile?: RuntimeProfile;
   requiredWhitespace?: " " | "\n";

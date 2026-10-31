@@ -1,4 +1,4 @@
-import Parser, { Options } from "luaparse";
+import Parser, { Comment, Options } from "luaparse";
 import path from "path";
 import fs from "fs";
 import { SourceNode } from "source-map";
@@ -176,6 +176,7 @@ export class Minifier {
 
   // Linkパスで解決されたモジュール名を、依存されている側が先に来る順序で並べたもの
   private readonly linkOrder: string[] = [];
+  private readonly hoistedComments = new Map<Comment, SourceNode>();
   // モジュールごとのResolveパスの結果（Linkパスで一度だけ計算し使い回す）
   private readonly moduleResolve = new Map<string, ResolveResult>();
   // モジュールごとのRenameパスの結果（初回アクセス時に計算しキャッシュする）
@@ -581,9 +582,11 @@ export class Minifier {
     this.progress?.tick();
 
     this.progress?.startStep("Generate Lua and source map");
-    const result = this.mode.requireWrapper
+    this.hoistedComments.clear();
+    const printed = this.mode.requireWrapper
       ? this.printModuleWithRequireWrapper()
       : this.printModule(this.entryModule);
+    const result = this.withHoistedComments(printed);
 
     this.moduleSourceText.forEach((v, k) => {
       const fileName = this.moduleNameAndFileName.get(k);
@@ -1797,6 +1800,32 @@ export class Minifier {
       this.identifiersInUse.add(shortName);
       this.identifiersInUse.delete(originalName);
     });
+  }
+
+  /**
+   * エントリのファイルの先頭にある`--#`コメントを、出力の先頭(`require`関数の
+   * 定義より前)へ移すために、printerから渡されたコメントを集める。
+   * 依存moduleのコメントは集めない。
+   */
+  hoistPreservedComment(
+    moduleName: string,
+    comment: Comment,
+    node: SourceNode,
+  ): boolean {
+    if (moduleName !== this.entryModule) return false;
+    if (!this.hoistedComments.has(comment))
+      this.hoistedComments.set(comment, node);
+    return true;
+  }
+
+  private withHoistedComments(printed: SourceNode): SourceNode {
+    if (this.hoistedComments.size === 0) return printed;
+    const head = new SourceNode(null, null, null, []);
+    this.hoistedComments.forEach((node) => {
+      head.add([node, "\n"]);
+    });
+    head.add(printed);
+    return head;
   }
 
   private printModule(moduleName: string): SourceNode {
