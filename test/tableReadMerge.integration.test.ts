@@ -235,14 +235,10 @@ tick()
 local second=tableValue.y
 use(first,second)
 `;
-    const enabled = minify(source, {
-      localDeclarationHoisting: false,
-      hoistPreservedComments: false,
-    });
+    const enabled = minify(source, { localDeclarationHoisting: false });
     const disabled = minify(source, {
       tableReadMerging: false,
       localDeclarationHoisting: false,
-      hoistPreservedComments: false,
     });
 
     expect(enabled).toBe(disabled);

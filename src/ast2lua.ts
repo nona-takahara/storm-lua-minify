@@ -366,17 +366,22 @@ export class MinifyFile {
   }
 
   /**
-   * `--#`コメントを出力の先頭へ移すとき、コメントをminifierへ渡してtrueを返す。
-   * 移さない設定のときは何もせずfalseを返し、呼び出し側が元の位置へ出力する。
+   * エントリのファイルの先頭にある`--#`コメントを出力の先頭へ移すとき、
+   * コメントをminifierへ渡してtrueを返す。移さない設定のときや、移す対象
+   * でないコメントのときは、何もせずfalseを返し、呼び出し側が元の位置へ
+   * 出力する。
    */
   private hoistPreservedComment(comment: Comment): boolean {
     if (this.mode.hoistPreservedComments === false) return false;
-    this.minifier.hoistPreservedComment(
+    if (
+      !this.minifier.getSourceMetadata(this.moduleName).isHeadComment(comment)
+    )
+      return false;
+    return this.minifier.hoistPreservedComment(
       this.moduleName,
       comment,
       this.sourceNodeHelper(comment, comment.raw),
     );
-    return true;
   }
 
   private sourceNodeHelper(

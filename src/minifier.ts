@@ -176,10 +176,7 @@ export class Minifier {
 
   // Linkパスで解決されたモジュール名を、依存されている側が先に来る順序で並べたもの
   private readonly linkOrder: string[] = [];
-  private readonly hoistedComments = new Map<
-    Comment,
-    { moduleName: string; node: SourceNode }
-  >();
+  private readonly hoistedComments = new Map<Comment, SourceNode>();
   // モジュールごとのResolveパスの結果（Linkパスで一度だけ計算し使い回す）
   private readonly moduleResolve = new Map<string, ResolveResult>();
   // モジュールごとのRenameパスの結果（初回アクセス時に計算しキャッシュする）
@@ -1806,32 +1803,25 @@ export class Minifier {
   }
 
   /**
-   * `--#`コメントの出力位置を先頭へ移すために、printerから渡されたコメントを集める。
-   * 同じコメントがdofileなどで複数回出力されても、先頭には一度だけ置く。
+   * エントリのファイルの先頭にある`--#`コメントを、出力の先頭(`require`関数の
+   * 定義より前)へ移すために、printerから渡されたコメントを集める。
+   * 依存moduleのコメントは集めない。
    */
   hoistPreservedComment(
     moduleName: string,
     comment: Comment,
     node: SourceNode,
-  ): void {
+  ): boolean {
+    if (moduleName !== this.entryModule) return false;
     if (!this.hoistedComments.has(comment))
-      this.hoistedComments.set(comment, { moduleName, node });
+      this.hoistedComments.set(comment, node);
+    return true;
   }
 
-  /** エントリmoduleのコメントを先に、続いてlink順の依存moduleのコメントを置く。 */
   private withHoistedComments(printed: SourceNode): SourceNode {
     if (this.hoistedComments.size === 0) return printed;
-    const rank = (moduleName: string): number =>
-      moduleName === this.entryModule ? -1 : this.linkOrder.indexOf(moduleName);
-    const ordered = [...this.hoistedComments.values()]
-      .map((entry, index) => ({ ...entry, index }))
-      .sort(
-        (left, right) =>
-          rank(left.moduleName) - rank(right.moduleName) ||
-          left.index - right.index,
-      );
     const head = new SourceNode(null, null, null, []);
-    ordered.forEach(({ node }) => {
+    this.hoistedComments.forEach((node) => {
       head.add([node, "\n"]);
     });
     head.add(printed);

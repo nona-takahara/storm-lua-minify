@@ -15,7 +15,6 @@ describe("minifier options visible to library users", () => {
       fixture: "annotations",
       mode: {
         requireWrapper: false,
-        hoistPreservedComments: false,
         localDeclarationMerging: false,
         globalAliasing: false,
       },

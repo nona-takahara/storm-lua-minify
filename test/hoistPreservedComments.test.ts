@@ -6,92 +6,128 @@ import { parseConfiguration } from "../src/config";
 import { minifyTemporaryLuaProject } from "./lib/minifierHarness";
 
 const files = {
-  "dependency.lua": `
---# dependency header
+  "dependency.lua": `--# dependency header
 local M={}
 function M.run() return 1 end --# dependency trailing
 return M
 `,
-  "main.lua": `
---# entry header
+  "main.lua": `--# entry header
+--
+--# entry header, second
 local dependency=require("dependency")
---# before call
+
+--# separated by a blank line
 print(dependency.run()) --# after call
 --# after module
 `,
 };
 
-function headLines(code: string): string[] {
-  return code.split("\n").filter((line) => line.startsWith("--#"));
+const mode = { requireWrapper: true, localDeclarationMerging: false };
+
+function commentLines(code: string): string[] {
+  return code.match(/--#[^\n]*/g) ?? [];
 }
 
-describe("hoisting preserved comments", () => {
-  test("moves --# comments to the top, entry module first", () => {
-    const { code } = minifyTemporaryLuaProject(files, {
-      requireWrapper: true,
-      localDeclarationMerging: false,
-    });
+describe("hoisting preserved comments from the head of the entry file", () => {
+  test("moves the unbroken comment run at the top of the entry file before the require wrapper", () => {
+    const { code } = minifyTemporaryLuaProject(files, mode);
 
-    const comments = [
-      "--# entry header",
-      "--# before call",
-      "--# after call",
-      "--# after module",
-      "--# dependency header",
-      "--# dependency trailing",
-    ];
-    expect(code.startsWith(comments.join("\n") + "\n")).toBe(true);
-    expect(headLines(code)).toEqual(comments);
+    const head = ["--# entry header", "--# entry header, second"];
+    expect(code.startsWith(head.join("\n") + "\n")).toBe(true);
     // コメント、require関数の定義、本文の順に並ぶ
-    expect(code.slice(comments.join("\n").length + 1)).toMatch(
+    expect(code.slice(head.join("\n").length + 1)).toMatch(
       /^function\s+require\(/,
     );
-    expect(code.indexOf("print(")).toBeGreaterThan(
+    // 移すのはエントリのファイルの先頭の塊だけで、残りは元の場所に残る
+    expect(commentLines(code)).toEqual([
+      ...head,
+      "--# dependency header",
+      "--# dependency trailing",
+      "--# separated by a blank line",
+      "--# after call",
+      "--# after module",
+    ]);
+    expect(code.indexOf("--# dependency header")).toBeGreaterThan(
+      code.indexOf("package.loaded"),
+    );
+    expect(code.indexOf("--# separated by a blank line")).toBeGreaterThan(
       code.indexOf("package.loaded"),
     );
     expect(() => Parser.parse(code, { luaVersion: "5.3" })).not.toThrow();
   });
 
+  test("ends the run at a blank line", () => {
+    const { code } = minifyTemporaryLuaProject(
+      {
+        "dependency.lua": `return {}`,
+        "main.lua": `--# first
+--# second
+
+--# third
+local d=require("dependency")
+print(d)
+`,
+      },
+      mode,
+    );
+    expect(code.startsWith("--# first\n--# second\nfunction")).toBe(true);
+    expect(code.indexOf("--# third")).toBeGreaterThan(
+      code.indexOf("package.loaded"),
+    );
+  });
+
+  test("keeps going through plain comments and does not move one that follows code", () => {
+    const { code } = minifyTemporaryLuaProject(
+      {
+        "dependency.lua": `return {}`,
+        "main.lua": `-- plain
+--# kept in the run
+local d=require("dependency")
+--# later
+print(d)
+`,
+      },
+      mode,
+    );
+    expect(code.startsWith("--# kept in the run\nfunction")).toBe(true);
+    expect(code.indexOf("--# later")).toBeGreaterThan(
+      code.indexOf("package.loaded"),
+    );
+  });
+
+  test("starts the run even after leading blank lines", () => {
+    const { code } = minifyTemporaryLuaProject(
+      {
+        "dependency.lua": `return {}`,
+        "main.lua": `\n\n--# header\nlocal d=require("dependency")\nprint(d)\n`,
+      },
+      mode,
+    );
+    expect(code.startsWith("--# header\nfunction")).toBe(true);
+  });
+
   test("maps a hoisted comment back to where it was written", async () => {
-    const { code, map } = minifyTemporaryLuaProject(files, {
-      requireWrapper: true,
-      localDeclarationMerging: false,
-    });
-    const lines = code.split("\n");
-    const line = lines.indexOf("--# before call") + 1;
+    const { code, map } = minifyTemporaryLuaProject(files, mode);
+    const line = code.split("\n").indexOf("--# entry header, second") + 1;
     expect(line).toBeGreaterThan(0);
     await SourceMapConsumer.with(map, null, (consumer) => {
       const origin = consumer.originalPositionFor({ line, column: 0 });
       expect(origin.source).toBe("main.lua");
-      // files["main.lua"]は改行で始まるため、`--# before call`は4行目にある
-      expect(origin.line).toBe(4);
+      expect(origin.line).toBe(3);
     });
   });
 
-  test("keeps each comment where it was written when hoisting is off", () => {
+  test("keeps every comment where it was written when hoisting is off", () => {
     const { code } = minifyTemporaryLuaProject(files, {
-      requireWrapper: true,
+      ...mode,
       hoistPreservedComments: false,
-      localDeclarationMerging: false,
     });
 
     expect(code.startsWith("--#")).toBe(false);
-    expect(code).toMatch(/--# before call\nprint\(/);
-    expect(code.indexOf("--# dependency header")).toBeLessThan(
-      code.indexOf("--# entry header"),
+    expect(code.indexOf("--# entry header")).toBeGreaterThan(
+      code.indexOf("package.loaded"),
     );
     expect(() => Parser.parse(code, { luaVersion: "5.3" })).not.toThrow();
-  });
-
-  test("emits a comment once when a module is printed more than once", () => {
-    const { code } = minifyTemporaryLuaProject(
-      {
-        "dependency.lua": `--# once\nprint(1)`,
-        "main.lua": `dofile("dependency")\ndofile("dependency")`,
-      },
-      { requireWrapper: false },
-    );
-    expect(code.match(/--# once/g)).toHaveLength(1);
   });
 
   test("is configurable from the command line and a configuration file", () => {
