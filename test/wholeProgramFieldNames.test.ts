@@ -158,6 +158,23 @@ return find(server.getKey())`);
     expect(code).toContain("long_station_code");
   });
 
+  test("keeps a name that is read from a standard library table, directly or through a local", () => {
+    const { code } = plan(`
+local limits = { max = 1, floor = 2, long_limit_value = 3 }
+local m = math
+return math.max(limits.max, 0) + m.floor(limits.floor) + limits.long_limit_value`);
+    expect(code).toContain("limits.max");
+    expect(code).toContain("limits.floor");
+    expect(code).not.toContain("long_limit_value");
+  });
+
+  test("renames a library-looking name when no library table reads it", () => {
+    const { code } = plan(`
+local range = { maximum_value = 9, minimum_value = 1 }
+return range.maximum_value - range.minimum_value`);
+    expect(code).not.toContain("maximum_value");
+  });
+
   test("keeps names of tables handed to the API", () => {
     const { code } = plan(`
 local options = { long_popup_title = "x" }
@@ -200,7 +217,7 @@ end`);
     const { code } = plan(`
 local class = {}
 class.__index = class
-function class.insert(list, value) return value end
+function class.insert(list, value) table.insert(list, value) return value end
 function class.format(value) return value end
 local function read(holder) return holder.long_undefined_elsewhere end
 return setmetatable({}, class), read`);

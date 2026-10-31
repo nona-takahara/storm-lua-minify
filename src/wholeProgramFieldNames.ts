@@ -74,26 +74,27 @@ const STANDARD_GLOBALS = new Set([
   "xpcall",
 ]);
 
+/** Standard library tables. A name read from one of them keeps its spelling program-wide. */
+const LIBRARY_ROOTS = new Set([
+  "coroutine",
+  "io",
+  "math",
+  "os",
+  "string",
+  "table",
+  "utf8",
+]);
+
 /**
- * Member names of the Lua 5.3 standard library, string methods, and the field names that the
- * Stormworks API is known to return or accept. A program that defines one of these spellings
+ * String method names and the field names that the Stormworks API is known to return or accept. A program that defines one of these spellings
  * keeps it, because the program and the runtime then share the key.
  */
 const RUNTIME_FIELD_NAMES = new Set([
-  // string / utf8
+  // string methods: `value:sub()` has a receiver the tool cannot name
   ...(
     "byte char dump find format gmatch gsub len lower match rep reverse sub upper " +
-    "pack packsize unpack charpattern codepoint codes offset"
+    "pack packsize unpack"
   ).split(" "),
-  // table / math / os / coroutine / debug
-  ...(
-    "concat insert move remove sort abs acos asin atan ceil cos deg exp floor fmod huge " +
-    "log max maxinteger min mininteger modf pi rad random randomseed sin sqrt tan " +
-    "tointeger type ult clock date difftime time create isyieldable resume running " +
-    "status wrap yield traceback getinfo sethook gethook"
-  ).split(" "),
-  // io objects are not available in Stormworks but keep the spellings stable
-  ..."close flush lines read seek setvbuf write open popen tmpfile".split(" "),
   // Stormworks API results and arguments
   ...(
     "id name steam_id admin auth x y z pos voxel rotation components signs seats " +
@@ -831,20 +832,59 @@ export function planNameBasedFieldRenames(
     });
   }
 
-  // Everything reached through an external value keeps its spelling.
+  // A local that holds a standard library table (`local d = table`, which the minifier itself
+  // introduces for repeated globals) reads library members just like the global does.
+  const librarySymbols = new Set<Symbol>();
+  const isLibraryBase = (module: Module, base: Parser.Expression): boolean => {
+    if (base.type !== "Identifier") return false;
+    const symbol = module.resolved.symbolOf(base);
+    return symbol ? librarySymbols.has(symbol) : LIBRARY_ROOTS.has(base.name);
+  };
+  let grew = true;
+  while (grew) {
+    grew = false;
+    objects.modules.forEach((module) => {
+      const adopt = (variable: Parser.Expression, init?: Parser.Expression) => {
+        if (variable.type !== "Identifier" || !init) return;
+        const symbol = module.resolved.symbolOf(variable);
+        if (
+          symbol &&
+          !librarySymbols.has(symbol) &&
+          isLibraryBase(module, init)
+        ) {
+          librarySymbols.add(symbol);
+          grew = true;
+        }
+      };
+      walkBlockDeep(module.chunk.body, {
+        onStatement: (statement) => {
+          if (statement.type === "LocalStatement")
+            statement.variables.forEach((variable, index) => {
+              adopt(variable, statement.init.at(index));
+            });
+          if (statement.type === "AssignmentStatement")
+            statement.variables.forEach((variable, index) => {
+              adopt(variable, statement.init.at(index));
+            });
+        },
+      });
+    });
+  }
+
+  // Everything reached through an external value or a library table keeps its spelling.
   objects.modules.forEach((module) => {
     walkBlockDeep(module.chunk.body, {
       onExpression: (expression) => {
-        if (expression.type === "MemberExpression") {
-          if (isTainted(module, expression.base))
-            poison(expression.identifier.name, "external-value");
-          return;
-        }
-        if (expression.type === "IndexExpression") {
-          const key = staticKey(expression.index);
-          if (key !== undefined && isTainted(module, expression.base))
-            poison(key, "external-value");
-        }
+        const name =
+          expression.type === "MemberExpression"
+            ? expression.identifier.name
+            : expression.type === "IndexExpression"
+              ? staticKey(expression.index)
+              : undefined;
+        if (name === undefined) return;
+        const base = (expression as Parser.MemberExpression).base;
+        if (isTainted(module, base)) poison(name, "external-value");
+        else if (isLibraryBase(module, base)) poison(name, "external-contract");
       },
     });
   });
