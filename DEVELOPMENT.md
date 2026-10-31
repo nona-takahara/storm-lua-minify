@@ -204,6 +204,6 @@ LUA53=/path/to/lua pnpm run verify:effect-semantics
 pnpm run verify:closed-field-names -- path/to/node.lua [more.lua ...] [--config reserved-globals.json] [--ticks 600]
 ```
 
-指定したLuaを、field名を変えない設定（`--no-field-renaming`）と`--assume-closed-field-names`の2通りでminifyし、Stormworksのスタブ環境（`input`、`output`、`screen`、`map`、`async`、`server`、`property`）で`onTick`と`onDraw`を回して、外へ出した呼び出しの記録を比べます。入力は決まった擬似乱数列なので、2つのビルドは同じ値を同じ順で受け取ります。`pairs`の並びはLua 5.3が実行ごとに変えるため、スタブ側でキー順に固定しています。
+指定したLuaを、field名を変えない設定（`--no-field-renaming`）と`--assume-closed-field-names`の2通りでminifyし、Stormworksのスタブ環境（`input`、`output`、`screen`、`map`、`async`、`server`、`property`）で`onTick`と`onDraw`を回して、外へ出した呼び出しの記録を比べます。入力は決まった擬似乱数列で、2つのビルドは同じ値を同じ順で受け取ります。入力は「混合」（整数・小数・大きな値）と「小さな整数（0〜3）」の2通りで、後者はビット列を復号するノードが想定する形です。どちらも実行し、止まったtickも出力に含めます。`pairs`の並びはLua 5.3が実行ごとに変えるため、スタブ側でキー順に固定しています。
 
-記録が違うか、呼び出しが1つもなければ失敗します。乱数の入力が通る経路だけを比べるので、動作が同じことの証明ではありません。スクリプトが乱数の入力では途中でerrorになる場合は、両方が同じtickで止まることを確認します。`dofile`・`require`で読むファイルは、指定したLuaと同じディレクトリに置いてください。既定では`lua`を実行します。
+記録が違うか、呼び出しが1つもなければ失敗します。乱数の入力が通る経路だけを比べるので、動作が同じことの証明ではありません。スクリプトが入力の途中でerrorになる場合は、両方が同じtickで止まることを確認します。`dofile`・`require`で読むファイルは、指定したLuaと同じディレクトリに置いてください。既定では`lua`を実行します。
