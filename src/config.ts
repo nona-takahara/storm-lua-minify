@@ -20,6 +20,7 @@ const booleanKeys = new Map<string, keyof MinifierMode>([
   ["allow-introspection-changes", "allowIntrospectionChanges"],
   ["allow-observable-table-read-changes", "allowObservableTableReadChanges"],
   ["assume-annotations", "assumeAnnotations"],
+  ["hoist-preserved-comments", "hoistPreservedComments"],
   ["collect-optimization-diagnostics", "collectOptimizationDiagnostics"],
 ]);
 

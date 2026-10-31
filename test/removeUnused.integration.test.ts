@@ -10,7 +10,7 @@ describe("unused-code removal integration", () => {
     const { code, map } = runMinifier({
       label: "unused stage 4 integration",
       fixture: "unused-stage4",
-      mode: { requireWrapper: false },
+      mode: { requireWrapper: false, hoistPreservedComments: false },
     });
 
     assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));

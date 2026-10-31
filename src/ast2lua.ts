@@ -319,6 +319,7 @@ export class MinifyFile {
       .afterModuleComments()
       .filter(isPreservedComment)
       .forEach((comment) => {
+        if (this.hoistPreservedComment(comment)) return;
         body.add(["\n", this.sourceNodeHelper(comment, comment.raw)]);
       });
     return body;
@@ -352,6 +353,7 @@ export class MinifyFile {
     ]
       .filter(isPreservedComment)
       .forEach((comment) => {
+        if (this.hoistPreservedComment(comment)) return;
         statements.add([
           "\n",
           this.sourceNodeHelper(comment, comment.raw),
@@ -361,6 +363,20 @@ export class MinifyFile {
 
     const finalExpression = this.formatExpression(last.arguments[0]);
     return { statements, finalExpression };
+  }
+
+  /**
+   * `--#`コメントを出力の先頭へ移すとき、コメントをminifierへ渡してtrueを返す。
+   * 移さない設定のときは何もせずfalseを返し、呼び出し側が元の位置へ出力する。
+   */
+  private hoistPreservedComment(comment: Comment): boolean {
+    if (this.mode.hoistPreservedComments === false) return false;
+    this.minifier.hoistPreservedComment(
+      this.moduleName,
+      comment,
+      this.sourceNodeHelper(comment, comment.raw),
+    );
+    return true;
   }
 
   private sourceNodeHelper(
@@ -458,6 +474,7 @@ export class MinifyFile {
       (sourceStatement ? metadata.beforeOf(sourceStatement) : [])
         .filter(isPreservedComment)
         .forEach((comment) => {
+          if (this.hoistPreservedComment(comment)) return;
           statementNode.add([
             this.sourceNodeHelper(comment, comment.raw),
             "\n",
@@ -467,6 +484,7 @@ export class MinifyFile {
       (sourceStatement ? metadata.trailingOf(sourceStatement) : [])
         .filter(isPreservedComment)
         .forEach((comment) => {
+          if (this.hoistPreservedComment(comment)) return;
           statementNode.add([
             this.requiredWhitespace,
             this.sourceNodeHelper(comment, comment.raw),
