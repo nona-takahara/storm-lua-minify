@@ -348,7 +348,9 @@ function variantGroups(
   >();
   sites.forEach((site) => {
     callable.declaration.parameters.forEach((_, parameterIndex) => {
-      const actual = site.actuals.at(parameterIndex + site.parameterOffset);
+      const found = actualAt(site, parameterIndex);
+      if (!found.known) return;
+      const actual = found.actual;
       const direct = primitiveLiteral(actual);
       const actualSymbol =
         !direct && actual?.type === "Identifier"
@@ -404,7 +406,9 @@ function inferConstantParameters(
       callable.parameters.forEach((parameter, parameterIndex) => {
         if (result.has(parameter) || sites.length === 0) return;
         const values = sites.map((site) => {
-          const actual = site.actuals.at(parameterIndex + site.parameterOffset);
+          const found = actualAt(site, parameterIndex);
+          if (!found.known) return undefined;
+          const actual = found.actual;
           const direct = primitiveLiteral(actual);
           if (direct) return direct;
           if (!actual || actual.type !== "Identifier") return undefined;
@@ -504,6 +508,27 @@ function replaceParameterReferences(
     });
   };
   visit(originals, copies);
+}
+
+/**
+ * 実引数がパラメータ位置に存在しないとき、その値は`nil`である。ただし最後の
+ * 実引数が複数の値を返しうる式(呼び出しまたは`...`)のときは、足りない位置にも
+ * 値が供給されうるため、`nil`とは決められない。
+ */
+function actualAt(
+  site: NormalizedSite,
+  parameterIndex: number,
+): { known: boolean; actual?: Parser.Expression } {
+  const index = parameterIndex + site.parameterOffset;
+  const actual = site.actuals.at(index);
+  if (actual) return { known: true, actual };
+  const last = site.actuals.at(-1);
+  const openEnded =
+    last?.type === "CallExpression" ||
+    last?.type === "TableCallExpression" ||
+    last?.type === "StringCallExpression" ||
+    last?.type === "VarargLiteral";
+  return { known: !openEnded };
 }
 
 function primitiveLiteral(

@@ -373,6 +373,21 @@ function onButtonPress(id) bridge:load_vehicle(id) end`,
     expect(result.code).not.toMatch(/getVehiclePos\(nil/);
   });
 
+  test("does not treat a missing parameter as nil when the last actual can return several values", () => {
+    const result = minifyTemporaryLuaSource(
+      `
+local function pair() return 1,2 end
+local function f(a,b) return server.use(a,b) end
+local x=f(pair())
+local y=f(pair())
+local z=f(pair())
+return x+y+z
+`,
+      { requireWrapper: false, runtimeProfile: "stormworks" },
+    );
+    expect(result.code).not.toMatch(/server\.use\([a-z],nil\)/);
+  });
+
   test("keeps callee and call-site provenance in a specialized variant", async () => {
     const source = [
       "local function choose(enabled)",
