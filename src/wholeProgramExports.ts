@@ -594,8 +594,29 @@ export function analyzeWholeProgramExports(
   // Function values and helper references participate in the same graph. A
   // reference owned by an export field is an edge, while an unowned reference
   // makes the callable externally reachable.
+  const fieldDefinitionValues = new WeakSet();
+  allFields().forEach((field) => {
+    field.definitions.forEach((definition) => {
+      fieldDefinitionValues.add(definition.value);
+    });
+  });
   objects.modules.forEach((module) => {
     module.analysis.callGraph.functions.forEach((callable) => {
+      // A function without a local symbol (an anonymous function, a global
+      // function declaration) has no reference to follow. It can run wherever
+      // its enclosing owner runs, or from the runtime when it has no owner, so
+      // its field uses must stay live. Functions defining an export field are
+      // reached through that field instead.
+      if (
+        !callable.symbol &&
+        !fieldDefinitionValues.has(callable.declaration)
+      ) {
+        const owner = ownerOfNode.get(callable.declaration);
+        if (!owner) callableRoots.add(callable);
+        else if (isMutableField(owner))
+          owner.callableDependencies.add(callable);
+        else callableCallDependencies(owner).add(callable);
+      }
       callable.symbol?.references.forEach((reference) => {
         const owner = ownerOfNode.get(reference);
         if (!owner) callableRoots.add(callable);
