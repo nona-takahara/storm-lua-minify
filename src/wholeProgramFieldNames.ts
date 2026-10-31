@@ -819,8 +819,9 @@ export function planNameBasedFieldRenames(
     visit(body);
   };
 
-  let iterations = 0;
-  while (changed && iterations++ < 100) {
+  // Every set only grows and every set is finite, so this terminates. There is deliberately
+  // no iteration cap: a partial taint would rename names that must be kept.
+  while (changed) {
     changed = false;
     objects.modules.forEach((module) => {
       propagateFunction(module, module.chunk.body, undefined);

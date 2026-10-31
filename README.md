@@ -96,7 +96,7 @@ storm-lua-minify --config storm-lua-minify.json --no-function-inlining script.lu
 
 #### `assume-closed-field-names`（名前単位のfield短縮）
 
-既定の`field-renaming`は、どのtableに届くかを一つずつ証明できたfieldだけを短縮します。クラスのインスタンスを引数・配列・fieldで受け渡すプログラムでは、証明できない参照が多く、ほとんど短縮されません（宗弥急行のコードでは候補7,585件中37件）。
+既定の`field-renaming`は、どのtableに届くかを一つずつ証明できたfieldだけを短縮します。クラスのインスタンスを引数・配列・fieldで受け渡すプログラムでは、証明できない参照が多く、短縮できるfieldが少なくなります。
 
 `--assume-closed-field-names`を指定すると、証明の代わりに名前単位で判断します。次の条件をすべて満たす名前を、全モジュールで同じ短い名前に置き換えます。
 
@@ -104,11 +104,11 @@ storm-lua-minify --config storm-lua-minify.json --no-function-inlining script.lu
 - 外部の値を経由して読み書きされていない（下記）
 - 文字列としても現れない（`"name"`、`t["name"]`を含む）。実行時に文字列でfieldを引く表のキーを守るためです
 - 計算したキーで引く表（`handlers[name]`）の、識別子形式のキーではない。`local`変数かfieldに入れた表のconstructorとその後のfield代入を対象にします
-- `__`で始まる名前、Lua標準ライブラリとStormworks APIのmember名、`never-rename-fields`に指定した名前ではない
+- `__`で始まる名前、Lua標準ライブラリとStormworks APIの主なmember名（ツールが内蔵する一覧。完全ではなく、主な保護は下記の外部の値の追跡です）、`never-rename-fields`に指定した名前ではない
 - `--@storm export`／`--@storm keep-name`を付けた文に現れない
 - 短縮すると文字数が減る
 
-「外部の値」は、`server`、`property`、`matrix`、`g_savedata`などを起点に、代入・引数・戻り値・`for`の変数・`table.insert`を通って届く値です。その値に対して読み書きしたfield名と、外部の関数へ渡したtable constructorのキーは短縮されません。追跡はテーブル本体を受け渡す場合に限ります（`dial.value`のように値を一つ取り出した結果は、field名を介した追跡に使いません）。関数の戻り値は、引数をそのまま返す場合と、外部の値を直接返す場合に追います。
+「外部の値」は、`server`、`property`、`matrix`、`g_savedata`などを起点に、代入・引数・戻り値・`for`の変数・`table.insert`を通って届く値です。その値に対して読み書きしたfield名と、外部の関数へ渡したtable constructorのキーは短縮されません。追跡はテーブル本体を受け渡す場合に限ります（`dial.value`のように値を一つ取り出した結果は、field名を介した追跡に使いません）。関数の戻り値は、引数をそのまま返す場合と、外部の値を直接返す場合に追います。引数として渡す先は、呼び出し先を特定できる場合に追います。特定できない呼び出し（`obj:new(data)`のように受け手の型が分からない呼び出し）は、同じ名前の関数がプログラム内に1つだけのときに限って追い、2つ以上あれば追いません。
 
 ```console
 storm-lua-minify --assume-closed-field-names --never-rename-field ui_id script.lua
@@ -124,6 +124,7 @@ storm-lua-minify --assume-closed-field-names --never-rename-field ui_id script.l
 この仮定が成り立たないと、コードの動作が変わります。次のような場合は、`never-rename-fields`か`--@storm keep-name`で保護してください。
 
 - セーブデータ（`g_savedata`）を、`g_savedata`を経由せずに別のtableへ読み出してから使う場合など、ツールが外部の値と判別できないfield名
+- 外部の値を、呼び出し先を特定できない呼び出し（同名の関数が複数ある`obj:new(data)`など）へ渡し、その中で読み書きするfield。追跡が届かないため、名前が自分のプログラムのfieldと重なるなら保護が必要です
 - 計算したキーで引く表を、引数や関数の戻り値として受け取っていて、`local`変数やfieldに入れた生成元と結びつけられない場合
 - 文字列を連結して組み立てたキー（`t["get_" .. kind]`）で引くfield
 - `load`や`_ENV`への文字列で参照するfield
