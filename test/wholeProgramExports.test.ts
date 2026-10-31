@@ -159,6 +159,38 @@ return exports
     expect(result.code).not.toContain("dead=2");
   });
 
+  test("keeps fields used by a global function and by a directly called module-return function", () => {
+    const files = {
+      "utils.lua": `
+local Utils={}
+function Utils.used(x) return x+1 end
+function Utils.dead(x) return x+2 end
+return Utils
+`,
+      "area.lua": `
+return function(s)
+  local utils=require("utils")
+  return utils.used(s.v)
+end
+`,
+    };
+    const globalFunction = minifyTemporaryLuaProject(
+      {
+        ...files,
+        "main.lua": `function onTick() print(require("area")({v=tick})) end`,
+      },
+      mode,
+    );
+    const topLevelCall = minifyTemporaryLuaProject(
+      { ...files, "main.lua": `print(require("area")({v=tick}))` },
+      mode,
+    );
+    [globalFunction, topLevelCall].forEach((result) => {
+      expect(result.code).toContain("Utils.used");
+      expect(result.code).not.toContain("Utils.dead");
+    });
+  });
+
   test("keeps every field and reports multiple return allocations", () => {
     const result = minify(
       `local first={a=1} local second={b=2} return choose and first or second`,
