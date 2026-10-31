@@ -58,8 +58,10 @@ function build(entry, directory, extra) {
   return output;
 }
 
-function lines(script) {
-  const run = spawnSync("lua", [trace, script, String(ticks)], {
+const profiles = ["mixed", "small"];
+
+function lines(script, profile) {
+  const run = spawnSync("lua", [trace, script, String(ticks), "1", profile], {
     encoding: "utf8",
     maxBuffer: 1 << 28,
   });
@@ -80,29 +82,42 @@ for (const entry of entries) {
       "--assume-closed-field-names",
     ]);
     const sizeOf = (file) => [...fs.readFileSync(file, "utf8")].length;
-    const a = lines(reference);
-    const b = lines(closed);
-    const calls = a.filter(
-      (line) => !line.startsWith("-- tick") && line !== "",
-    ).length;
     totalReference += sizeOf(reference);
     totalClosed += sizeOf(closed);
-    let index = a.findIndex((line, i) => line !== b[i]);
-    if (index < 0 && a.length !== b.length)
-      index = Math.min(a.length, b.length);
-    const label = `${entry}: ${sizeOf(reference)} -> ${sizeOf(closed)} chars, ${calls} calls`;
-    if (index >= 0) {
+    const label = `${entry}: ${sizeOf(reference)} -> ${sizeOf(closed)} chars`;
+    const results = profiles.map((profile) => {
+      const a = lines(reference, profile);
+      const b = lines(closed, profile);
+      const calls = a.filter(
+        (line) => !line.startsWith("-- ") && line !== "",
+      ).length;
+      const ticksRun = a.filter((line) => line.startsWith("-- tick")).length;
+      const stopped = a.some((line) => line.startsWith("-- error at"));
+      let index = a.findIndex((line, i) => line !== b[i]);
+      if (index < 0 && a.length !== b.length)
+        index = Math.min(a.length, b.length);
+      return { profile, a, b, calls, ticksRun, stopped, index };
+    });
+    const summary = results
+      .map(
+        (r) =>
+          `${r.profile}: ${r.calls} calls/${r.ticksRun} ticks${r.stopped ? " (stopped by error)" : ""}`,
+      )
+      .join(", ");
+    const mismatch = results.find((r) => r.index >= 0);
+    if (mismatch) {
       failed = true;
+      const { a, b, index, profile } = mismatch;
       console.log(
-        `FAIL ${label}\n  line ${index + 1}\n  reference: ${a[index]}\n  closed:    ${b[index]}`,
+        `FAIL ${label} [${profile}]\n  line ${index + 1}\n  reference: ${a[index]}\n  closed:    ${b[index]}`,
       );
-    } else if (calls === 0) {
+    } else if (results.every((r) => r.calls === 0)) {
       failed = true;
       console.log(
         `FAIL ${label}: the script made no observable calls, so nothing was compared`,
       );
     } else {
-      console.log(`ok   ${label}`);
+      console.log(`ok   ${label}; ${summary}`);
     }
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });

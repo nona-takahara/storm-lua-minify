@@ -1,13 +1,16 @@
 -- Runs one minified Stormworks Lua node under a stub environment and prints every call that
 -- leaves the script. verify-closed-field-names.cjs runs it on two builds and compares the output.
 --
--- usage: lua stormworks-node-trace.lua <script.lua> [ticks] [seed]
+-- usage: lua stormworks-node-trace.lua <script.lua> [ticks] [seed] [profile]
+--   profile "mixed" (default): integers, fractions, large values, values that stay put
+--   profile "small": integers 0..3 and mostly-true booleans, the shape bit-packed decoders expect
 --
 -- Inputs are a deterministic pseudo-random stream, so both builds see the same values in the
 -- same order. Everything the script sends to input/output/screen/map/async/server is recorded.
 local script_path = arg[1]
 local ticks = tonumber(arg[2]) or 600
 local seed = tonumber(arg[3]) or 1
+local profile = arg[4] or "mixed"
 
 local lines = {}
 local function serialize(value)
@@ -72,6 +75,7 @@ end
 local tick = 0
 local sticky = {}
 local function number_input(channel)
+    if profile == "small" then return math.floor(random() * 4) end
     -- a mix of integers, small fractions, large values, and values that stay put for a while
     local r = random()
     if r < 0.4 then return math.floor(random() * 8) end
@@ -83,6 +87,7 @@ local function number_input(channel)
 end
 local bool_state = {}
 local function bool_input(channel)
+    if profile == "small" then return random() < 0.85 end
     if random() < 0.15 or bool_state[channel] == nil then bool_state[channel] = random() < 0.5 end
     return bool_state[channel]
 end
