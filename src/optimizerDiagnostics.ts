@@ -94,7 +94,10 @@ export type OptimizationDiagnosticReason =
   | "metatable-observation"
   | "key-data-observation"
   | "iteration-order-observation"
-  | "name-collision";
+  | "name-collision"
+  | "external-value"
+  | "string-key"
+  | "unowned-field";
 
 export interface OptimizationDiagnostic {
   readonly pass: string;

@@ -25,7 +25,10 @@ export type FieldRenameReason =
   | "key-data-observation"
   | "iteration-order-observation"
   | "name-collision"
-  | "nonpositive-cost";
+  | "nonpositive-cost"
+  | "external-value"
+  | "string-key"
+  | "unowned-field";
 
 export interface WholeProgramFieldRenameDiagnostic {
   readonly moduleName: string;

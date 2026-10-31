@@ -87,11 +87,49 @@ storm-lua-minify --config storm-lua-minify.json --no-function-inlining script.lu
 
 これらの機能は実際のコードに対して、圧縮が強まる仮定を置く機能です。仮定が誤っているとコードの結果が変化することがあるため、注意してください。
 
-| 仮定                                  | 既定                             | 説明                                                                                                                                                                         |
-| ------------------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `allow-introspection-changes`         | `lua53`: OFF<br>`stormworks`: ON | local名・生存期間、parameter、stack frameなどdebug APIから観測できる変更を許可します。<br>**現時点では`stormworks`プロファイルではOFFできません**                            |
-| `assume-annotations`                  | OFF                              | EmmyLuaアノテーションを最適化の変換根拠として信頼します                                                                                                                      |
-| `allow-observable-table-read-changes` | OFF                              | テーブルから読み取ってlocal変数を初期化する処理について、テーブルへの書き込み前へ移動する候補を許可します。local変数の値がテーブルへの書き込み前の値に変わる可能性があります |
+| 仮定                                  | 既定                             | 説明                                                                                                                                                                                                                                |
+| ------------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `allow-introspection-changes`         | `lua53`: OFF<br>`stormworks`: ON | local名・生存期間、parameter、stack frameなどdebug APIから観測できる変更を許可します。<br>**現時点では`stormworks`プロファイルではOFFできません**                                                                                   |
+| `assume-annotations`                  | OFF                              | EmmyLuaアノテーションを最適化の変換根拠として信頼します                                                                                                                                                                             |
+| `assume-closed-field-names`           | OFF                              | プログラムが定義するfield名・method名は、外部から名前で参照されないと仮定し、名前単位で短縮します。`field-renaming`が有効なときだけ働き、通常のfield短縮の代わりに使われます。[詳細](#assume-closed-field-names名前単位のfield短縮) |
+| `allow-observable-table-read-changes` | OFF                              | テーブルから読み取ってlocal変数を初期化する処理について、テーブルへの書き込み前へ移動する候補を許可します。local変数の値がテーブルへの書き込み前の値に変わる可能性があります                                                        |
+
+#### `assume-closed-field-names`（名前単位のfield短縮）
+
+既定の`field-renaming`は、どのtableに届くかを一つずつ証明できたfieldだけを短縮します。クラスのインスタンスを引数・配列・fieldで受け渡すプログラムでは、証明できない参照が多く、ほとんど短縮されません（宗弥急行のコードでは候補7,585件中37件）。
+
+`--assume-closed-field-names`を指定すると、証明の代わりに名前単位で判断します。次の条件をすべて満たす名前を、全モジュールで同じ短い名前に置き換えます。
+
+- プログラムが定義している（`t.name = ...`、`{ name = ... }`、`function t.name()`、`function t:name()`のいずれかがある）
+- 外部の値を経由して読み書きされていない（下記）
+- 文字列としても現れない（`"name"`、`t["name"]`を含む）。実行時に文字列でfieldを引く表のキーを守るためです
+- 計算したキーで引く表（`handlers[name]`）の、識別子形式のキーではない。`local`変数かfieldに入れた表のconstructorとその後のfield代入を対象にします
+- `__`で始まる名前、Lua標準ライブラリとStormworks APIのmember名、`never-rename-fields`に指定した名前ではない
+- `--@storm export`／`--@storm keep-name`を付けた文に現れない
+- 短縮すると文字数が減る
+
+「外部の値」は、`server`、`property`、`matrix`、`g_savedata`などを起点に、代入・引数・戻り値・`for`の変数・`table.insert`を通って届く値です。その値に対して読み書きしたfield名と、外部の関数へ渡したtable constructorのキーは短縮されません。追跡はテーブル本体を受け渡す場合に限ります（`dial.value`のように値を一つ取り出した結果は、field名を介した追跡に使いません）。関数の戻り値は、引数をそのまま返す場合と、外部の値を直接返す場合に追います。
+
+```console
+storm-lua-minify --assume-closed-field-names --never-rename-field ui_id script.lua
+```
+
+```json
+{
+  "assume-closed-field-names": true,
+  "never-rename-fields": ["ui_id"]
+}
+```
+
+この仮定が成り立たないと、コードの動作が変わります。次のような場合は、`never-rename-fields`か`--@storm keep-name`で保護してください。
+
+- セーブデータ（`g_savedata`）を、`g_savedata`を経由せずに別のtableへ読み出してから使う場合など、ツールが外部の値と判別できないfield名
+- 計算したキーで引く表を、引数や関数の戻り値として受け取っていて、`local`変数やfieldに入れた生成元と結びつけられない場合
+- 文字列を連結して組み立てたキー（`t["get_" .. kind]`）で引くfield
+- `load`や`_ENV`への文字列で参照するfield
+- `pairs`で走査した順序や、`json.stringify`・`tostring`で出力したfield名に依存する処理。短縮でfield名が変わり、走査順も変わりえます
+
+短縮されなかった名前と理由は、`collectOptimizationDiagnostics`の`whole-program-field-rename`診断（`reason`が`external-value`、`string-key`、`unowned-field`、`external-contract`、`keep-name`、`reserved-key`など）で確認できます。
 
 ### 個別スイッチ
 

@@ -89,6 +89,8 @@ pnpm run format
 | `unused-local-removal`, `unused-function-removal`                   | 同じ未使用解析を使っても、値宣言とfunction宣言では削除対象・観測経路が異なる                                                             |
 | `unused-field-initializer-removal`, `unused-export-removal`         | 前者はconstructor field、後者はentryから到達不能なexportを全プログラム解析で削除する。initializerの効果は残す                            |
 
+`assume-closed-field-names`は変換単位ではなく仮定です。`field-renaming`が実行する短縮は同じで、どのfieldを短縮してよいかの判断を、tableの同一性の証明（`wholeProgramFieldRenames.ts`）から「プログラムが定義する名前は外部から名前で参照されない」という仮定に基づく名前単位の判断（`wholeProgramFieldNames.ts`）へ替えます。証明できない参照を仮定へ移すので、仮定モードの層に置き、既定では有効にしません。名前単位の判断が拒否した理由は、証明版と同じ`whole-program-field-rename`診断に出ます。
+
 新しい変換を追加するときは、まず既存の末端スイッチと上記の境界が一致するかを確認します。一致する場合はその変換単位へ挿入し、異なる仮定や観測経路を持つ場合は新しい末端スイッチを作ります。単に同じファイルへ実装されていることは、スイッチをまとめる理由にしません。
 
 ### コンパイル進捗の調整

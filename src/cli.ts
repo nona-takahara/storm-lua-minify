@@ -26,6 +26,7 @@ const luaparseSetting: Partial<Options> = {
 type CliOptions = Omit<MinifierMode, "requiredWhitespace"> & {
   config?: string;
   neverRenameGlobal?: string[];
+  neverRenameField?: string[];
   progress?: boolean;
   requiredWhitespace?: "space" | "lf";
   sourceMappingUrlStyle?: SourceMappingUrlStyle;
@@ -34,6 +35,7 @@ type CliOptions = Omit<MinifierMode, "requiredWhitespace"> & {
 const {
   config: configPath,
   neverRenameGlobal,
+  neverRenameField,
   progress: progressOption,
   requiredWhitespace,
   sourceMappingUrlStyle: cliSourceMappingUrlStyle,
@@ -42,6 +44,8 @@ const {
 const cliMode: MinifierMode = cliModeOptions;
 if (neverRenameGlobal !== undefined)
   cliMode.neverRenameGlobals = new Set(neverRenameGlobal);
+if (neverRenameField !== undefined)
+  cliMode.neverRenameFields = new Set(neverRenameField);
 if (requiredWhitespace !== undefined)
   cliMode.requiredWhitespace = requiredWhitespace === "space" ? " " : "\n";
 
