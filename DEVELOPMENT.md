@@ -55,7 +55,7 @@ pnpm run format
 
 CIは`main`と`develop`へのプルリクエストで動きます。詳細は`.github/workflows/ci.yml`を確認してください。
 
-Dependabotは、npmの依存とGitHub Actionsの更新を、`develop`向けのプルリクエストとして週に一度提案します。公開から7日たっていない版は対象にしません。設定は`.github/dependabot.yml`にあります。
+Dependabotは、npmの依存とGitHub Actionsの更新を、`develop`向けのプルリクエストとして週に一度提案します。公開から7日経過していないバージョンは提案されません。設定は`.github/dependabot.yml`にあります。
 
 npmへの公開は、`.github/workflows/publish.yml`が行います。以下のリリース手順に従ってください。
 
