@@ -47,6 +47,12 @@ export function createCliProgram(): Command {
     )
     .addOption(
       new Option(
+        "--never-rename-field <name>",
+        "Field name that must remain externally visible (repeatable)",
+      ).argParser((name: string, names?: string[]) => [...(names ?? []), name]),
+    )
+    .addOption(
+      new Option(
         "--source-mapping-url-style <style>",
         "sourceMappingURL output style",
       )
@@ -79,6 +85,11 @@ export function createCliProgram(): Command {
     command,
     "assume-annotations",
     "Trust supported EmmyLua annotations as optimizer facts",
+  );
+  addBooleanSwitch(
+    command,
+    "assume-closed-field-names",
+    "Assume every field name the program defines is private to the linked program",
   );
   addBooleanSwitch(
     command,

@@ -67,6 +67,7 @@ import {
   planWholeProgramFieldRenames,
   WholeProgramFieldRenamePlan,
 } from "./wholeProgramFieldRenames";
+import { planNameBasedFieldRenames } from "./wholeProgramFieldNames";
 import {
   MinifierMode,
   ResolvedMinifierMode,
@@ -564,13 +565,21 @@ export class Minifier {
         (moduleName) => this.getSourceMetadata(moduleName),
       );
       if (this.fieldRenameVariant === "trial") {
-        this.wholeProgramFieldRenamesValue = planWholeProgramFieldRenames(
-          this.wholeProgramObjectsValue,
-          this.wholeProgramFieldsValue,
-          this.wholeProgramExportsValue,
-          this.entryModule,
-          (moduleName) => this.getSourceMetadata(moduleName),
-        );
+        this.wholeProgramFieldRenamesValue =
+          this.mode.assumeClosedFieldNames === true
+            ? planNameBasedFieldRenames(
+                this.wholeProgramObjectsValue,
+                this.entryModule,
+                (moduleName) => this.getSourceMetadata(moduleName),
+                { neverRenameFields: this.mode.neverRenameFields },
+              )
+            : planWholeProgramFieldRenames(
+                this.wholeProgramObjectsValue,
+                this.wholeProgramFieldsValue,
+                this.wholeProgramExportsValue,
+                this.entryModule,
+                (moduleName) => this.getSourceMetadata(moduleName),
+              );
         this.recordWholeProgramFieldRenameDiagnostics(
           this.wholeProgramFieldRenamesValue,
         );

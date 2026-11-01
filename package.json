@@ -42,6 +42,7 @@
     "report:aggregate-specialization": "pnpm run build && node scripts/report-aggregate-specialization.cjs",
     "report:whole-program-exports": "pnpm run build && node scripts/report-whole-program-exports.cjs",
     "report:whole-program-field-renames": "pnpm run build && node scripts/report-whole-program-field-renames.cjs",
+    "verify:closed-field-names": "pnpm run build && node scripts/verify-closed-field-names.cjs",
     "verify:effect-semantics": "pnpm run build && node scripts/verify-effect-semantics.cjs",
     "prepack": "pnpm run build"
   },

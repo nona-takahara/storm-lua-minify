@@ -192,6 +192,7 @@ export interface SemanticAssumptions {
   allowIntrospectionChanges?: boolean;
   allowObservableTableReadChanges?: boolean;
   assumeAnnotations?: boolean;
+  assumeClosedFieldNames?: boolean;
 }
 
 export interface OutputOptions {
@@ -205,6 +206,7 @@ export interface MinifierMode
   runtimeProfile?: RuntimeProfile;
   requiredWhitespace?: " " | "\n";
   neverRenameGlobals?: ReadonlySet<string>;
+  neverRenameFields?: ReadonlySet<string>;
   collectOptimizationDiagnostics?: boolean;
 }
 
