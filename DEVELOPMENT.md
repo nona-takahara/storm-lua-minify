@@ -51,6 +51,18 @@ pnpm run format
 
 `format`はファイルを書き換えます。変更内容を確認するだけなら`format:check`を使用してください。
 
+## CIとリリース
+
+CIは`main`と`develop`へのプルリクエストで動きます。詳細は`.github/workflows/ci.yml`を確認してください。
+
+Dependabotは、npmの依存とGitHub Actionsの更新を、`develop`向けのプルリクエストとして週に一度提案します。公開から7日経過していないバージョンは提案されません。設定は`.github/dependabot.yml`にあります。
+
+npmへの公開は、`.github/workflows/publish.yml`が行います。以下のリリース手順に従ってください。
+
+1. `package.json`の`version`を更新したプルリクエストを`main`へマージする
+2. `main`のマージコミットに`v<version>`のタグを付けてpushする
+3. GitHubのActionsで公開ジョブの完了を確認する
+
 ## 最適化実装の原則
 
 ### baselineとtrial
@@ -88,6 +100,8 @@ pnpm run format
 | `field-value-propagation`                                           | 全モジュールのconstructorとescapeを解析し、安定したfield readを値へ置換する                                                              |
 | `unused-local-removal`, `unused-function-removal`                   | 同じ未使用解析を使っても、値宣言とfunction宣言では削除対象・観測経路が異なる                                                             |
 | `unused-field-initializer-removal`, `unused-export-removal`         | 前者はconstructor field、後者はentryから到達不能なexportを全プログラム解析で削除する。initializerの効果は残す                            |
+
+`assume-closed-field-names`は変換単位ではなく仮定です。`field-renaming`が実行する短縮は同じで、どのfieldを短縮してよいかの判断を、tableの同一性の証明（`wholeProgramFieldRenames.ts`）から「プログラムが定義する名前は外部から名前で参照されない」という仮定に基づく名前単位の判断（`wholeProgramFieldNames.ts`）へ替えます。証明できない参照を仮定へ移すので、仮定モードの層に置き、既定では有効にしません。名前単位の判断が拒否した理由は、証明版と同じ`whole-program-field-rename`診断に出ます。
 
 新しい変換を追加するときは、まず既存の末端スイッチと上記の境界が一致するかを確認します。一致する場合はその変換単位へ挿入し、異なる仮定や観測経路を持つ場合は新しい末端スイッチを作ります。単に同じファイルへ実装されていることは、スイッチをまとめる理由にしません。
 
@@ -195,3 +209,13 @@ pnpm run verify:effect-semantics
 ```console
 LUA53=/path/to/lua pnpm run verify:effect-semantics
 ```
+
+### `assume-closed-field-names`の動作確認
+
+```console
+pnpm run verify:closed-field-names -- path/to/node.lua [more.lua ...] [--config reserved-globals.json] [--ticks 600]
+```
+
+指定したLuaを、field名を変えない設定（`--no-field-renaming`）と`--assume-closed-field-names`の2通りでminifyし、Stormworksのスタブ環境（`input`、`output`、`screen`、`map`、`async`、`server`、`property`）で`onTick`と`onDraw`を回して、外へ出した呼び出しの記録を比べます。入力は決まった擬似乱数列で、2つのビルドは同じ値を同じ順で受け取ります。入力は「混合」（整数・小数・大きな値）と「小さな整数（0〜3）」の2通りで、後者はビット列を復号するノードが想定する形です。どちらも実行し、止まったtickも出力に含めます。`pairs`の並びはLua 5.3が実行ごとに変えるため、スタブ側でキー順に固定しています。
+
+記録が違うか、呼び出しが1つもなければ失敗します。乱数の入力が通る経路だけを比べるので、動作が同じことの証明ではありません。スクリプトが入力の途中でerrorになる場合は、両方が同じtickで止まることを確認します。`dofile`・`require`で読むファイルは、指定したLuaと同じディレクトリに置いてください。既定では`lua`を実行します。

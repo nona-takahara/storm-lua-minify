@@ -193,6 +193,11 @@ export class SourceMetadata {
     readonly EmmyLuaDirective[]
   >();
   private readonly afterModule: Comment[] = [];
+  /**
+   * ファイルの先頭から、空行を挟まず途切れなく続くコメントの塊。
+   * 通常の`--`と`--#`が混ざっていてもよく、空行が1つでも入れば塊は終わる。
+   */
+  private readonly headComments = new Set<Comment>();
   private readonly statementOfIdentifier = new WeakMap<
     Parser.Identifier,
     Parser.Statement
@@ -226,7 +231,10 @@ export class SourceMetadata {
     );
 
     let index = 0;
+    let firstGroup = true;
     while (index < comments.length) {
+      const startsFile = firstGroup;
+      firstGroup = false;
       const group: Comment[] = [comments[index++]];
       while (index < comments.length) {
         const previousEnd = rangeOf(group[group.length - 1])?.[1];
@@ -251,6 +259,8 @@ export class SourceMetadata {
             (rangeOf(statement)?.[1] ?? Infinity) <=
             (rangeOf(first)?.[0] ?? -1),
         );
+      if (startsFile && !preceding)
+        group.forEach((comment) => this.headComments.add(comment));
       if (
         preceding?.loc?.end.line !== undefined &&
         preceding.loc.end.line === first.loc?.start.line
@@ -295,6 +305,11 @@ export class SourceMetadata {
         this.afterModule.push(...group);
       }
     }
+  }
+
+  /** ファイルの先頭で、途切れなく続くコメントの塊に含まれるか。 */
+  isHeadComment(comment: Comment): boolean {
+    return this.headComments.has(comment);
   }
 
   annotationsOf(statement: Parser.Statement): StormAnnotations {

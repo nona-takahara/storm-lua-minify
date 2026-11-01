@@ -1,7 +1,21 @@
 {
   "name": "storm-lua-minify",
   "description": "A Lua minifier also outputs source map",
-  "version": "0.9.1",
+  "version": "0.10.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nona-takahara/storm-lua-minify.git"
+  },
+  "homepage": "https://github.com/nona-takahara/storm-lua-minify#readme",
+  "bugs": {
+    "url": "https://github.com/nona-takahara/storm-lua-minify/issues"
+  },
+  "keywords": [
+    "lua",
+    "minifier",
+    "sourcemap",
+    "stormworks"
+  ],
   "packageManager": "pnpm@11.21.0",
   "engines": {
     "node": ">=22"
@@ -24,7 +38,7 @@
     "prettier": "^3.9.5",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.63.0",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.0"
   },
   "bin": "dist/cli.js",
   "scripts": {
@@ -42,6 +56,7 @@
     "report:aggregate-specialization": "pnpm run build && node scripts/report-aggregate-specialization.cjs",
     "report:whole-program-exports": "pnpm run build && node scripts/report-whole-program-exports.cjs",
     "report:whole-program-field-renames": "pnpm run build && node scripts/report-whole-program-field-renames.cjs",
+    "verify:closed-field-names": "pnpm run build && node scripts/verify-closed-field-names.cjs",
     "verify:effect-semantics": "pnpm run build && node scripts/verify-effect-semantics.cjs",
     "prepack": "pnpm run build"
   },

@@ -23,7 +23,7 @@ function addBooleanSwitch(
 /** Build the v1 CLI surface without materializing inherited defaults. */
 export function createCliProgram(): Command {
   const command = new Command()
-    .version("0.9.1")
+    .version("0.10.0")
     .description("A Lua minifier also outputs source map")
     .option("--config <path>", "JSON configuration file")
     .addOption(
@@ -43,6 +43,12 @@ export function createCliProgram(): Command {
       new Option(
         "--never-rename-global <name>",
         "Global name that must remain externally visible (repeatable)",
+      ).argParser((name: string, names?: string[]) => [...(names ?? []), name]),
+    )
+    .addOption(
+      new Option(
+        "--never-rename-field <name>",
+        "Field name that must remain externally visible (repeatable)",
       ).argParser((name: string, names?: string[]) => [...(names ?? []), name]),
     )
     .addOption(
@@ -79,6 +85,16 @@ export function createCliProgram(): Command {
     command,
     "assume-annotations",
     "Trust supported EmmyLua annotations as optimizer facts",
+  );
+  addBooleanSwitch(
+    command,
+    "assume-closed-field-names",
+    "Assume every field name the program defines is private to the linked program",
+  );
+  addBooleanSwitch(
+    command,
+    "hoist-preserved-comments",
+    "Move --# comments to the top of the output",
   );
   addBooleanSwitch(
     command,

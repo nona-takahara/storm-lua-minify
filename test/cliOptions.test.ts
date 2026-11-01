@@ -66,6 +66,47 @@ describe("v1 option hierarchy", () => {
     expect(mode.allowIntrospectionChanges).toBeUndefined();
     expect(mode.allowObservableTableReadChanges).toBeUndefined();
     expect(mode.assumeAnnotations).toBeUndefined();
+    expect(mode.assumeClosedFieldNames).toBeUndefined();
+  });
+
+  test("keeps closed field names an explicit opt-in on the CLI and in a config file", () => {
+    expect(
+      resolveMinifierMode(optionsOf("--optimizations")).assumeClosedFieldNames,
+    ).toBeUndefined();
+    expect(optionsOf("--assume-closed-field-names")).toMatchObject({
+      assumeClosedFieldNames: true,
+    });
+    expect(optionsOf("--no-assume-closed-field-names")).toMatchObject({
+      assumeClosedFieldNames: false,
+    });
+    expect(
+      parseConfiguration({ "assume-closed-field-names": true }).mode,
+    ).toEqual({ assumeClosedFieldNames: true });
+  });
+
+  test("collects repeated protected field names and validates the config list", () => {
+    const program = createCliProgram();
+    program.parse(
+      [
+        "--never-rename-field",
+        "ui_id",
+        "--never-rename-field",
+        "cheat",
+        "main.lua",
+      ],
+      { from: "user" },
+    );
+    expect(program.opts()).toMatchObject({
+      neverRenameField: ["ui_id", "cheat"],
+    });
+    expect(program.args).toEqual(["main.lua"]);
+    expect(
+      parseConfiguration({ "never-rename-fields": ["ui_id"] }).mode
+        .neverRenameFields,
+    ).toEqual(new Set(["ui_id"]));
+    expect(() =>
+      parseConfiguration({ "never-rename-fields": "ui_id" }),
+    ).toThrow(/array of strings/);
   });
 
   test("keeps module interpretation outside the optimization hierarchy", () => {

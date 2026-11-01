@@ -20,6 +20,8 @@ const booleanKeys = new Map<string, keyof MinifierMode>([
   ["allow-introspection-changes", "allowIntrospectionChanges"],
   ["allow-observable-table-read-changes", "allowObservableTableReadChanges"],
   ["assume-annotations", "assumeAnnotations"],
+  ["assume-closed-field-names", "assumeClosedFieldNames"],
+  ["hoist-preserved-comments", "hoistPreservedComments"],
   ["collect-optimization-diagnostics", "collectOptimizationDiagnostics"],
 ]);
 
@@ -27,6 +29,7 @@ const nonBooleanKeys = new Set([
   "runtime-profile",
   "required-whitespace",
   "never-rename-globals",
+  "never-rename-fields",
   "source-mapping-url-style",
 ]);
 
@@ -77,6 +80,17 @@ export function parseConfiguration(
           `${path}: never-rename-globals must be an array of strings`,
         );
       mode.neverRenameGlobals = new Set(rawValue);
+      return;
+    }
+    if (externalName === "never-rename-fields") {
+      if (
+        !Array.isArray(rawValue) ||
+        !rawValue.every((name) => typeof name === "string")
+      )
+        throw new Error(
+          `${path}: never-rename-fields must be an array of strings`,
+        );
+      mode.neverRenameFields = new Set(rawValue);
       return;
     }
     if (rawValue !== "legacy" && rawValue !== "line" && rawValue !== "strict")

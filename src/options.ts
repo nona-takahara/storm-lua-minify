@@ -192,14 +192,21 @@ export interface SemanticAssumptions {
   allowIntrospectionChanges?: boolean;
   allowObservableTableReadChanges?: boolean;
   assumeAnnotations?: boolean;
+  assumeClosedFieldNames?: boolean;
+}
+
+export interface OutputOptions {
+  /** `--#`コメントを出力の先頭へ集める。未指定はtrue。 */
+  hoistPreservedComments?: boolean;
 }
 
 export interface MinifierMode
-  extends OptimizationOverrides, SemanticAssumptions {
+  extends OptimizationOverrides, SemanticAssumptions, OutputOptions {
   requireWrapper?: boolean;
   runtimeProfile?: RuntimeProfile;
   requiredWhitespace?: " " | "\n";
   neverRenameGlobals?: ReadonlySet<string>;
+  neverRenameFields?: ReadonlySet<string>;
   collectOptimizationDiagnostics?: boolean;
 }
 
