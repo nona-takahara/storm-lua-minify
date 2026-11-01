@@ -51,6 +51,18 @@ pnpm run format
 
 `format`はファイルを書き換えます。変更内容を確認するだけなら`format:check`を使用してください。
 
+## CIとリリース
+
+CIは`main`と`develop`へのプルリクエストで動きます。詳細は`.github/workflows/ci.yml`を確認してください。
+
+Dependabotは、npmの依存とGitHub Actionsの更新を、`develop`向けのプルリクエストとして週に一度提案します。公開から7日経過していないバージョンは提案されません。設定は`.github/dependabot.yml`にあります。
+
+npmへの公開は、`.github/workflows/publish.yml`が行います。以下のリリース手順に従ってください。
+
+1. `package.json`の`version`を更新したプルリクエストを`main`へマージする
+2. `main`のマージコミットに`v<version>`のタグを付けてpushする
+3. GitHubのActionsで公開ジョブの完了を確認する
+
 ## 最適化実装の原則
 
 ### baselineとtrial
