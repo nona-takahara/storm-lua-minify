@@ -351,4 +351,31 @@ return choose(true,1)+choose(true,2)+choose(true,3)
       expect(origin.name).toBe("external");
     });
   });
+  test("does not leave an unbound reference when a function inlined into another is itself inlined in the same pass", () => {
+    const source = `
+local function print_axle(id, name)
+  print("axle", id, name)
+end
+local function load_axles(vehicle_id, names)
+  for _, name in ipairs(names) do
+    print_axle(vehicle_id, name)
+  end
+end
+local VehicleInfo = {}
+function VehicleInfo.new(vehicle_id, bridge)
+  load_axles(vehicle_id, bridge.names)
+end
+function onVehicleLoad(vehicle_id)
+  VehicleInfo.new(vehicle_id, { names = { "TRAIN1" } })
+end
+`;
+    const { code } = minifyTemporaryLuaSource(source, {
+      requireWrapper: false,
+      runtimeProfile: "stormworks",
+    });
+
+    // Every local is renamed and `name` is not a global in the source, so a
+    // surviving `name` token is a reference that lost its binding.
+    expect(code).not.toMatch(/\bname\b/);
+  });
 });

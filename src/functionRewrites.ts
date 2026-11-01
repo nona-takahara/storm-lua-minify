@@ -1,5 +1,5 @@
 import Parser from "luaparse";
-import { CallGraphAnalysis } from "./callGraph";
+import { CallGraphAnalysis, Callable } from "./callGraph";
 import { walkExpression, walkStatement } from "./astWalk";
 import { InterproceduralAnalysis } from "./interproceduralAnalysis";
 import { ResolveResult, Scope, Symbol } from "./resolver";
@@ -602,9 +602,13 @@ export function inlineBoundStatementFunctions(
   options: BoundStatementInlineOptions,
 ): StatementInlineRewriteResult {
   let inlinedFunctions = 0;
+  const rewrittenCallers = new Set<Callable>();
 
   analysis.callGraph.functions.forEach((callable) => {
     const declaration = callable.declaration;
+    // An earlier inline in this pass copied nodes into this body that `resolved`
+    // does not know, so alpha conversion would leave their references unrenamed.
+    if (rewrittenCallers.has(callable)) return;
     const symbol = callable.symbol;
     const functionScope = resolved.scopeOfFunction(declaration);
     if (
@@ -674,6 +678,7 @@ export function inlineBoundStatementFunctions(
     executable.forEach((source, index) => {
       metadata.transferStatements([source], copiedBody[index]);
     });
+    if (site.caller) rewrittenCallers.add(site.caller);
     inlinedFunctions++;
   });
 
@@ -693,9 +698,13 @@ export function inlineTailCallFunctions(
   options: BoundStatementInlineOptions,
 ): StatementInlineRewriteResult {
   let inlinedFunctions = 0;
+  const rewrittenCallers = new Set<Callable>();
 
   analysis.callGraph.functions.forEach((callable) => {
     const declaration = callable.declaration;
+    // An earlier inline in this pass copied nodes into this body that `resolved`
+    // does not know, so alpha conversion would leave their references unrenamed.
+    if (rewrittenCallers.has(callable)) return;
     const symbol = callable.symbol;
     const functionScope = resolved.scopeOfFunction(declaration);
     if (
@@ -795,6 +804,7 @@ export function inlineTailCallFunctions(
     declaration.body.forEach((source, index) => {
       metadata.transferStatements([source], copiedBody[index]);
     });
+    if (site.caller) rewrittenCallers.add(site.caller);
     inlinedFunctions++;
   });
 
