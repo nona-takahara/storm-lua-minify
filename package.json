@@ -2,6 +2,20 @@
   "name": "storm-lua-minify",
   "description": "A Lua minifier also outputs source map",
   "version": "0.9.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nona-takahara/storm-lua-minify.git"
+  },
+  "homepage": "https://github.com/nona-takahara/storm-lua-minify#readme",
+  "bugs": {
+    "url": "https://github.com/nona-takahara/storm-lua-minify/issues"
+  },
+  "keywords": [
+    "lua",
+    "minifier",
+    "sourcemap",
+    "stormworks"
+  ],
   "packageManager": "pnpm@11.21.0",
   "engines": {
     "node": ">=22"

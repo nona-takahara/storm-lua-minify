@@ -49,7 +49,21 @@ pnpm run format:check
 pnpm run format
 ```
 
-`format`はファイルを書き換えます。変更内容を確認するだけなら`format:check`を使用してください。
+`format`はファイルを書き換えます。変更内容を確認するだけなら`format:check`を使用してください。`pnpm-lock.yaml`は生成物なので、`.prettierignore`でformatの対象から外しています。
+
+## CIとリリース
+
+CI(`.github/workflows/ci.yml`)は`main`と`develop`へのpushとプルリクエストで動き、smoke、build、lint、format、test、`pnpm pack --dry-run`を順に実行します。Dependabotのプルリクエストも同じCIを通ります。依存の更新は`.github/dependabot.yml`で、`develop`を対象に週次でまとめて提案されます。
+
+npmへの公開は、`v0.10.0`のような`v*`タグをpushすると`.github/workflows/publish.yml`が行います。このワークフローは、先にCIを呼び出して検証し、タグが`package.json`の`version`と一致していることを確認してから、npmのTrusted Publishing(OIDC)で公開します。長期トークンは使いません。
+
+リリース手順は次のとおりです。
+
+1. `package.json`の`version`を更新したリリースPRを`main`へマージする
+2. `main`の該当コミットに`v<version>`のタグを付けてpushする
+3. GitHubのActionsで公開ジョブの完了を確認する(`npm-publish`環境に必須レビュワーを設定している場合は、承認が必要)
+
+Trusted Publisherの登録は、npmjs.comのパッケージ設定で、リポジトリ`nona-takahara/storm-lua-minify`、ワークフロー`publish.yml`、環境`npm-publish`を指定して行います。
 
 ## 最適化実装の原則
 
