@@ -112,7 +112,16 @@ export function applyAggregateSpecialization(
     const callback = callbacks.get(site.call);
     let actuals: readonly Parser.Expression[] = site.call.arguments;
     let parameterOffset = 0;
+    // A colon call passes its receiver as the first actual, so the receiver
+    // occupies parameter 0 (`self`) even when only the field-callback
+    // resolution (and not the method resolution) identified the target.
+    const colonReceiver =
+      site.call.base.type === "MemberExpression" &&
+      site.call.base.indexer === ":"
+        ? site.call.base.base
+        : undefined;
     if (method) actuals = [method.receiver, ...site.call.arguments];
+    else if (colonReceiver) actuals = [colonReceiver, ...site.call.arguments];
     else if (callback && site.call.base.type === "MemberExpression") {
       // Preserve evaluation of the callback receiver before its arguments.
       actuals = [site.call.base.base, ...site.call.arguments];

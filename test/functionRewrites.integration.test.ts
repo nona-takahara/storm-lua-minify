@@ -351,6 +351,7 @@ return choose(true,1)+choose(true,2)+choose(true,3)
       expect(origin.name).toBe("external");
     });
   });
+
   test("does not leave an unbound reference when a function inlined into another is itself inlined in the same pass", () => {
     const source = `
 local function print_axle(id, name)
@@ -377,5 +378,58 @@ end
     // Every local is renamed and `name` is not a global in the source, so a
     // surviving `name` token is a reference that lost its binding.
     expect(code).not.toMatch(/\bname\b/);
+  });
+
+  test("keeps a parameter reached through a colon call whose receiver type is unknown", () => {
+    // Issue #135: the colon call resolves only as a field callback, so its
+    // receiver must be counted as parameter 0 (`self`), not as an extra actual.
+    const source = `
+local function create_instance(target, class)
+    for k, v in pairs(class) do
+        if type(v) == "function" then target[k] = v end
+    end
+    return target
+end
+local function print_axle(id, name)
+    print("axle", id, name)
+end
+local function load_axles(vehicle_id, names, force)
+    for _, name in ipairs(names) do
+        print_axle(vehicle_id, name)
+    end
+    if force then print_axle(vehicle_id, "") end
+end
+local VehicleInfo = {}
+function VehicleInfo.new(vehicle_id, bridge)
+    load_axles(vehicle_id, bridge.names, false)
+end
+local Bridge = {}
+function Bridge.new()
+    local obj = create_instance({}, Bridge)
+    obj.vehicles = {}
+    obj.names = { "TRAIN1" }
+    return obj
+end
+function Bridge:broadcast(sign)
+    for _, v in pairs(self.vehicles) do
+        v:send(sign, self)
+    end
+end
+function Bridge:load_vehicle(vehicle_id)
+    self.vehicles[vehicle_id] = VehicleInfo.new(vehicle_id, self)
+end
+local bridge = Bridge.new()
+function onVehicleLoad(vehicle_id)
+    bridge:load_vehicle(vehicle_id)
+end
+function onTick()
+end
+`;
+    const result = minifyTemporaryLuaSource(source, {
+      requireWrapper: false,
+      runtimeProfile: "stormworks",
+    });
+    expect(result.code).not.toMatch(/\(nil,/);
+    expect(result.code).toMatch(/print\("axle",(\w+),(\w+)\)/);
   });
 });
