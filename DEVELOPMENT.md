@@ -49,21 +49,19 @@ pnpm run format:check
 pnpm run format
 ```
 
-`format`はファイルを書き換えます。変更内容を確認するだけなら`format:check`を使用してください。`pnpm-lock.yaml`は生成物なので、`.prettierignore`でformatの対象から外しています。
+`format`はファイルを書き換えます。変更内容を確認するだけなら`format:check`を使用してください。
 
 ## CIとリリース
 
-CI(`.github/workflows/ci.yml`)は`main`と`develop`へのpushとプルリクエストで動き、smoke、build、lint、format、test、`pnpm pack --dry-run`を順に実行します。Dependabotのプルリクエストも同じCIを通ります。依存の更新は`.github/dependabot.yml`で、`develop`を対象に週次でまとめて提案されます。
+CIは`main`と`develop`へのプルリクエストで動きます。詳細は`.github/workflows/ci.yml`を確認してください。
 
-npmへの公開は、`v0.10.0`のような`v*`タグをpushすると`.github/workflows/publish.yml`が行います。このワークフローは、先にCIを呼び出して検証し、タグが`package.json`の`version`と一致していることを確認してから、npmのTrusted Publishing(OIDC)で公開します。長期トークンは使いません。
+Dependabotは、npmの依存とGitHub Actionsの更新を、`develop`向けのプルリクエストとして週に一度提案します。公開から7日たっていない版は対象にしません。設定は`.github/dependabot.yml`にあります。
 
-リリース手順は次のとおりです。
+npmへの公開は、`.github/workflows/publish.yml`が行います。以下のリリース手順に従ってください。
 
-1. `package.json`の`version`を更新したリリースPRを`main`へマージする
-2. `main`の該当コミットに`v<version>`のタグを付けてpushする
-3. GitHubのActionsで公開ジョブの完了を確認する(`npm-publish`環境に必須レビュワーを設定している場合は、承認が必要)
-
-Trusted Publisherの登録は、npmjs.comのパッケージ設定で、リポジトリ`nona-takahara/storm-lua-minify`、ワークフロー`publish.yml`、環境`npm-publish`を指定して行います。
+1. `package.json`の`version`を更新したプルリクエストを`main`へマージする
+2. `main`のマージコミットに`v<version>`のタグを付けてpushする
+3. GitHubのActionsで公開ジョブの完了を確認する
 
 ## 最適化実装の原則
 
