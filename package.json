@@ -1,7 +1,7 @@
 {
   "name": "storm-lua-minify",
   "description": "A Lua minifier also outputs source map",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nona-takahara/storm-lua-minify.git"
