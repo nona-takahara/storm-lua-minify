@@ -115,7 +115,7 @@ npmへの公開は、`.github/workflows/publish.yml`が行います。以下の�
 
 ### 共通事項
 
-`report:*`、`verify:effect-semantics`、`verify:transform-reentry`は、`package.json`のコマンドを経由すると先にTypeScriptをビルドし、生成された`dist/`を読み込みます。`verify:lua-budget`はminifierを使わないため、ビルドせずに実行します。
+`report:*`、`verify:effect-semantics`、`verify:transform-reentry`、`verify:discardable-local-reads`は、`package.json`のコマンドを経由すると先にTypeScriptをビルドし、生成された`dist/`を読み込みます。`verify:lua-budget`はminifierを使わないため、ビルドせずに実行します。
 
 entry fileを受け取るreportコマンドでは、pnpmの引数とスクリプトの引数を`--`で区切ります。
 
@@ -227,3 +227,11 @@ pnpm run verify:closed-field-names -- path/to/node.lua [more.lua ...] [--config 
 指定したLuaを、field名を変えない設定（`--no-field-renaming`）と`--assume-closed-field-names`の2通りでminifyし、Stormworksのスタブ環境（`input`、`output`、`screen`、`map`、`async`、`server`、`property`）で`onTick`と`onDraw`を回して、外へ出した呼び出しの記録を比べます。入力は決まった擬似乱数列で、2つのビルドは同じ値を同じ順で受け取ります。入力は「混合」（整数・小数・大きな値）と「小さな整数（0〜3）」の2通りで、後者はビット列を復号するノードが想定する形です。どちらも実行し、止まったtickも出力に含めます。`pairs`の並びはLua 5.3が実行ごとに変えるため、スタブ側でキー順に固定しています。
 
 記録が違うか、呼び出しが1つもなければ失敗します。乱数の入力が通る経路だけを比べるので、動作が同じことの証明ではありません。スクリプトが入力の途中でerrorになる場合は、両方が同じtickで止まることを確認します。`dofile`・`require`で読むファイルは、指定したLuaと同じディレクトリに置いてください。既定では`lua`を実行します。
+
+### local読み取りの破棄
+
+```console
+pnpm run verify:discardable-local-reads
+```
+
+Lua 5.3（既定は`lua5.3`、`LUA53`で指定可能）で、local・仮引数・upvalueの未使用コピー削除について戻り値・エラー・副作用を入力と出力で比較します。削除対象では出力の縮小も確認し、globalのmetatable経由の読み取り、束縛前参照、debugによるlocal・upvalueの観測が残ることを検証します。標準出力・標準エラーは一時ファイル経由で取得します。
