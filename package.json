@@ -58,6 +58,7 @@
     "report:whole-program-field-renames": "pnpm run build && node scripts/report-whole-program-field-renames.cjs",
     "verify:closed-field-names": "pnpm run build && node scripts/verify-closed-field-names.cjs",
     "verify:effect-semantics": "pnpm run build && node scripts/verify-effect-semantics.cjs",
+    "verify:transform-reentry": "pnpm run build && node scripts/verify-transform-reentry.cjs",
     "prepack": "pnpm run build"
   },
   "author": "Nona Takahara <nona_t_2612@yahoo.co.jp>",

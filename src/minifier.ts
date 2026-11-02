@@ -57,7 +57,10 @@ import {
   applyWholeProgramFieldRewrites,
   WholeProgramFieldAnalysis,
 } from "./wholeProgramFields";
-import { applyAggregateSpecialization } from "./aggregateSpecialization";
+import {
+  applyAggregateSpecialization,
+  SpecializationHistory,
+} from "./aggregateSpecialization";
 import {
   analyzeWholeProgramExports,
   applyWholeProgramExportDce,
@@ -198,6 +201,7 @@ export class Minifier {
   // for the whole variant tree and clone it at each link boundary.
   private readonly inputCache: MinifierInputCache;
   private linkedAstGeneration = 0;
+  private readonly specializationHistory = new SpecializationHistory();
   private wholeProgramObjectsValue?: WholeProgramObjectAnalysis;
   private wholeProgramFieldsValue?: WholeProgramFieldAnalysis;
   private wholeProgramExportsValue?: WholeProgramExportAnalysis;
@@ -516,6 +520,7 @@ export class Minifier {
     this.progress?.addSteps(11);
     this.progress?.startStep("Load and parse modules");
     this.link();
+    const initialResolves = new Map(this.moduleResolve);
     this.progress?.tick();
     // #85 consumes #84 function-valued field facts before field DCE can remove
     // callback storage. The field pass then sees specialized calls and includes
@@ -534,6 +539,11 @@ export class Minifier {
     this.progress?.tick();
     this.progress?.startStep("Remove unused code");
     this.removeUnusedAll();
+    this.reenterTransforms(
+      this.linkOrder.filter(
+        (name) => initialResolves.get(name) !== this.moduleResolve.get(name),
+      ),
+    );
     this.progress?.tick();
     this.progress?.startStep("Plan global names");
     this.rebuildIdentifiersInUse();
@@ -779,7 +789,7 @@ export class Minifier {
   }
 
   /** Function-summary consumers run before scheduling and final rename/print. */
-  private rewriteFunctionsAll(): void {
+  private rewriteFunctionsAll(runLocal = true): void {
     if (
       this.functionRewriteVariant === "baseline" ||
       !this.functionRewritesEnabled()
@@ -828,6 +838,7 @@ export class Minifier {
             },
           };
         }),
+        this.specializationHistory,
       );
       specialization.diagnostics.forEach((diagnostic) => {
         const module = initialWholeProgram.modules.find((candidate) =>
@@ -845,7 +856,7 @@ export class Minifier {
         });
       });
       if (specialization.changed) {
-        this.linkOrder.forEach((moduleName) => {
+        specialization.changedModules.forEach((moduleName) => {
           const ast = this.moduleAST.get(moduleName);
           if (!ast) throw new Error(moduleName + " is not found");
           this.moduleResolve.set(moduleName, resolveScopes(ast));
@@ -907,217 +918,276 @@ export class Minifier {
       );
     }
 
-    this.linkOrder.forEach((moduleName) => {
-      const ast = this.moduleAST.get(moduleName);
-      const resolved = this.moduleResolve.get(moduleName);
-      if (!ast || !resolved) throw new Error(moduleName + " is not found");
-      const passes = new PassOrchestrator(ast, resolved);
-      const runtimeProfile = this.mode.runtimeProfile;
-      const moduleRange =
-        sourceRangeOf(ast) ??
-        ([0, this.moduleSourceText.get(moduleName)?.length ?? 0] as const);
-      const recordAccepted = (pass: string, count: number) => {
-        if (count === 0) return;
-        this.diagnosticCollector?.record({
-          pass,
-          moduleName,
-          runtimeProfile,
-          decision: "accepted",
-          reason: "function-rewrite-applied",
-          candidateSize: count,
-          sourceRange: moduleRange,
-        });
-      };
-      const initialAnalysis = passes.analysis(
-        OPTIMIZER_ANALYSIS_CACHE_KEY,
-        analyzeOptimizerAtGeneration,
+    if (runLocal)
+      this.linkOrder.forEach((moduleName) =>
+        this.rewriteFunctionsInModule(moduleName),
       );
-      const recursive = new Set(
-        initialAnalysis.callGraph.sccs
-          .filter((scc) => scc.recursive)
-          .flatMap((scc) => scc.functions),
-      );
-      initialAnalysis.interprocedural.diagnostics.forEach((diagnostic) =>
-        this.diagnosticCollector?.record({
-          pass: "interprocedural-summary",
-          moduleName,
-          runtimeProfile,
-          decision:
-            diagnostic.reason === "unknown-call-target"
-              ? "rejected"
-              : "accepted",
-          reason: diagnostic.reason,
-          candidateSize: 1,
-          sourceRange: diagnostic.sourceRange ?? moduleRange,
-        }),
-      );
-      initialAnalysis.callGraph.functions.forEach((callable) => {
-        if (!callable.symbol || !callable.declaration.isLocal) return;
-        const calls = initialAnalysis.callGraph.calls.filter((call) =>
-          call.targets.has(callable),
-        ).length;
-        const reason = recursive.has(callable)
-          ? "recursive-function"
-          : callable.declaration.parameters.some(
-                (parameter) => parameter.type === "VarargLiteral",
-              )
-            ? "vararg-function"
-            : callable.symbol.references.length > calls
-              ? "function-escape"
-              : undefined;
-        if (!reason) return;
-        this.diagnosticCollector?.record({
-          pass: "function-rewrite",
-          moduleName,
-          runtimeProfile,
-          decision: "rejected",
-          reason,
-          candidateSize: 1,
-          sourceRange: sourceRangeOf(callable.declaration),
-        });
-      });
-      if (this.mode.functionInlining)
-        passes.run("inline-closed-single-use-functions", (currentResolve) => {
-          const analysis = passes.analysis(
-            OPTIMIZER_ANALYSIS_CACHE_KEY,
-            analyzeOptimizerAtGeneration,
-          );
-          const result = inlineClosedSingleUseFunctions(
-            analysis.interprocedural,
-            currentResolve,
-            this.getSourceMetadata(moduleName),
-          );
-          recordAccepted(
-            "inline-closed-single-use-functions",
-            result.inlinedFunctions,
-          );
-          return {
-            changed: result.changed,
-            invalidatesResolve: result.changed,
-          };
-        });
-      if (this.mode.functionInlining)
-        passes.run("inline-literal-argument-functions", (currentResolve) => {
-          const analysis = passes.analysis(
-            OPTIMIZER_ANALYSIS_CACHE_KEY,
-            analyzeOptimizerAtGeneration,
-          );
-          const result = inlineLiteralArgumentFunctions(
-            analysis.interprocedural,
-            currentResolve,
-            this.getSourceMetadata(moduleName),
-          );
-          recordAccepted(
-            "inline-literal-argument-functions",
-            result.inlinedFunctions,
-          );
-          return {
-            changed: result.changed,
-            invalidatesResolve: result.changed,
-          };
-        });
-      if (this.mode.functionInlining)
-        passes.run("inline-tail-call-functions", (currentResolve) => {
-          const analysis = passes.analysis(
-            OPTIMIZER_ANALYSIS_CACHE_KEY,
-            analyzeOptimizerAtGeneration,
-          );
-          const localResources = analyzeLocalResourceUsage(ast);
-          const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile);
-          const result = inlineTailCallFunctions(
-            ast,
-            analysis.interprocedural,
-            currentResolve,
-            this.getSourceMetadata(moduleName),
-            {
-              maxIntroducedLocalsAt: (statement) => {
-                const active = localResources.activeLocalsBefore(statement);
-                if (active === undefined) return 0;
-                return Math.max(
-                  0,
-                  Math.min(
-                    runtime.resources.maxActiveLocalsPerFunction - active,
-                    runtime.resources.maxRegistersPerFunction - active,
-                  ),
-                );
-              },
-            },
-          );
-          recordAccepted("inline-tail-call-functions", result.inlinedFunctions);
-          return {
-            changed: result.changed,
-            invalidatesResolve: result.changed,
-          };
-        });
-      if (this.mode.functionInlining)
-        passes.run("inline-closed-statement-functions", (currentResolve) => {
-          const analysis = passes.analysis(
-            OPTIMIZER_ANALYSIS_CACHE_KEY,
-            analyzeOptimizerAtGeneration,
-          );
-          const result = inlineClosedStatementFunctions(
-            ast,
-            analysis.interprocedural,
-            currentResolve,
-            this.getSourceMetadata(moduleName),
-          );
-          recordAccepted(
-            "inline-closed-statement-functions",
-            result.inlinedFunctions,
-          );
-          return {
-            changed: result.changed,
-            invalidatesResolve: result.changed,
-          };
-        });
-      if (this.mode.functionInlining)
-        passes.run("inline-bound-statement-functions", (currentResolve) => {
-          const analysis = passes.analysis(
-            OPTIMIZER_ANALYSIS_CACHE_KEY,
-            analyzeOptimizerAtGeneration,
-          );
-          const localResources = analyzeLocalResourceUsage(ast);
-          const result = inlineBoundStatementFunctions(
-            ast,
-            analysis.interprocedural,
-            currentResolve,
-            this.getSourceMetadata(moduleName),
-            {
-              maxIntroducedLocalsAt: (statement) => {
-                const active = localResources.activeLocalsBefore(statement);
-                if (active === undefined) return 0;
-                return Math.max(
-                  0,
-                  Math.min(
-                    runtimeEnvironmentOf(this.mode.runtimeProfile).resources
-                      .maxActiveLocalsPerFunction - active,
-                    runtimeEnvironmentOf(this.mode.runtimeProfile).resources
-                      .maxRegistersPerFunction - active,
-                  ),
-                );
-              },
-            },
-          );
-          recordAccepted(
-            "inline-bound-statement-functions",
-            result.inlinedFunctions,
-          );
-          return {
-            changed: result.changed,
-            invalidatesResolve: result.changed,
-          };
-        });
-      this.moduleResolve.set(moduleName, passes.resolved);
-      if (passes.astGeneration > 0) {
-        this.linkedAstGeneration += passes.astGeneration;
-        this.wholeProgramObjectsValue = undefined;
-        this.wholeProgramFieldsValue = undefined;
-        this.wholeProgramExportsValue = undefined;
-      }
-      this.progress?.tick();
-    });
     this.wholeProgramObjectsValue = this.analyzeWholeProgramObjects();
     this.recordWholeProgramObjectDiagnostics(this.wholeProgramObjectsValue);
+  }
+
+  /** Only shrinking consumers are scheduled here; each pass gets a fresh Resolve. */
+  private rewriteFunctionsInModule(moduleName: string): boolean {
+    if (
+      this.functionRewriteVariant === "baseline" ||
+      !this.functionRewritesEnabled()
+    )
+      return false;
+    const ast = this.moduleAST.get(moduleName);
+    const resolved = this.moduleResolve.get(moduleName);
+    if (!ast || !resolved) throw new Error(moduleName + " is not found");
+    const passes = new PassOrchestrator(ast, resolved);
+    const runtimeProfile = this.mode.runtimeProfile;
+    const moduleRange =
+      sourceRangeOf(ast) ??
+      ([0, this.moduleSourceText.get(moduleName)?.length ?? 0] as const);
+    const recordAccepted = (pass: string, count: number) => {
+      if (count === 0) return;
+      this.diagnosticCollector?.record({
+        pass,
+        moduleName,
+        runtimeProfile,
+        decision: "accepted",
+        reason: "function-rewrite-applied",
+        candidateSize: count,
+        sourceRange: moduleRange,
+      });
+    };
+    const initialAnalysis = passes.analysis(
+      OPTIMIZER_ANALYSIS_CACHE_KEY,
+      analyzeOptimizerAtGeneration,
+    );
+    const recursive = new Set(
+      initialAnalysis.callGraph.sccs
+        .filter((scc) => scc.recursive)
+        .flatMap((scc) => scc.functions),
+    );
+    initialAnalysis.interprocedural.diagnostics.forEach((diagnostic) =>
+      this.diagnosticCollector?.record({
+        pass: "interprocedural-summary",
+        moduleName,
+        runtimeProfile,
+        decision:
+          diagnostic.reason === "unknown-call-target" ? "rejected" : "accepted",
+        reason: diagnostic.reason,
+        candidateSize: 1,
+        sourceRange: diagnostic.sourceRange ?? moduleRange,
+      }),
+    );
+    initialAnalysis.callGraph.functions.forEach((callable) => {
+      if (!callable.symbol || !callable.declaration.isLocal) return;
+      const calls = initialAnalysis.callGraph.calls.filter((call) =>
+        call.targets.has(callable),
+      ).length;
+      const reason = recursive.has(callable)
+        ? "recursive-function"
+        : callable.declaration.parameters.some(
+              (parameter) => parameter.type === "VarargLiteral",
+            )
+          ? "vararg-function"
+          : callable.symbol.references.length > calls
+            ? "function-escape"
+            : undefined;
+      if (!reason) return;
+      this.diagnosticCollector?.record({
+        pass: "function-rewrite",
+        moduleName,
+        runtimeProfile,
+        decision: "rejected",
+        reason,
+        candidateSize: 1,
+        sourceRange: sourceRangeOf(callable.declaration),
+      });
+    });
+    if (this.mode.parameterPruning)
+      passes.run("prune-local-parameters", () => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const result = pruneTrailingUnusedParameters(
+          analysis.callGraph,
+          this.getSourceMetadata(moduleName),
+          (callable) => callable.declaration.identifier?.type === "Identifier",
+        );
+        recordAccepted(
+          "prune-trailing-unused-parameters",
+          result.prunedParameters,
+        );
+        return { changed: result.changed, invalidatesResolve: result.changed };
+      });
+    if (this.mode.functionInlining)
+      passes.run("inline-closed-single-use-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const result = inlineClosedSingleUseFunctions(
+          analysis.interprocedural,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+        );
+        recordAccepted(
+          "inline-closed-single-use-functions",
+          result.inlinedFunctions,
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+    if (this.mode.functionInlining)
+      passes.run("inline-literal-argument-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const result = inlineLiteralArgumentFunctions(
+          analysis.interprocedural,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+        );
+        recordAccepted(
+          "inline-literal-argument-functions",
+          result.inlinedFunctions,
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+    if (this.mode.functionInlining)
+      passes.run("inline-tail-call-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const localResources = analyzeLocalResourceUsage(ast);
+        const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile);
+        const result = inlineTailCallFunctions(
+          ast,
+          analysis.interprocedural,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+          {
+            maxIntroducedLocalsAt: (statement) => {
+              const active = localResources.activeLocalsBefore(statement);
+              if (active === undefined) return 0;
+              return Math.max(
+                0,
+                Math.min(
+                  runtime.resources.maxActiveLocalsPerFunction - active,
+                  runtime.resources.maxRegistersPerFunction - active,
+                ),
+              );
+            },
+          },
+        );
+        recordAccepted("inline-tail-call-functions", result.inlinedFunctions);
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+    if (this.mode.functionInlining)
+      passes.run("inline-closed-statement-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const result = inlineClosedStatementFunctions(
+          ast,
+          analysis.interprocedural,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+        );
+        recordAccepted(
+          "inline-closed-statement-functions",
+          result.inlinedFunctions,
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+    if (this.mode.functionInlining)
+      passes.run("inline-bound-statement-functions", (currentResolve) => {
+        const analysis = passes.analysis(
+          OPTIMIZER_ANALYSIS_CACHE_KEY,
+          analyzeOptimizerAtGeneration,
+        );
+        const localResources = analyzeLocalResourceUsage(ast);
+        const result = inlineBoundStatementFunctions(
+          ast,
+          analysis.interprocedural,
+          currentResolve,
+          this.getSourceMetadata(moduleName),
+          {
+            maxIntroducedLocalsAt: (statement) => {
+              const active = localResources.activeLocalsBefore(statement);
+              if (active === undefined) return 0;
+              return Math.max(
+                0,
+                Math.min(
+                  runtimeEnvironmentOf(this.mode.runtimeProfile).resources
+                    .maxActiveLocalsPerFunction - active,
+                  runtimeEnvironmentOf(this.mode.runtimeProfile).resources
+                    .maxRegistersPerFunction - active,
+                ),
+              );
+            },
+          },
+        );
+        recordAccepted(
+          "inline-bound-statement-functions",
+          result.inlinedFunctions,
+        );
+        return {
+          changed: result.changed,
+          invalidatesResolve: result.changed,
+        };
+      });
+    this.moduleResolve.set(moduleName, passes.resolved);
+    if (passes.astGeneration > 0) {
+      this.linkedAstGeneration += passes.astGeneration;
+      this.wholeProgramObjectsValue = undefined;
+      this.wholeProgramFieldsValue = undefined;
+      this.wholeProgramExportsValue = undefined;
+    }
+    return passes.astGeneration > 0;
+  }
+
+  /**
+   * Module-granularity dirty worklist. A body/argument/reference change enables
+   * inline, summary constants, local fold, DCE and parameter pruning again.
+   * Standalone field/export passes and scheduling are not part of this loop.
+   * Constants remove operators, reads or calls; DCE removes declarations and
+   * pruning removes formals. Single-use inline consumes an owned call edge;
+   * copied bodies are revisited only after Resolve has indexed their bindings.
+   * Specialization uses a separate, compilation-local producer history.
+   */
+  private reenterTransforms(moduleNames: readonly string[]): void {
+    const dirty = new Set(moduleNames);
+    while (dirty.size > 0) {
+      while (dirty.size > 0) {
+        const moduleName = dirty.values().next().value;
+        if (moduleName === undefined) break;
+        dirty.delete(moduleName);
+        const rewritten = this.rewriteFunctionsInModule(moduleName);
+        const folded = this.foldConstantsAll([moduleName]).size > 0;
+        const removed = this.removeUnusedAll([moduleName]).size > 0;
+        if (rewritten || folded || removed) {
+          dirty.add(moduleName);
+        }
+      }
+      // Whole-program methods and specialization consume the new linked generation.
+      // Only modules actually changed by those producers need local consumers again.
+      const before = new Map(this.moduleResolve);
+      this.rewriteFunctionsAll(false);
+      this.linkOrder.forEach((name) => {
+        if (before.get(name) !== this.moduleResolve.get(name)) dirty.add(name);
+      });
+    }
   }
 
   private pruneWholeProgramParameters(
@@ -1869,14 +1939,17 @@ export class Minifier {
    * 宣言はこのパス自身では消さず、直後に実行される（既定で有効な）未使用ローカル
    * 削除に任せる。
    */
-  private foldConstantsAll(): void {
+  private foldConstantsAll(
+    moduleNames: readonly string[] = this.linkOrder,
+  ): Set<string> {
+    const changedModules = new Set<string>();
     if (
       !this.mode.constantExpressionEvaluation &&
       !this.mode.localConstantPropagation &&
       !this.mode.interproceduralConstantPropagation
     )
-      return;
-    this.linkOrder.forEach((moduleName) => {
+      return changedModules;
+    moduleNames.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
       const resolved = this.moduleResolve.get(moduleName);
       if (!ast || !resolved) throw new Error(moduleName + " is not found");
@@ -1914,15 +1987,26 @@ export class Minifier {
           );
           return { changed, invalidatesResolve: changed };
         });
+      if (passes.astGeneration > 0) {
+        changedModules.add(moduleName);
+        this.linkedAstGeneration += passes.astGeneration;
+        this.wholeProgramObjectsValue = undefined;
+        this.wholeProgramFieldsValue = undefined;
+        this.wholeProgramExportsValue = undefined;
+      }
       this.moduleResolve.set(moduleName, passes.resolved);
       this.progress?.tick();
     });
+    return changedModules;
   }
 
-  private removeUnusedAll(): void {
+  private removeUnusedAll(
+    moduleNames: readonly string[] = this.linkOrder,
+  ): Set<string> {
+    const changedModules = new Set<string>();
     if (!this.mode.unusedLocalRemoval && !this.mode.unusedFunctionRemoval)
-      return;
-    this.linkOrder.forEach((moduleName) => {
+      return changedModules;
+    moduleNames.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
       const metadata = this.getSourceMetadata(moduleName);
       const resolved = this.moduleResolve.get(moduleName);
@@ -1955,9 +2039,17 @@ export class Minifier {
         );
         return { changed, invalidatesResolve: changed };
       });
+      if (passes.astGeneration > 0) {
+        changedModules.add(moduleName);
+        this.linkedAstGeneration += passes.astGeneration;
+        this.wholeProgramObjectsValue = undefined;
+        this.wholeProgramFieldsValue = undefined;
+        this.wholeProgramExportsValue = undefined;
+      }
       this.moduleResolve.set(moduleName, passes.resolved);
       this.progress?.tick();
     });
+    return changedModules;
   }
 
   private rebuildIdentifiersInUse(): void {

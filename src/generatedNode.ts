@@ -23,3 +23,44 @@ export function identifierWithOrigin(
   copyNodeOrigin(identifier, origin);
   return identifier;
 }
+
+// Identity, unlike loc/range, distinguishes generated variants sharing an origin
+// position. Weak keys keep this compilation metadata out of the printable AST.
+const functionOrigins = new WeakMap<
+  Parser.FunctionDeclaration,
+  Parser.FunctionDeclaration
+>();
+
+export function functionOriginOf(
+  declaration: Parser.FunctionDeclaration,
+): Parser.FunctionDeclaration {
+  return functionOrigins.get(declaration) ?? declaration;
+}
+
+/** Preserve callable lineage when inline copies nested declarations. */
+export function cloneWithFunctionOrigins<T>(source: T): T {
+  const copy = structuredClone(source);
+  const visit = (original: unknown, copied: unknown): void => {
+    if (
+      !original ||
+      !copied ||
+      typeof original !== "object" ||
+      typeof copied !== "object"
+    )
+      return;
+    if ((original as Parser.Node).type === "FunctionDeclaration") {
+      functionOrigins.set(
+        copied as Parser.FunctionDeclaration,
+        functionOriginOf(original as Parser.FunctionDeclaration),
+      );
+    }
+    Object.keys(original).forEach((key) => {
+      visit(
+        (original as Record<string, unknown>)[key],
+        (copied as Record<string, unknown>)[key],
+      );
+    });
+  };
+  visit(source, copy);
+  return copy;
+}
