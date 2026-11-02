@@ -1,7 +1,7 @@
 import Parser from "luaparse";
 import { walkStatement } from "./astWalk";
 import { CallSite, Callable } from "./callGraph";
-import { copyNodeOrigin } from "./generatedNode";
+import { copyNodeOrigin, functionOriginOf } from "./generatedNode";
 import { ResolveResult, Scope, Symbol } from "./resolver";
 import { SourceMetadata } from "./sourceMetadata";
 import { WholeProgramFieldAnalysis } from "./wholeProgramFields";
@@ -35,6 +35,7 @@ export interface AggregateSpecializationDiagnostic {
 
 export interface AggregateSpecializationResult {
   readonly changed: boolean;
+  readonly changedModules: ReadonlySet<string>;
   readonly candidateCallables: number;
   readonly createdVariants: number;
   readonly replacedCalls: number;
@@ -66,6 +67,70 @@ interface VariantGroup {
 const MAX_VARIANTS = 128;
 const MAX_CANDIDATE_SITES = 2048;
 
+/** Compilation-local producer history; Callable objects are rebuilt each generation. */
+export class SpecializationHistory {
+  private initialized = false;
+  private readonly eligible = new WeakSet<Parser.FunctionDeclaration>();
+  private readonly ranks = new WeakMap<Parser.FunctionDeclaration, number>();
+  private readonly variants = new WeakMap<
+    Parser.FunctionDeclaration,
+    Map<string, Parser.FunctionDeclaration>
+  >();
+
+  initialize(objects: WholeProgramObjectAnalysis): void {
+    if (this.initialized) return;
+    this.initialized = true;
+    objects.modules.forEach((module) => {
+      module.analysis.callGraph.functions.forEach((callable) => {
+        this.eligible.add(functionOriginOf(callable.declaration));
+        // A field callback can acquire one explicit receiver when normalized.
+        this.ranks.set(
+          functionOriginOf(callable.declaration),
+          callable.declaration.parameters.length + 1,
+        );
+      });
+    });
+  }
+
+  canGenerate(declaration: Parser.FunctionDeclaration, key: string): boolean {
+    declaration = functionOriginOf(declaration);
+    return (
+      this.eligible.has(declaration) &&
+      !this.variants.get(declaration)?.has(key)
+    );
+  }
+
+  existing(
+    declaration: Parser.FunctionDeclaration,
+    key: string,
+  ): Parser.FunctionDeclaration | undefined {
+    return this.variants.get(functionOriginOf(declaration))?.get(key);
+  }
+
+  record(
+    declaration: Parser.FunctionDeclaration,
+    key: string,
+    variant: Parser.FunctionDeclaration,
+  ): void {
+    declaration = functionOriginOf(declaration);
+    const variants =
+      this.variants.get(declaration) ??
+      new Map<string, Parser.FunctionDeclaration>();
+    variants.set(key, variant);
+    this.variants.set(declaration, variants);
+    const parentRank = this.ranks.get(declaration);
+    if (parentRank === undefined || variant.parameters.length >= parentRank)
+      throw new Error(
+        "Specialization must reduce the remaining parameter rank",
+      );
+    // Generated direct calls have no implicit receiver. Every descendant removes
+    // at least one more formal, so variant-to-variant specialization is finite.
+    this.eligible.add(variant);
+    this.ranks.set(variant, variant.parameters.length);
+    // Inline copies share these identities; they never become new roots.
+  }
+}
+
 /**
  * Build one callable-oriented plan for direct, method, and stable-field calls.
  * Every site is normalized to the callee parameter order; method receiver and
@@ -75,9 +140,12 @@ export function applyAggregateSpecialization(
   objects: WholeProgramObjectAnalysis,
   fields: WholeProgramFieldAnalysis,
   modules: readonly AggregateSpecializationModule[],
+  history = new SpecializationHistory(),
 ): AggregateSpecializationResult {
   if (objects.generation !== fields.generation)
     throw new Error("Cannot specialize mixed whole-program generations");
+  history.initialize(objects);
+  const changedModules = new Set<string>();
   const moduleOfCallable = new Map<Callable, AggregateSpecializationModule>();
   objects.modules.forEach((module) => {
     const target = modules.find((candidate) => candidate.name === module.name);
@@ -181,6 +249,7 @@ export function applyAggregateSpecialization(
     );
     return {
       changed: false,
+      changedModules,
       candidateCallables: sitesByCallable.size,
       createdVariants: 0,
       replacedCalls: 0,
@@ -199,10 +268,17 @@ export function applyAggregateSpecialization(
     }
     const groups = variantGroups(callable, sites, constantParameters);
     groups.forEach((group) => {
-      if (createdVariants >= MAX_VARIANTS) {
-        diagnostics.push({ callable, reason: "resource-budget", count: 1 });
-        return;
-      }
+      // Include receiver normalization in the assumption signature: a callback
+      // variant has an explicit receiver slot, unlike a direct-call variant.
+      const offset = group.sites[0].parameterOffset;
+      if (group.sites.some((site) => site.parameterOffset !== offset)) return;
+      const signature = JSON.stringify([
+        offset,
+        [...group.literals].map(([index, literal]) => [
+          index,
+          literalKey(literal),
+        ]),
+      ]);
       const insertionModule = group.sites[0].module;
       if (group.sites.some((site) => site.module !== insertionModule)) return;
       const firstOwner = group.sites[0].site.owner;
@@ -221,25 +297,61 @@ export function applyAggregateSpecialization(
         diagnostics.push({ callable, reason: "unknown-capture", count: 1 });
         return;
       }
-      const introduced = introducedByBody.get(insertionBody) ?? 0;
-      if (introduced >= insertionModule.maxIntroducedLocalsAt(firstOwner)) {
-        diagnostics.push({ callable, reason: "resource-budget", count: 1 });
-        return;
+      let variant = history.existing(callable.declaration, signature);
+      if (variant) {
+        // Reuse only a still-live, lexically visible binding. Never move a closure
+        // across declarations, where a capture could bind a different symbol.
+        const existingOrigin = functionOriginOf(variant);
+        const index = insertionBody.findIndex(
+          (statement) =>
+            statement.type === "FunctionDeclaration" &&
+            functionOriginOf(statement) === existingOrigin,
+        );
+        if (index >= 0)
+          variant = insertionBody[index] as Parser.FunctionDeclaration;
+        if (
+          index < 0 ||
+          group.sites.some(
+            (site) => insertionBody.indexOf(site.site.owner) <= index,
+          )
+        )
+          return;
+      } else {
+        if (!history.canGenerate(callable.declaration, signature)) return;
+        if (createdVariants >= MAX_VARIANTS) {
+          diagnostics.push({ callable, reason: "resource-budget", count: 1 });
+          return;
+        }
+        const introduced = introducedByBody.get(insertionBody) ?? 0;
+        if (introduced >= insertionModule.maxIntroducedLocalsAt(firstOwner)) {
+          diagnostics.push({ callable, reason: "resource-budget", count: 1 });
+          return;
+        }
+        let variantIndex = createdVariants;
+        let variantName = `__stormVariant${String(variantIndex)}`;
+        while (unavailableNames.has(variantName)) {
+          variantIndex++;
+          variantName = `__stormVariant${String(variantIndex)}`;
+        }
+        unavailableNames.add(variantName);
+        variant = makeVariant(callable, group, variantName, ownerModule);
+        if (!variant) {
+          diagnostics.push({ callable, reason: "unknown-capture", count: 1 });
+          return;
+        }
+        history.record(callable.declaration, signature, variant);
+        insertionBody.splice(insertionBody.indexOf(firstOwner), 0, variant);
+        introducedByBody.set(insertionBody, introduced + 1);
+        createdVariants++;
+        diagnostics.push({
+          callable,
+          reason: "variant-created",
+          count: group.sites.length,
+        });
       }
-      let variantIndex = createdVariants;
-      let variantName = `__stormVariant${String(variantIndex)}`;
-      while (unavailableNames.has(variantName)) {
-        variantIndex++;
-        variantName = `__stormVariant${String(variantIndex)}`;
-      }
-      unavailableNames.add(variantName);
-      const variant = makeVariant(callable, group, variantName, ownerModule);
-      if (!variant) {
-        diagnostics.push({ callable, reason: "unknown-capture", count: 1 });
-        return;
-      }
-      insertionBody.splice(insertionBody.indexOf(firstOwner), 0, variant);
-      introducedByBody.set(insertionBody, introduced + 1);
+      if (variant.identifier?.type !== "Identifier") return;
+      const variantName = variant.identifier.name;
+      changedModules.add(insertionModule.name);
       group.sites.forEach((normalized) => {
         const call = normalized.site.call;
         if (call.type !== "CallExpression") return;
@@ -270,16 +382,11 @@ export function applyAggregateSpecialization(
         );
         replacedCalls++;
       });
-      createdVariants++;
-      diagnostics.push({
-        callable,
-        reason: "variant-created",
-        count: group.sites.length,
-      });
     });
   });
   return {
-    changed: createdVariants > 0,
+    changed: replacedCalls > 0,
+    changedModules,
     candidateCallables,
     createdVariants,
     replacedCalls,

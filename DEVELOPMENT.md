@@ -115,7 +115,7 @@ npmへの公開は、`.github/workflows/publish.yml`が行います。以下の�
 
 ### 共通事項
 
-`report:*`と`verify:effect-semantics`は、`package.json`のコマンドを経由すると先にTypeScriptをビルドし、生成された`dist/`を読み込みます。`verify:lua-budget`はminifierを使わないため、ビルドせずに実行します。
+`report:*`、`verify:effect-semantics`、`verify:transform-reentry`は、`package.json`のコマンドを経由すると先にTypeScriptをビルドし、生成された`dist/`を読み込みます。`verify:lua-budget`はminifierを使わないため、ビルドせずに実行します。
 
 entry fileを受け取るreportコマンドでは、pnpmの引数とスクリプトの引数を`--`で区切ります。
 
@@ -209,6 +209,14 @@ pnpm run verify:effect-semantics
 ```console
 LUA53=/path/to/lua pnpm run verify:effect-semantics
 ```
+
+### 関数変換の再訪と固定点
+
+```console
+pnpm run verify:transform-reentry
+```
+
+延期したinline、定数畳み込み・未使用削除後の関数変換、specializationを対象に、1回目と2回目の圧縮結果の一致、および元コードと圧縮後の戻り値・エラー・副作用の一致をLua 5.3で確認します。既定の実行ファイルは`lua5.3`です。別の実行ファイルを使う場合は`LUA53`で指定します。
 
 ### `assume-closed-field-names`の動作確認
 

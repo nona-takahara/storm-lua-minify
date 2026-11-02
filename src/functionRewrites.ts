@@ -4,7 +4,7 @@ import { walkExpression, walkStatement } from "./astWalk";
 import { InterproceduralAnalysis } from "./interproceduralAnalysis";
 import { ResolveResult, Scope, Symbol } from "./resolver";
 import { SourceMetadata } from "./sourceMetadata";
-import { copyNodeOrigin } from "./generatedNode";
+import { cloneWithFunctionOrigins, copyNodeOrigin } from "./generatedNode";
 
 export interface FunctionRewriteResult {
   readonly changed: boolean;
@@ -128,7 +128,7 @@ function substituteParameters(
   expression: Parser.Expression,
   replacements: ReadonlyMap<string, PrimitiveLiteral>,
 ): Parser.Expression {
-  const clone = structuredClone(expression);
+  const clone = cloneWithFunctionOrigins(expression);
   const substitute = (
     original: Parser.Expression,
     copied: Parser.Expression,
@@ -139,7 +139,7 @@ function substituteParameters(
       case "Identifier": {
         const replacement = replacements.get(original.name);
         if (replacement)
-          overwriteExpression(copied, structuredClone(replacement));
+          overwriteExpression(copied, cloneWithFunctionOrigins(replacement));
         return;
       }
       case "StringLiteral":
@@ -274,7 +274,7 @@ export function inlineClosedSingleUseFunctions(
 
     // structuredClone retains loc/range on every copied node, so the inlined
     // expression maps to the function body/return origin rather than call-site text.
-    overwriteExpression(site.call, structuredClone(expression));
+    overwriteExpression(site.call, cloneWithFunctionOrigins(expression));
     inlinedFunctions++;
   });
 
@@ -575,7 +575,7 @@ export function inlineClosedStatementFunctions(
     if (!site) return;
 
     const replacements = executable.map((statement) =>
-      structuredClone(statement),
+      cloneWithFunctionOrigins(statement),
     );
     if (!replaceStatement(chunk.body, site.owner, replacements)) return;
     metadata.replaceStatement(site.owner, replacements);
@@ -654,13 +654,15 @@ export function inlineBoundStatementFunctions(
     const binding: Parser.LocalStatement = {
       type: "LocalStatement",
       variables: declaration.parameters.map((parameter) =>
-        structuredClone(parameter as Parser.Identifier),
+        cloneWithFunctionOrigins(parameter as Parser.Identifier),
       ),
-      init: site.call.arguments.map((argument) => structuredClone(argument)),
+      init: site.call.arguments.map((argument) =>
+        cloneWithFunctionOrigins(argument),
+      ),
     };
     copyNodeOrigin(binding, site.owner);
     const copiedBody = executable.map((statement) =>
-      structuredClone(statement),
+      cloneWithFunctionOrigins(statement),
     );
     alphaConvertOwnedCopies(
       [...declaration.parameters, ...executable],
@@ -752,7 +754,7 @@ export function inlineTailCallFunctions(
     let copiedParameters: Parser.Identifier[] = [];
     if (declaration.parameters.length > 0 || site.call.arguments.length > 0) {
       copiedParameters = declaration.parameters.map((parameter) =>
-        structuredClone(parameter as Parser.Identifier),
+        cloneWithFunctionOrigins(parameter as Parser.Identifier),
       );
       const unavailable = new Set([
         ...resolved.symbols.map((candidate) => candidate.name),
@@ -771,13 +773,15 @@ export function inlineTailCallFunctions(
       const binding: Parser.LocalStatement = {
         type: "LocalStatement",
         variables: copiedParameters,
-        init: site.call.arguments.map((argument) => structuredClone(argument)),
+        init: site.call.arguments.map((argument) =>
+          cloneWithFunctionOrigins(argument),
+        ),
       };
       copyNodeOrigin(binding, site.owner);
       body.push(binding);
     }
     const copiedBody = declaration.body.map((statement) =>
-      structuredClone(statement),
+      cloneWithFunctionOrigins(statement),
     );
     alphaConvertOwnedCopies(
       [...declaration.parameters, ...declaration.body],
