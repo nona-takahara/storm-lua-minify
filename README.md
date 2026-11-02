@@ -207,3 +207,5 @@ storm-lua-minify --assume-closed-field-names --never-rename-field ui_id script.l
 # 開発者向けガイド
 
 開発環境の構築、テスト構成、最適化を追加するときの判断基準、`scripts/`の調査・検証コマンドについては[開発者向けガイド](DEVELOPMENT.md)を参照してください。
+
+ライブラリAPIの`collectOptimizationDiagnostics: true`では、探索上限を`specialization-variant-limit`／`specialization-site-limit`、Luaの実行資源制限を`runtime-resource-limit`で区別します（旧`resource-budget`は廃止）。cost gateの例外は任意の`failure`に種類と共同trial／ablationの段階を記録します。診断は既定offで、生成コード・Source Mapに影響しません。詳細は[開発ガイド](DEVELOPMENT.md#optimizer-diagnostics)を参照してください。

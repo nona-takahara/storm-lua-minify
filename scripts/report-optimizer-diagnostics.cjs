@@ -78,6 +78,7 @@ try {
       {
         fixtureCount: fixtures.length,
         diagnostics: summarizeOptimizationDiagnostics(diagnostics),
+        failures: diagnostics.filter((diagnostic) => diagnostic.failure),
         transactions,
       },
       null,

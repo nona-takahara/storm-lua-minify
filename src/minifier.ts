@@ -1,3 +1,4 @@
+import { AnalysisConvergenceError } from "./analysisConvergenceError";
 import Parser, { Comment, Options } from "luaparse";
 import path from "path";
 import fs from "fs";
@@ -307,8 +308,9 @@ export class Minifier {
         "Evaluate joint cost-gated trial",
         evaluated,
       );
-    } catch {
+    } catch (error) {
       this.copyDiagnosticsFrom(baseline.minifier);
+      this.recordCostFailure(error, "full-trial");
       gates.forEach((gate) => {
         this.recordFinalGateDecision(gate, "rejected", "trial-failed");
       });
@@ -336,7 +338,8 @@ export class Minifier {
           `Evaluate joint trial without ${this.costGateLabel(gate)}`,
           evaluated,
         );
-      } catch {
+      } catch (error) {
+        this.recordCostFailure(error, "ablation", gate);
         continue;
       }
       // Keep ties in the joint trial: a gate whose isolated contribution is
@@ -366,6 +369,48 @@ export class Minifier {
       accepted ? baseline.byteLength - current.byteLength : undefined,
     );
     return this.adoptVariant(selected.minifier, selected.output);
+  }
+
+  private recordCostFailure(
+    error: unknown,
+    stage: "full-trial" | "ablation",
+    gate?: CostGateKey,
+  ): void {
+    // Do not inspect thrown values when observation is disabled. In particular,
+    // arbitrary non-Error values need not support string conversion.
+    if (!this.diagnosticCollector) return;
+    const failure: NonNullable<OptimizationDiagnostic["failure"]> = {
+      stage,
+      ...(gate === undefined ? {} : { gate }),
+      kind:
+        error instanceof AnalysisConvergenceError
+          ? "analysis-nonconvergence"
+          : error instanceof Error
+            ? "unexpected-error"
+            : "non-error-thrown",
+    };
+    // Custom Error subclasses can have throwing accessors. Observation must not
+    // replace the original fallback/continue behavior with a new exception.
+    let details = {};
+    try {
+      if (error instanceof Error)
+        details = {
+          ...(typeof error.name === "string" ? { name: error.name } : {}),
+          ...(typeof error.message === "string"
+            ? { message: error.message }
+            : {}),
+        };
+    } catch {
+      // The kind and candidate stage remain available without error details.
+    }
+    this.diagnosticCollector.record({
+      pass: "optimizer-cost-failure",
+      decision: "rejected",
+      reason: "trial-failed",
+      runtimeProfile: this.mode.runtimeProfile,
+      moduleName: this.entryModule,
+      failure: { ...failure, ...details },
+    });
   }
 
   private evaluateCostVariant(
