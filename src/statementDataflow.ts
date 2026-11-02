@@ -73,6 +73,7 @@ export function analyzeStatementDataflow(
   chunk: Parser.Chunk,
   facts: OptimizerFacts,
   valueFlow: ValueFlowAnalysis,
+  liveness = analyzeSymbolLiveness(valueFlow.controlFlow, facts),
 ): StatementDataflowAnalysis {
   if (facts.generation !== valueFlow.version) {
     throw new Error("Statement dataflow requires one AST generation");
@@ -185,7 +186,8 @@ export function analyzeStatementDataflow(
     };
   };
 
-  const liveness = analyzeSymbolLiveness(controlFlow, facts);
+  if (liveness.controlFlow !== controlFlow)
+    throw new Error("Stale dataflow liveness");
 
   const analyzeBody = (body: Parser.Statement[]): void => {
     body.forEach((statement, index) => {

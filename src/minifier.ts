@@ -34,11 +34,6 @@ import {
   analyzeOptimizerFacts,
   OPTIMIZER_FACTS_CACHE_KEY,
 } from "./optimizerFacts";
-import {
-  analyzeOptimizer,
-  analyzeOptimizerAtGeneration,
-  OPTIMIZER_ANALYSIS_CACHE_KEY,
-} from "./optimizerAnalysis";
 import { propagateInterproceduralConstants } from "./interproceduralConstants";
 import {
   inlineBoundStatementFunctions,
@@ -201,7 +196,10 @@ export class Minifier {
   // bytes and initial parse are identical. Keep one untouched parse template
   // for the whole variant tree and clone it at each link boundary.
   private readonly inputCache: MinifierInputCache;
-  private linkedAstGeneration = 0;
+  // Version 1 is the initial linked snapshot; every reported write advances it.
+  private linkedAstGeneration = 1;
+  private readonly modulePasses = new Map<string, PassOrchestrator>();
+  private wholeProgramObjectsCache?: WholeProgramObjectAnalysis;
   private readonly specializationHistory = new SpecializationHistory();
   private wholeProgramObjectsValue?: WholeProgramObjectAnalysis;
   private wholeProgramFieldsValue?: WholeProgramFieldAnalysis;
@@ -561,7 +559,6 @@ export class Minifier {
     ) {
       // fold/remove/schedule may have changed any module after method rewrites. Publish only a
       // snapshot rebuilt from the complete linked AST generation consumed by final Rename/Print.
-      this.linkedAstGeneration++;
       this.wholeProgramObjectsValue = this.analyzeWholeProgramObjects();
       this.wholeProgramFieldsValue = analyzeWholeProgramFields(
         this.wholeProgramObjectsValue,
@@ -671,12 +668,8 @@ export class Minifier {
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
       if (!ast) throw new Error(moduleName + " is not found");
-      this.moduleResolve.set(moduleName, resolveScopes(ast));
+      this.moduleChanged(moduleName);
     });
-    this.linkedAstGeneration++;
-    this.wholeProgramObjectsValue = undefined;
-    this.wholeProgramFieldsValue = undefined;
-    this.wholeProgramExportsValue = undefined;
     result.removedFields.forEach((field) =>
       this.diagnosticCollector?.record({
         pass: "whole-program-export-dce",
@@ -735,7 +728,8 @@ export class Minifier {
     this.linkOrder.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
       if (!ast) throw new Error(moduleName + " is not found");
-      const passes = new PassOrchestrator(ast, resolveScopes(ast));
+      this.moduleChanged(moduleName);
+      const passes = this.passesFor(moduleName);
       passes.runUntilStable("fold-constructor-field-constants", (resolved) => {
         const facts = passes.analysis(
           OPTIMIZER_FACTS_CACHE_KEY,
@@ -753,12 +747,7 @@ export class Minifier {
         );
         return { changed, invalidatesResolve: changed };
       });
-      this.moduleResolve.set(moduleName, passes.resolved);
     });
-    this.linkedAstGeneration++;
-    this.wholeProgramObjectsValue = undefined;
-    this.wholeProgramFieldsValue = undefined;
-    this.wholeProgramExportsValue = undefined;
     this.diagnosticCollector?.record({
       pass: "whole-program-constructor-field-rewrite",
       moduleName: this.entryModule,
@@ -860,12 +849,8 @@ export class Minifier {
         specialization.changedModules.forEach((moduleName) => {
           const ast = this.moduleAST.get(moduleName);
           if (!ast) throw new Error(moduleName + " is not found");
-          this.moduleResolve.set(moduleName, resolveScopes(ast));
+          this.moduleChanged(moduleName);
         });
-        this.linkedAstGeneration++;
-        this.wholeProgramObjectsValue = undefined;
-        this.wholeProgramFieldsValue = undefined;
-        this.wholeProgramExportsValue = undefined;
         initialWholeProgram = this.analyzeWholeProgramObjects();
         const specializedFields = analyzeWholeProgramFields(
           initialWholeProgram,
@@ -896,12 +881,8 @@ export class Minifier {
           this.linkOrder.forEach((moduleName) => {
             const ast = this.moduleAST.get(moduleName);
             if (!ast) throw new Error(moduleName + " is not found");
-            this.moduleResolve.set(moduleName, resolveScopes(ast));
+            this.moduleChanged(moduleName);
           });
-          this.linkedAstGeneration++;
-          this.wholeProgramObjectsValue = undefined;
-          this.wholeProgramFieldsValue = undefined;
-          this.wholeProgramExportsValue = undefined;
           initialWholeProgram = this.analyzeWholeProgramObjects();
         }
       }
@@ -937,7 +918,8 @@ export class Minifier {
     const ast = this.moduleAST.get(moduleName);
     const resolved = this.moduleResolve.get(moduleName);
     if (!ast || !resolved) throw new Error(moduleName + " is not found");
-    const passes = new PassOrchestrator(ast, resolved);
+    const passes = this.passesFor(moduleName);
+    const generationBefore = passes.astGeneration;
     const runtimeProfile = this.mode.runtimeProfile;
     const moduleRange =
       sourceRangeOf(ast) ??
@@ -954,10 +936,7 @@ export class Minifier {
         sourceRange: moduleRange,
       });
     };
-    const initialAnalysis = passes.analysis(
-      OPTIMIZER_ANALYSIS_CACHE_KEY,
-      analyzeOptimizerAtGeneration,
-    );
+    const initialAnalysis = passes.optimizerAnalysis();
     const recursive = new Set(
       initialAnalysis.callGraph.sccs
         .filter((scc) => scc.recursive)
@@ -1002,10 +981,7 @@ export class Minifier {
     });
     if (this.mode.parameterPruning)
       passes.run("prune-local-parameters", () => {
-        const analysis = passes.analysis(
-          OPTIMIZER_ANALYSIS_CACHE_KEY,
-          analyzeOptimizerAtGeneration,
-        );
+        const analysis = passes.optimizerAnalysis();
         const result = pruneTrailingUnusedParameters(
           analysis.callGraph,
           this.getSourceMetadata(moduleName),
@@ -1019,10 +995,7 @@ export class Minifier {
       });
     if (this.mode.functionInlining)
       passes.run("inline-closed-single-use-functions", (currentResolve) => {
-        const analysis = passes.analysis(
-          OPTIMIZER_ANALYSIS_CACHE_KEY,
-          analyzeOptimizerAtGeneration,
-        );
+        const analysis = passes.optimizerAnalysis();
         const result = inlineClosedSingleUseFunctions(
           analysis.interprocedural,
           currentResolve,
@@ -1039,10 +1012,7 @@ export class Minifier {
       });
     if (this.mode.functionInlining)
       passes.run("inline-literal-argument-functions", (currentResolve) => {
-        const analysis = passes.analysis(
-          OPTIMIZER_ANALYSIS_CACHE_KEY,
-          analyzeOptimizerAtGeneration,
-        );
+        const analysis = passes.optimizerAnalysis();
         const result = inlineLiteralArgumentFunctions(
           analysis.interprocedural,
           currentResolve,
@@ -1059,10 +1029,7 @@ export class Minifier {
       });
     if (this.mode.functionInlining)
       passes.run("inline-tail-call-functions", (currentResolve) => {
-        const analysis = passes.analysis(
-          OPTIMIZER_ANALYSIS_CACHE_KEY,
-          analyzeOptimizerAtGeneration,
-        );
+        const analysis = passes.optimizerAnalysis();
         const localResources = analyzeLocalResourceUsage(ast);
         const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile);
         const result = inlineTailCallFunctions(
@@ -1092,10 +1059,7 @@ export class Minifier {
       });
     if (this.mode.functionInlining)
       passes.run("inline-closed-statement-functions", (currentResolve) => {
-        const analysis = passes.analysis(
-          OPTIMIZER_ANALYSIS_CACHE_KEY,
-          analyzeOptimizerAtGeneration,
-        );
+        const analysis = passes.optimizerAnalysis();
         const result = inlineClosedStatementFunctions(
           ast,
           analysis.interprocedural,
@@ -1113,10 +1077,7 @@ export class Minifier {
       });
     if (this.mode.functionInlining)
       passes.run("inline-bound-statement-functions", (currentResolve) => {
-        const analysis = passes.analysis(
-          OPTIMIZER_ANALYSIS_CACHE_KEY,
-          analyzeOptimizerAtGeneration,
-        );
+        const analysis = passes.optimizerAnalysis();
         const localResources = analyzeLocalResourceUsage(ast);
         const result = inlineBoundStatementFunctions(
           ast,
@@ -1148,14 +1109,7 @@ export class Minifier {
           invalidatesResolve: result.changed,
         };
       });
-    this.moduleResolve.set(moduleName, passes.resolved);
-    if (passes.astGeneration > 0) {
-      this.linkedAstGeneration += passes.astGeneration;
-      this.wholeProgramObjectsValue = undefined;
-      this.wholeProgramFieldsValue = undefined;
-      this.wholeProgramExportsValue = undefined;
-    }
-    return passes.astGeneration > 0;
+    return passes.astGeneration > generationBefore;
   }
 
   /**
@@ -1240,16 +1194,42 @@ export class Minifier {
     changedModules.forEach((moduleName) => {
       const ast = this.moduleAST.get(moduleName);
       if (!ast) throw new Error(moduleName + " is not found");
-      this.moduleResolve.set(moduleName, resolveScopes(ast));
+      this.moduleChanged(moduleName);
     });
-    this.linkedAstGeneration++;
-    this.wholeProgramObjectsValue = undefined;
-    this.wholeProgramFieldsValue = undefined;
-    this.wholeProgramExportsValue = undefined;
+
     return this.analyzeWholeProgramObjects();
   }
 
+  private passesFor(moduleName: string): PassOrchestrator {
+    let passes = this.modulePasses.get(moduleName);
+    if (!passes) {
+      const ast = this.moduleAST.get(moduleName);
+      const resolved = this.moduleResolve.get(moduleName);
+      if (!ast || !resolved) throw new Error(moduleName + " is not found");
+      passes = new PassOrchestrator(ast, resolved, (currentResolve) => {
+        this.moduleResolve.set(moduleName, currentResolve);
+        this.linkedAstGeneration++;
+        this.wholeProgramObjectsCache = undefined;
+        this.wholeProgramObjectsValue = undefined;
+        this.wholeProgramFieldsValue = undefined;
+        this.wholeProgramExportsValue = undefined;
+        this.wholeProgramFieldRenamesValue = undefined;
+      });
+      this.modulePasses.set(moduleName, passes);
+    }
+    return passes;
+  }
+
+  /** Report bulk transforms through the same generation owner as local passes. */
+  private moduleChanged(moduleName: string): void {
+    this.passesFor(moduleName).run("linked-module-change", () => ({
+      changed: true,
+      invalidatesResolve: true,
+    }));
+  }
+
   private analyzeWholeProgramObjects(): WholeProgramObjectAnalysis {
+    if (this.wholeProgramObjectsCache) return this.wholeProgramObjectsCache;
     const modules: WholeProgramModule[] = this.linkOrder.map((name) => {
       const chunk = this.moduleAST.get(name);
       const resolved = this.moduleResolve.get(name);
@@ -1258,14 +1238,15 @@ export class Minifier {
         name,
         chunk,
         resolved,
-        analysis: analyzeOptimizer(chunk, resolved, {
-          generation: this.linkedAstGeneration,
-        }),
+        analysis: this.passesFor(name).optimizerAnalysis(),
       };
       this.progress?.tick();
       return module;
     });
-    return analyzeWholeProgramObjects(modules, this.linkedAstGeneration);
+    return (this.wholeProgramObjectsCache = analyzeWholeProgramObjects(
+      modules,
+      this.linkedAstGeneration,
+    ));
   }
 
   private recordWholeProgramObjectDiagnostics(
@@ -1349,6 +1330,9 @@ export class Minifier {
     copyMap(minifier.moduleNameAndFileName, this.moduleNameAndFileName);
     this.linkOrder.splice(0, this.linkOrder.length, ...minifier.linkOrder);
     copyMap(minifier.moduleResolve, this.moduleResolve);
+    // Adopted variants are complete; their pass callbacks belong to their owner.
+    this.modulePasses.clear();
+    this.wholeProgramObjectsCache = undefined;
     copyMap(minifier.renameCache, this.renameCache);
     this.globalRenames = new Map(minifier.globalRenames);
     copyMap(minifier.moduleMetadata, this.moduleMetadata);
@@ -1672,7 +1656,7 @@ export class Minifier {
         throw new Error(moduleName + " is not found");
       }
 
-      const passes = new PassOrchestrator(ast, resolved);
+      const passes = this.passesFor(moduleName);
       if (this.mode.globalAliasing) {
         passes.run("global-alias", (currentResolve) => {
           const changed = insertGlobalAliases(ast, currentResolve, {
@@ -1683,24 +1667,20 @@ export class Minifier {
       }
       resolved = passes.resolved;
       const runtime = runtimeEnvironmentOf(this.mode.runtimeProfile);
-      const optimizerAnalysis = () =>
-        passes.analysis(
-          OPTIMIZER_ANALYSIS_CACHE_KEY,
-          (chunk, currentResolve, generation) =>
-            analyzeOptimizer(chunk, currentResolve, {
-              generation,
-              runtime,
-              assumptions:
-                this.mode.allowObservableTableReadChanges === true
-                  ? new Map([
-                      [
-                        "allow-observable-table-read-changes",
-                        "explicit allowObservableTableReadChanges opt-in",
-                      ],
-                    ])
-                  : undefined,
-            }),
-        );
+      // This immutable identity includes runtime, assumptions and analysis policy.
+      const optimizerPolicy = Object.freeze({
+        runtime,
+        assumptions:
+          this.mode.allowObservableTableReadChanges === true
+            ? new Map([
+                [
+                  "allow-observable-table-read-changes",
+                  "explicit allowObservableTableReadChanges opt-in",
+                ],
+              ])
+            : undefined,
+      });
+      const optimizerAnalysis = () => passes.optimizerAnalysis(optimizerPolicy);
       const localResources = analyzeLocalResourceUsage(ast);
 
       const lifetimeChangesAllowed =
@@ -1741,8 +1721,7 @@ export class Minifier {
                   analysis: provisionalAnalysis
                     ? {
                         facts: provisionalAnalysis.facts,
-                        liveness:
-                          provisionalAnalysis.statementDataflow.symbolLiveness,
+                        liveness: provisionalAnalysis.symbolLiveness,
                       }
                     : undefined,
                 },
@@ -1830,7 +1809,6 @@ export class Minifier {
       }
 
       resolved = passes.resolved;
-      this.moduleResolve.set(moduleName, resolved);
       if (this.mode.localRenaming || this.mode.globalRenaming) {
         const finalKeepNames = new Set(
           resolved.symbols.filter(
@@ -1852,6 +1830,10 @@ export class Minifier {
           {
             allowLocalNameReuse: localNameReuseEnabled,
             renameLocals: this.mode.localRenaming,
+            analysis: {
+              facts: optimizerAnalysis().facts,
+              liveness: optimizerAnalysis().symbolLiveness,
+            },
           },
         );
         this.renameCache.set(moduleName, finalRename);
@@ -1967,13 +1949,11 @@ export class Minifier {
       const ast = this.moduleAST.get(moduleName);
       const resolved = this.moduleResolve.get(moduleName);
       if (!ast || !resolved) throw new Error(moduleName + " is not found");
-      const passes = new PassOrchestrator(ast, resolved);
+      const passes = this.passesFor(moduleName);
+      const generationBefore = passes.astGeneration;
       if (this.mode.interproceduralConstantPropagation)
         passes.run("interprocedural-constants", () => {
-          const analysis = passes.analysis(
-            OPTIMIZER_ANALYSIS_CACHE_KEY,
-            analyzeOptimizerAtGeneration,
-          );
+          const analysis = passes.optimizerAnalysis();
           const changed = propagateInterproceduralConstants(
             ast,
             analysis.interprocedural,
@@ -2001,14 +1981,9 @@ export class Minifier {
           );
           return { changed, invalidatesResolve: changed };
         });
-      if (passes.astGeneration > 0) {
+      if (passes.astGeneration > generationBefore) {
         changedModules.add(moduleName);
-        this.linkedAstGeneration += passes.astGeneration;
-        this.wholeProgramObjectsValue = undefined;
-        this.wholeProgramFieldsValue = undefined;
-        this.wholeProgramExportsValue = undefined;
       }
-      this.moduleResolve.set(moduleName, passes.resolved);
       this.progress?.tick();
     });
     return changedModules;
@@ -2025,7 +2000,8 @@ export class Minifier {
       const metadata = this.getSourceMetadata(moduleName);
       const resolved = this.moduleResolve.get(moduleName);
       if (!ast || !resolved) throw new Error(moduleName + " is not found");
-      const passes = new PassOrchestrator(ast, resolved);
+      const passes = this.passesFor(moduleName);
+      const generationBefore = passes.astGeneration;
       passes.runUntilStable("remove-unused", (currentResolve) => {
         const facts = passes.analysis(
           OPTIMIZER_FACTS_CACHE_KEY,
@@ -2066,14 +2042,9 @@ export class Minifier {
         );
         return { changed, invalidatesResolve: changed };
       });
-      if (passes.astGeneration > 0) {
+      if (passes.astGeneration > generationBefore) {
         changedModules.add(moduleName);
-        this.linkedAstGeneration += passes.astGeneration;
-        this.wholeProgramObjectsValue = undefined;
-        this.wholeProgramFieldsValue = undefined;
-        this.wholeProgramExportsValue = undefined;
       }
-      this.moduleResolve.set(moduleName, passes.resolved);
       this.progress?.tick();
     });
     return changedModules;

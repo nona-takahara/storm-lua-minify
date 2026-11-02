@@ -235,3 +235,14 @@ pnpm run verify:discardable-local-reads
 ```
 
 Lua 5.3（既定は`lua5.3`、`LUA53`で指定可能）で、local・仮引数・upvalueの未使用コピー削除について戻り値・エラー・副作用を入力と出力で比較します。削除対象では出力の縮小も確認し、globalのmetatable経由の読み取り、束縛前参照、debugによるlocal・upvalueの観測が残ることを検証します。標準出力・標準エラーは一時ファイル経由で取得します。
+### 遅延optimizer解析の比較
+
+```console
+pnpm run verify:lazy-optimizer -- /absolute/path/to/baseline/dist [path/to/external/main.lua]
+```
+
+比較元と現在のリビジョンを別々にビルドし、比較元の`dist`を指定します。両方のビルドから依存パッケージを解決できる環境で実行してください。fixtureを3設定で比較し、出力・Source Map・診断全体の一致を検証します。100 localの合成入力と、任意指定の実入力について、同じNodeプロセス内で両ビルドをwarm upした後、実行順を交互に変えて3対測定します。解析の呼び出し回数も記録し、各対での決定性とvalue flow・statement dataflowの減少をassertします。時間は合否判定に使いません。
+
+optimizerのread snapshotは、モジュールごとの`PassOrchestrator`が管理します。変換は必要な遅延解析を最初のAST書き換え前にすべて取得し、書き換え中に別の解析を初めて要求してはいけません。変更結果を返した時点でsnapshotが失効します。全体変換の結果も`moduleChanged`へ通知します。独立して`analyzeOptimizer`を呼ぶ利用側は、AST変更時に`invalidate()`する責任を持ちます。失効後のgetterは計算済みでも例外になります。取得済みの解析オブジェクトの寿命も同じで、変換をまたいで保持してはいけません。
+
+`optimizerAnalysis(policy)`のpolicy objectは、runtime・仮定・関数summaryの解析方針を含む不変のcache identityです。同じpolicyを共有する利用側は同じobjectを使い、方針を変える場合は新しいobjectを作ります。内部のMapも変更してはいけません。世代はownerがcache keyへ加えます。既定の言語仕様のみのpolicyはfold・DCEとfactsを共有し、runtimeや仮定を持つpolicyとは分離します。
