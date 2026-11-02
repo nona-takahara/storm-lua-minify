@@ -750,7 +750,7 @@ export function inlineTailCallFunctions(
 
     const body: Parser.Statement[] = [];
     let copiedParameters: Parser.Identifier[] = [];
-    if (site.call.arguments.length > 0) {
+    if (declaration.parameters.length > 0 || site.call.arguments.length > 0) {
       copiedParameters = declaration.parameters.map((parameter) =>
         structuredClone(parameter as Parser.Identifier),
       );

@@ -310,6 +310,42 @@ describe("function rewrites", () => {
     expect(result).toEqual({ changed: false, inlinedFunctions: 0 });
   });
 
+  test("binds omitted tail-call parameters to fresh nil locals", () => {
+    const source =
+      "x=42 local function f(x,y)local value=x if value then return y end return 2 end return f()";
+    const chunk = Parser.parse(source, {
+      luaVersion: "5.3",
+      comments: true,
+      locations: true,
+      ranges: true,
+    });
+    const resolved = resolveScopes(chunk);
+    const facts = analyzeOptimizerFacts(chunk, resolved);
+    const callGraph = analyzeCallGraph(chunk, resolved, facts);
+    const result = inlineTailCallFunctions(
+      chunk,
+      analyzeInterprocedural(chunk, resolved, callGraph),
+      resolved,
+      new SourceMetadata(chunk, source),
+      { maxIntroducedLocalsAt: () => 10 },
+    );
+    expect(result).toEqual({ changed: true, inlinedFunctions: 1 });
+    const replacement = chunk.body[2];
+    if (replacement.type !== "DoStatement") throw new Error("expected do");
+    const binding = replacement.body[0];
+    if (binding.type !== "LocalStatement") throw new Error("expected local");
+    expect(binding.variables).toHaveLength(2);
+    expect(binding.init).toEqual([]);
+    const copiedLocal = replacement.body[1];
+    if (copiedLocal.type !== "LocalStatement")
+      throw new Error("expected local");
+    const fresh = resolveScopes(chunk);
+    expect(fresh.symbolOf(binding.variables[0])).toBeDefined();
+    expect(fresh.symbolOf(copiedLocal.init[0] as Parser.Identifier)).toBe(
+      fresh.symbolOf(binding.variables[0]),
+    );
+  });
+
   test("inlines multi-statement and tuple returns into a caller tail", () => {
     const source =
       "local function pair(value) local next=value+1 if flag then return value,next end return next,value end return pair(make())";

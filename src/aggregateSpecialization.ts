@@ -247,6 +247,18 @@ export function applyAggregateSpecialization(
           const parameterIndex = index - normalized.parameterOffset;
           return parameterIndex < 0 || !group.literals.has(parameterIndex);
         });
+        const retainedTail = retainedActuals.at(-1);
+        if (
+          retainedTail &&
+          canExpand(retainedTail) &&
+          (retainedTail !== normalized.actuals.at(-1) ||
+            call.arguments.length === 0)
+        ) {
+          // Removing a trailing literal must not turn an earlier single-valued
+          // call into an expanding tail. A surplus nil keeps the adjustment
+          // without requiring a parenthesis node that luaparse does not retain.
+          retainedActuals.push({ type: "NilLiteral", value: null, raw: "nil" });
+        }
         const replacement: Parser.Identifier = {
           type: "Identifier",
           name: variantName,
@@ -332,6 +344,31 @@ function insideScope(symbol: Symbol, scope: Scope): boolean {
   return false;
 }
 
+function canExpand(expression: Parser.Expression): boolean {
+  return (
+    expression.type === "CallExpression" ||
+    expression.type === "TableCallExpression" ||
+    expression.type === "StringCallExpression" ||
+    expression.type === "VarargLiteral"
+  );
+}
+
+/** Missing syntax slots are nil only when the final actual cannot expand. */
+function actualAt(
+  site: NormalizedSite,
+  parameterIndex: number,
+): Parser.Expression | undefined {
+  const index = parameterIndex + site.parameterOffset;
+  if (index < site.actuals.length) return site.actuals[index];
+  // Use the original argument list: a synthetic receiver is always single-valued.
+  const tail =
+    site.site.call.type === "CallExpression"
+      ? site.site.call.arguments.at(-1)
+      : undefined;
+  // Keep expandable slots unknown to grouping and parameter inference.
+  return tail && canExpand(tail) ? tail : undefined;
+}
+
 function variantGroups(
   callable: Callable,
   sites: readonly NormalizedSite[],
@@ -348,7 +385,7 @@ function variantGroups(
   >();
   sites.forEach((site) => {
     callable.declaration.parameters.forEach((_, parameterIndex) => {
-      const actual = site.actuals.at(parameterIndex + site.parameterOffset);
+      const actual = actualAt(site, parameterIndex);
       const direct = primitiveLiteral(actual);
       const actualSymbol =
         !direct && actual?.type === "Identifier"
@@ -404,7 +441,7 @@ function inferConstantParameters(
       callable.parameters.forEach((parameter, parameterIndex) => {
         if (result.has(parameter) || sites.length === 0) return;
         const values = sites.map((site) => {
-          const actual = site.actuals.at(parameterIndex + site.parameterOffset);
+          const actual = actualAt(site, parameterIndex);
           const direct = primitiveLiteral(actual);
           if (direct) return direct;
           if (!actual || actual.type !== "Identifier") return undefined;
