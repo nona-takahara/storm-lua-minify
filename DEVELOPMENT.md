@@ -115,7 +115,7 @@ npmへの公開は、`.github/workflows/publish.yml`が行います。以下の�
 
 ### 共通事項
 
-`report:*`、`verify:effect-semantics`、`verify:transform-reentry`は、`package.json`のコマンドを経由すると先にTypeScriptをビルドし、生成された`dist/`を読み込みます。`verify:lua-budget`はminifierを使わないため、ビルドせずに実行します。
+`report:*`、`verify:effect-semantics`、`verify:transform-reentry`、`verify:discardable-local-reads`は、`package.json`のコマンドを経由すると先にTypeScriptをビルドし、生成された`dist/`を読み込みます。`verify:lua-budget`はminifierを使わないため、ビルドせずに実行します。
 
 entry fileを受け取るreportコマンドでは、pnpmの引数とスクリプトの引数を`--`で区切ります。
 
@@ -228,6 +228,13 @@ pnpm run verify:closed-field-names -- path/to/node.lua [more.lua ...] [--config 
 
 記録が違うか、呼び出しが1つもなければ失敗します。乱数の入力が通る経路だけを比べるので、動作が同じことの証明ではありません。スクリプトが入力の途中でerrorになる場合は、両方が同じtickで止まることを確認します。`dofile`・`require`で読むファイルは、指定したLuaと同じディレクトリに置いてください。既定では`lua`を実行します。
 
+### local読み取りの破棄
+
+```console
+pnpm run verify:discardable-local-reads
+```
+
+Lua 5.3（既定は`lua5.3`、`LUA53`で指定可能）で、local・仮引数・upvalueの未使用コピー削除について戻り値・エラー・副作用を入力と出力で比較します。削除対象では出力の縮小も確認し、globalのmetatable経由の読み取り、束縛前参照、debugによるlocal・upvalueの観測が残ることを検証します。標準出力・標準エラーは一時ファイル経由で取得します。
 ### 遅延optimizer解析の比較
 
 ```console

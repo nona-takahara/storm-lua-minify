@@ -31,6 +31,7 @@ import {
 } from "./optimizerDiagnostics";
 import {
   analyzeOptimizerFactsAtGeneration,
+  analyzeOptimizerFacts,
   OPTIMIZER_FACTS_CACHE_KEY,
 } from "./optimizerFacts";
 import { propagateInterproceduralConstants } from "./interproceduralConstants";
@@ -2004,7 +2005,20 @@ export class Minifier {
       passes.runUntilStable("remove-unused", (currentResolve) => {
         const facts = passes.analysis(
           OPTIMIZER_FACTS_CACHE_KEY,
-          analyzeOptimizerFactsAtGeneration,
+          (chunk, currentResolved, generation) =>
+            analyzeOptimizerFacts(chunk, currentResolved, {
+              generation,
+              runtime: runtimeEnvironmentOf(this.mode.runtimeProfile),
+              assumptions:
+                this.mode.allowIntrospectionChanges === true
+                  ? new Map([
+                      [
+                        "allow-introspection-changes",
+                        "explicit allowIntrospectionChanges opt-in",
+                      ],
+                    ])
+                  : undefined,
+            }),
         );
         const changed = removeUnusedLocals(
           ast,

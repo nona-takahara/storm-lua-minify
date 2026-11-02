@@ -751,6 +751,40 @@ export function analyzeOptimizerFacts(
     discardabilityOf: (expression) => {
       const fact = expressionFacts.get(expression);
       if (!fact) return { discardable: false, reason: "expression-unindexed" };
+      if (expression.type === "Identifier") {
+        const operation = byOrigin.get(expression);
+        if (
+          operation?.kind !== "read" ||
+          (operation.location.kind !== "local" &&
+            operation.location.kind !== "parameter" &&
+            operation.location.kind !== "upvalue")
+        ) {
+          return { discardable: false, reason: "nonlocal-or-unresolved-read" };
+        }
+        // Unknown values still have harmless reads. Removing their consumer can
+        // change local/upvalue visibility, so require the caller's runtime policy.
+        if (options.runtime?.semantics.debugLocalIntrospection === false) {
+          return {
+            discardable: true,
+            evidence: {
+              kind: "runtime",
+              profile: options.runtime.profile,
+              reason: "nonobserving-bound-read",
+            },
+          };
+        }
+        if (options.assumptions?.has("allow-introspection-changes")) {
+          return {
+            discardable: true,
+            evidence: {
+              kind: "assumption",
+              name: "allow-introspection-changes",
+              reason: "nonobserving-bound-read",
+            },
+          };
+        }
+        return { discardable: false, reason: "local-introspection-observable" };
+      }
       if (
         fact.effects.mayError.value === "may" ||
         fact.effects.mayInvokeMetamethod.value === "may"
