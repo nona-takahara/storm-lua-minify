@@ -317,3 +317,15 @@ pnpm run verify:interference -- path/to/baseline/dist [path/to/main.lua ...]
 単体テストでは、既存の全Lua fixtureと合成入力について、生存点由来の辺集合と完成した干渉グラフを従来のclique方式・bitset方式・自動選択で比較します。local名の再利用の有無と、一部symbolを短縮対象から除く場合も検証します。
 
 比較スクリプトには、変更前のリビジョンを別ディレクトリでビルドした`dist`を渡します。そのビルドからも依存を解決できる必要があります。通常の候補選択でfixtureのコード・Source Map・診断の一致を確認し、小さいfixture・合成入力・任意の追加entryを同じNodeプロセスでウォームアップ後に5対測定します。各対で先に実行するリビジョンを交互に変え、各対の平均時間とその中央値をJSONで表示します。小さいfixtureは各対10回ずつ実行し、その他は各対1回です。合成入力は1候補固定で測り、100 localでは通常の候補選択も測ります。400同時生存localはLuaの200 local制限を超えるストレス入力であり、実用入力の性能保証には使用しません。測定値は環境に依存するため、自動テストに時間の合否条件は設けていません。
+
+### 文依存の遅延照会の比較
+
+```console
+pnpm run verify:sparse-statement-dependencies -- /absolute/path/to/baseline/dist [path/to/external/main.lua]
+```
+
+比較元を別途ビルドして指定します。fixtureを3設定で比較し、出力・Source Map・診断の一致を確認します。外部callが600文ある合成入力、小さいfixture、代表fixture、任意指定の実入力について、同じNodeプロセスでwarm-up後に実行順を交互に変えて5対測定します。時間は合否に使いません。
+
+文依存解析は各文の要約とblock内の位置だけを保持し、`dependenciesBetween`は要求された順方向のペアを従来と同じ規則で判定します。照会結果は蓄積しません。`canMoveBefore`も移動区間のペアだけを照会します。全辺を列挙する互換APIの`dependencies`は、明示的に取得した場合だけ二次サイズになり得る配列を生成・保持します。通常のschedulerはこのAPIを使いません。任意の全ペア照会そのものを線形時間にする変更ではありません。
+
+`test/helpers/pairwiseStatementDataflow.ts`は変更前の全ペア実装を固定したテスト用参照です。`statementDataflow.test.ts`で既存Lua fixtureと合成入力の全文ペアについて、依存辺（種類・location・順序）と移動可否・拒否理由を、全辺列挙の前後とも比較します。参照実装は製品側の判定関数を共有しません。
