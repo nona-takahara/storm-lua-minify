@@ -3,6 +3,73 @@ import { SourceMapConsumer } from "source-map";
 import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
 
 describe("function rewrites integration", () => {
+  test("keeps an omitted tail parameter separate from a same-named global", () => {
+    const { code } = minifyTemporaryLuaSource(
+      "x=42 local function f(x)if x then return 1 end return 2 end return f()",
+      {
+        runtimeProfile: "stormworks",
+        requiredWhitespace: " ",
+        globalAliasing: false,
+      },
+    );
+    expect(code).not.toContain("function");
+    expect(code).not.toMatch(/if x\b/);
+  });
+
+  test.each([
+    [
+      "a tail call",
+      "local function pair()return 10,20 end return f(pair())+f(pair())",
+    ],
+    [
+      "a string call",
+      'local function pair(s)return 10,20 end return f(pair"x")+f(pair"x")',
+    ],
+    [
+      "a table call",
+      "local function pair(t)return 10,20 end return f(pair{})+f(pair{})",
+    ],
+    [
+      "a vararg tail",
+      "local function run(...)return f(...)+f(...) end return run(10,20)",
+    ],
+    [
+      "constant-parameter inference",
+      "local function pair()return 10,20 end local function run(a,b)return f(a,b)+f(a,b) end return run(pair())+run(pair())",
+    ],
+    [
+      "a colon receiver",
+      "local object={} function object:f(a,b)return b end local function pair()return 10,20 end return object:f(pair())+object:f(pair())",
+    ],
+    [
+      "a field callback",
+      "local object={} function object.f(a,b)return b end local function pair()return 10,20 end return object.f(pair())+object.f(pair())",
+    ],
+  ])("does not specialize expanded values from %s as nil", (_, calls) => {
+    const { code } = minifyTemporaryLuaSource(
+      "local function f(a,b)return b end " + calls,
+      {
+        runtimeProfile: "stormworks",
+        requiredWhitespace: " ",
+        globalAliasing: false,
+      },
+    );
+    expect(code).not.toContain("nil");
+  });
+
+  test("keeps a nonfinal call single-valued after specializing a trailing literal", () => {
+    const { code } = minifyTemporaryLuaSource(
+      "local function pair()return 10,20 end local function f(a,b,c)if c==nil then return b end return c end return f(pair(),7)+f(pair(),7)",
+      {
+        runtimeProfile: "stormworks",
+        requiredWhitespace: " ",
+        globalAliasing: false,
+      },
+    );
+    // The cost gate may retain the original literal instead of the variant.
+    expect(code).toMatch(/\(\w+\(\),(?:7|nil)\)/);
+  });
+
   test("prunes a trailing unused parameter but leaves surplus actual evaluation", () => {
     const source = `
 local function first(value,unused) return value end

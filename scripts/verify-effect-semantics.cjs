@@ -78,6 +78,133 @@ function execute(file, cwd) {
   };
 }
 
+const functionRewriteFixtures = [
+  {
+    name: "omitted-tail-parameter-global",
+    source:
+      "x=42 local function f(x)if x then return 1 end return 2 end return f()",
+    stdout: "true\t2\n",
+  },
+  {
+    name: "omitted-tail-parameters-local-body",
+    source:
+      "local x=42 local y=43 local function f(x,y)local value=x if value then return 1 end return y,2 end return f()",
+    stdout: "true\tnil\t2\n",
+  },
+  {
+    name: "parameterless-tail-call",
+    source:
+      "local function f()if flag then return 1 end return 2,3 end return f()",
+    stdout: "true\t2\t3\n",
+  },
+  {
+    name: "specialization-tail-call",
+    source:
+      "local function pair()return 10,20 end local function f(a,b)return b end return f(pair())+f(pair())",
+    stdout: "true\t40\n",
+  },
+  {
+    name: "specialization-tail-call-effects",
+    source:
+      "calls=0 local function pair()calls=calls+1 return 10,20,30 end local function f(a,b)return b end local value=f(pair())+f(pair()) return value,calls",
+    stdout: "true\t40\t2\n",
+  },
+  {
+    name: "specialization-tail-call-error",
+    source:
+      'local function pair()error("sentinel",0)end local function f(a,b)return b end return f(pair())+f(pair())',
+    stdout: "false\tsentinel\n",
+  },
+  {
+    name: "specialization-tail-call-prefix",
+    source:
+      "local function pair()return 10,20 end local function f(flag,a,b)if flag then return b end return a end return f(true,pair())+f(true,pair())",
+    stdout: "true\t40\n",
+  },
+  {
+    name: "specialization-string-call",
+    source:
+      'local function pair(s)return 10,20 end local function f(a,b)return b end return f(pair"x")+f(pair"x")',
+    stdout: "true\t40\n",
+  },
+  {
+    name: "specialization-table-call",
+    source:
+      "local function pair(t)return 10,20 end local function f(a,b)return b end return f(pair{})+f(pair{})",
+    stdout: "true\t40\n",
+  },
+  {
+    name: "specialization-vararg-tail",
+    source:
+      "local function f(a,b)return b end local function run(...)return f(...)+f(...) end return run(10,20)",
+    stdout: "true\t40\n",
+  },
+  {
+    name: "specialization-derived-parameter",
+    source:
+      "local function pair()return 10,20 end local function f(a,b)return b end local function run(a,b)return f(a,b)+f(a,b) end return run(pair())+run(pair())",
+    stdout: "true\t80\n",
+  },
+  {
+    name: "specialization-colon-receiver",
+    source:
+      "local object={} function object:f(a,b)return b end local function pair()return 10,20 end return object:f(pair())+object:f(pair())",
+    stdout: "true\t40\n",
+  },
+  {
+    name: "specialization-field-callback",
+    source:
+      "local object={} function object.f(a,b)return b end local function pair()return 10,20 end return object.f(pair())+object.f(pair())",
+    stdout: "true\t40\n",
+  },
+  {
+    name: "specialization-nil-padding",
+    source:
+      "local function f(a,b)if b==nil then return 7 end return b end return f()+f(10)",
+    stdout: "true\t14\n",
+  },
+  {
+    name: "specialization-nonfinal-call",
+    source:
+      "calls=0 local function pair()calls=calls+1 return 10,20 end local function f(a,b,c)if c==nil then return b end return c end local value=f(pair(),7)+f(pair(),7) return value,calls",
+    stdout: "true\t14\t2\n",
+  },
+];
+
+function verifyFunctionRewriteFixture(fixture) {
+  const sourceFile = path.join(directory, `${fixture.name}.lua`);
+  fs.writeFileSync(sourceFile, fixture.source);
+  const code = new Minifier(
+    sourceFile,
+    { luaVersion: "5.3" },
+    {
+      requireWrapper: false,
+      runtimeProfile: "stormworks",
+      requiredWhitespace: " ",
+      globalAliasing: false,
+    },
+  )
+    .parse()
+    .toStringWithSourceMap({ file: `${fixture.name}.min.lua` }).code;
+  // Wrap after minifying so the exact return-position input is optimized.
+  const executeChunk = (source, suffix) => {
+    const file = path.join(directory, `${fixture.name}-${suffix}.lua`);
+    fs.writeFileSync(file, `print(pcall(function()\n${source}\nend))`);
+    return execute(file);
+  };
+  const expected = { status: 0, stdout: fixture.stdout, stderr: "" };
+  const original = executeChunk(fixture.source, "original");
+  const minified = executeChunk(code, "minified");
+  if (
+    JSON.stringify(original) !== JSON.stringify(expected) ||
+    JSON.stringify(minified) !== JSON.stringify(expected)
+  ) {
+    throw new Error(
+      `semantic mismatch in ${fixture.name}\nexpected=${JSON.stringify(expected)}\noriginal=${JSON.stringify(original)}\nminified=${JSON.stringify(minified)}\ncode=${code}`,
+    );
+  }
+}
+
 function verifyWholeProgramMethodFixture() {
   const fixtureDirectory = path.join(directory, "whole-program-method");
   fs.mkdirSync(fixtureDirectory);
@@ -256,13 +383,14 @@ try {
       );
     }
   });
+  functionRewriteFixtures.forEach(verifyFunctionRewriteFixture);
   verifyWholeProgramMethodFixture();
   verifyWholeProgramFieldFixture();
   verifyWholeProgramExportFixture(true);
   verifyWholeProgramExportFixture(false);
   verifyFieldRenameFixture();
   process.stdout.write(
-    `${lua}: ${String(fixtures.length + 5)} effect-aware fixtures matched exactly\n`,
+    `${lua}: ${String(fixtures.length + functionRewriteFixtures.length + 5)} effect-aware fixtures matched exactly\n`,
   );
 } finally {
   fs.rmSync(directory, { recursive: true, force: true });
