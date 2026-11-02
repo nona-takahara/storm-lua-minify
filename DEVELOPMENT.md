@@ -135,6 +135,12 @@ reportコマンドはJSONを標準出力へ書きます。共通する主なフ�
 
 ### optimizer diagnostics
 
+`collectOptimizationDiagnostics: true`の診断名は、探索の128 variants上限が`specialization-variant-limit`、2048 candidate sites超過が`specialization-site-limit`、Luaのlocal/register等の実行資源制限が`runtime-resource-limit`です。旧名`resource-budget`は廃止しました。診断名を列挙する利用側は、この3種類へ移行してください。探索上限・Luaの制限・候補選択は変更していません。
+
+cost gateが捕捉した例外は、`pass: "optimizer-cost-failure"`、`reason: "trial-failed"`の追加レコードに残します。任意の`failure`には`stage`（`full-trial`／`ablation`）、ablationで無効化した`gate`、`kind`（`analysis-nonconvergence`／`unexpected-error`／`non-error-thrown`）、取得可能なら例外の`name`と`message`を記録します。解析未収束は専用の`AnalysisConvergenceError`で識別し、他のErrorを実装不具合とは断定しません。パイプライン内部の失敗位置は記録しません。共同trial失敗時のbaseline採用、ablation失敗時の継続、baseline例外の伝播は従来どおりです。既存の最終採否レコードも維持します。
+
+`summarizeOptimizationDiagnostics`の既存bucket形式は維持します。失敗レコードも拒否1件として集計されますが、詳細は元の`optimizationDiagnostics`を参照してください。`report:optimizer`は集計に加えて`failures`配列を出力します。`report:aggregate-specialization`の`refusalReasons`は新しい診断名をそのままキーにします。
+
 ```console
 pnpm run report:optimizer
 ```

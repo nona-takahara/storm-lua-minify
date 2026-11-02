@@ -169,7 +169,7 @@ export function planStatementSchedule(
       if (mode === "split-initializers" && run.length - 1 > maxHoisted) {
         record(
           "rejected",
-          "resource-budget",
+          "runtime-resource-limit",
           run.length,
           undefined,
           rangeOf(run[0].statement),

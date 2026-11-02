@@ -25,7 +25,9 @@ export type SpecializationRefusalReason =
   | "multiple-callback-storage"
   | "unknown-capture"
   | "unsupported-shape"
-  | "resource-budget";
+  | "specialization-variant-limit"
+  | "specialization-site-limit"
+  | "runtime-resource-limit";
 
 export interface AggregateSpecializationDiagnostic {
   readonly callable: Callable;
@@ -245,7 +247,11 @@ export function applyAggregateSpecialization(
   );
   if (totalSites > MAX_CANDIDATE_SITES) {
     sitesByCallable.forEach((_, callable) =>
-      diagnostics.push({ callable, reason: "resource-budget", count: 1 }),
+      diagnostics.push({
+        callable,
+        reason: "specialization-site-limit",
+        count: 1,
+      }),
     );
     return {
       changed: false,
@@ -319,12 +325,20 @@ export function applyAggregateSpecialization(
       } else {
         if (!history.canGenerate(callable.declaration, signature)) return;
         if (createdVariants >= MAX_VARIANTS) {
-          diagnostics.push({ callable, reason: "resource-budget", count: 1 });
+          diagnostics.push({
+            callable,
+            reason: "specialization-variant-limit",
+            count: 1,
+          });
           return;
         }
         const introduced = introducedByBody.get(insertionBody) ?? 0;
         if (introduced >= insertionModule.maxIntroducedLocalsAt(firstOwner)) {
-          diagnostics.push({ callable, reason: "resource-budget", count: 1 });
+          diagnostics.push({
+            callable,
+            reason: "runtime-resource-limit",
+            count: 1,
+          });
           return;
         }
         let variantIndex = createdVariants;

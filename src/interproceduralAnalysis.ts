@@ -1,3 +1,4 @@
+import { AnalysisConvergenceError } from "./analysisConvergenceError";
 import Parser from "luaparse";
 import { CallGraphAnalysis, CallSite, Callable } from "./callGraph";
 import {
@@ -184,7 +185,9 @@ export function analyzeInterprocedural(
   const iterationLimit = Math.max(1, callGraph.functions.length * 64);
   while (changed) {
     if (iterations++ > iterationLimit)
-      throw new Error("Interprocedural finite lattice failed to converge");
+      throw new AnalysisConvergenceError(
+        "Interprocedural finite lattice failed to converge",
+      );
     changed = false;
     callGraph.functions.forEach((callable) => {
       const evaluated = evaluateFunction(callable);

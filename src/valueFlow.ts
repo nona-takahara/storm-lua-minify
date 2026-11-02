@@ -1,3 +1,4 @@
+import { AnalysisConvergenceError } from "./analysisConvergenceError";
 import Parser from "luaparse";
 import {
   analyzeControlFlow,
@@ -219,7 +220,9 @@ export function analyzeValueFlow(
     );
     while (changed) {
       if (iterations++ > iterationLimit) {
-        throw new Error("Value-flow finite lattice failed to converge");
+        throw new AnalysisConvergenceError(
+          "Value-flow finite lattice failed to converge",
+        );
       }
       changed = false;
       // CFG nodes are constructed from the continuation backwards. Reverse iteration is therefore
