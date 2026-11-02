@@ -8,9 +8,12 @@ import {
 } from "./lib/minifierHarness";
 
 // Inject at the candidate boundary without exposing a production testing hook.
-const prototype = Minifier.prototype as unknown as { parseOnce(): SourceNode };
+// Every candidate enters here, including ones that reuse a cached prefix.
+const prototype = Minifier.prototype as unknown as {
+  parseCostSnapshot(...args: unknown[]): SourceNode;
+};
 // eslint-disable-next-line @typescript-eslint/unbound-method -- Each injected call supplies the candidate as this explicitly.
-const parseOnce = prototype.parseOnce;
+const parseCostSnapshot = prototype.parseCostSnapshot;
 const failures = [
   {
     error: new AnalysisConvergenceError("did not converge"),
@@ -36,13 +39,13 @@ describe("cost gate failure diagnostics", () => {
         const run = (collectOptimizationDiagnostics: boolean) => {
           let calls = 0;
           const spy = vi
-            .spyOn(prototype, "parseOnce")
-            .mockImplementation(function (this: Minifier) {
+            .spyOn(prototype, "parseCostSnapshot")
+            .mockImplementation(function (this: Minifier, ...args: unknown[]) {
               calls++;
               if (calls === (stage === "full-trial" ? 2 : 3))
                 // eslint-disable-next-line @typescript-eslint/only-throw-error -- Exercise JavaScript non-Error throws as well.
                 throw failure.error;
-              return parseOnce.call(this);
+              return parseCostSnapshot.apply(this, args);
             });
           try {
             return minifyLuaProject(project, {
@@ -90,9 +93,11 @@ describe("cost gate failure diagnostics", () => {
   test("propagates baseline failures", () => {
     const project = createTemporaryLuaProject({ "main.lua": "return 1" });
     const error = new AnalysisConvergenceError("baseline failed");
-    const spy = vi.spyOn(prototype, "parseOnce").mockImplementation(() => {
-      throw error;
-    });
+    const spy = vi
+      .spyOn(prototype, "parseCostSnapshot")
+      .mockImplementation(() => {
+        throw error;
+      });
     try {
       expect(() =>
         minifyLuaProject(project, {

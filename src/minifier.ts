@@ -85,6 +85,10 @@ const NO_RENAME: RenameResult = {
   usedNames: new Set(),
 };
 
+// DCE uses the owning minifier's fixed runtime/introspection policy. Keep its
+// facts separate from language-only facts shared by fold and optimizer analysis.
+const REMOVE_UNUSED_FACTS_CACHE_KEY = {};
+
 interface ParsedModuleInput {
   readonly sourceText: string;
   readonly ast: Chunk;
@@ -2188,7 +2192,7 @@ export class Minifier {
       const generationBefore = passes.astGeneration;
       passes.runUntilStable("remove-unused", (currentResolve) => {
         const facts = passes.analysis(
-          OPTIMIZER_FACTS_CACHE_KEY,
+          REMOVE_UNUSED_FACTS_CACHE_KEY,
           (chunk, currentResolved, generation) =>
             analyzeOptimizerFacts(chunk, currentResolved, {
               generation,
