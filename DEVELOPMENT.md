@@ -278,3 +278,14 @@ pnpm run verify:cost-snapshots -- "$BASELINE_DIST" "$EXTERNAL_ENTRY"
 ```
 
 スクリプトは既存fixtureを3設定・診断on/offで比較し、選択されたコード・Source Map・診断と、選択過程で評価した全候補のmask・byte数・失敗有無の一致を検証します。合成100 local入力と任意の実入力では、同じNodeプロセスで旧→新、新→旧を交互に5対測定し、解析等の呼び出し回数が決定論的に減ることも確認します。経過時間は保証値ではありません。依存をinstallせず実行する場合は、ビルド後に`node scripts/verify-cost-snapshots.cjs "$BASELINE_DIST" "$EXTERNAL_ENTRY"`を使えます。
+
+### 干渉グラフの同値性と性能
+
+```console
+pnpm exec vitest run test/interference.test.ts
+pnpm run verify:interference -- path/to/baseline/dist [path/to/main.lua ...]
+```
+
+単体テストでは、既存の全Lua fixtureと合成入力について、生存点由来の辺集合と完成した干渉グラフを従来のclique方式・bitset方式・自動選択で比較します。local名の再利用の有無と、一部symbolを短縮対象から除く場合も検証します。
+
+比較スクリプトには、変更前のリビジョンを別ディレクトリでビルドした`dist`を渡します。そのビルドからも依存を解決できる必要があります。通常の候補選択でfixtureのコード・Source Map・診断の一致を確認し、小さいfixture・合成入力・任意の追加entryを同じNodeプロセスでウォームアップ後に5対測定します。各対で先に実行するリビジョンを交互に変え、各対の平均時間とその中央値をJSONで表示します。小さいfixtureは各対10回ずつ実行し、その他は各対1回です。合成入力は1候補固定で測り、100 localでは通常の候補選択も測ります。400同時生存localはLuaの200 local制限を超えるストレス入力であり、実用入力の性能保証には使用しません。測定値は環境に依存するため、自動テストに時間の合否条件は設けていません。
