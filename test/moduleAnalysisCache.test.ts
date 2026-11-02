@@ -5,6 +5,7 @@ import { PassOrchestrator } from "../src/optimizerPass";
 import { WholeProgramObjectAnalysis } from "../src/wholeProgramObjects";
 import { createTemporaryLuaProject } from "./lib/minifierHarness";
 import * as optimizer from "../src/optimizerAnalysis";
+import { MinifierMode } from "../src/options";
 
 // Exercise the compilation-local cache independently of cost-gate selection.
 interface CacheOwner {
@@ -44,6 +45,52 @@ function mainChunk(minifier: Minifier) {
 afterEach(() => vi.restoreAllMocks());
 
 describe("compilation-local module analysis cache", () => {
+  test.each([
+    ["stormworks", { runtimeProfile: "stormworks" }, true],
+    ["lua53 introspection", { runtimeProfile: "lua53" }, false],
+    [
+      "lua53 opt-in",
+      { runtimeProfile: "lua53", allowIntrospectionChanges: true },
+      true,
+    ],
+  ] as const)(
+    "isolates DCE facts from language facts with %s",
+    (_name, mode, removes) => {
+      for (const languageFirst of [true, false]) {
+        const { entryFilePath } = createTemporaryLuaProject({
+          "main.lua": "local p=external() local unused=p return p",
+        });
+        const minifier = new Minifier(
+          entryFilePath,
+          { luaVersion: "5.3" },
+          mode satisfies MinifierMode,
+        );
+        const owner = minifier as unknown as CacheOwner;
+        owner.link();
+        const passes = owner.passesFor("main");
+        const before = languageFirst ? passes.optimizerAnalysis() : undefined;
+        expect(owner.removeUnusedAll(["main"]).has("main")).toBe(removes);
+        expect(mainChunk(minifier).body).toHaveLength(removes ? 2 : 3);
+        if (before && removes)
+          expect(() => before.valueFlow).toThrow(/stale optimizer/);
+        const language = passes.optimizerAnalysis().facts;
+        const declaration = mainChunk(minifier)
+          .body[0] as Parser.LocalStatement;
+        const returned = mainChunk(minifier).body.at(
+          -1,
+        ) as Parser.ReturnStatement;
+        expect(language.generation).toBe(passes.astGeneration);
+        expect(language.policy.runtime).toBeUndefined();
+        expect(language.policy.assumptions.size).toBe(0);
+        expect(
+          language.discardabilityOf(returned.arguments[0]).discardable,
+        ).toBe(false);
+        expect(language.expressionFact(declaration.init[0])).toBeDefined();
+        expect(owner.removeUnusedAll(["main"]).size).toBe(0);
+      }
+    },
+  );
+
   test("reuses unchanged modules and the linked snapshot across readers", () => {
     const { owner } = project();
     const spy = vi.spyOn(optimizer, "analyzeOptimizer");

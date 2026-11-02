@@ -252,7 +252,7 @@ pnpm run verify:lazy-optimizer -- /absolute/path/to/baseline/dist [path/to/exter
 
 optimizerのread snapshotは、モジュールごとの`PassOrchestrator`が管理します。変換は必要な遅延解析を最初のAST書き換え前にすべて取得し、書き換え中に別の解析を初めて要求してはいけません。変更結果を返した時点でsnapshotが失効します。全体変換の結果も`moduleChanged`へ通知します。独立して`analyzeOptimizer`を呼ぶ利用側は、AST変更時に`invalidate()`する責任を持ちます。失効後のgetterは計算済みでも例外になります。取得済みの解析オブジェクトの寿命も同じで、変換をまたいで保持してはいけません。
 
-`optimizerAnalysis(policy)`のpolicy objectは、runtime・仮定・関数summaryの解析方針を含む不変のcache identityです。同じpolicyを共有する利用側は同じobjectを使い、方針を変える場合は新しいobjectを作ります。内部のMapも変更してはいけません。世代はownerがcache keyへ加えます。既定の言語仕様のみのpolicyはfold・DCEとfactsを共有し、runtimeや仮定を持つpolicyとは分離します。
+`optimizerAnalysis(policy)`のpolicy objectは、runtime・仮定・関数summaryの解析方針を含む不変のcache identityです。同じpolicyを共有する利用側は同じobjectを使い、方針を変える場合は新しいobjectを作ります。内部のMapも変更してはいけません。世代はownerがcache keyへ加えます。既定の言語仕様のみのpolicyはfoldとfactsを共有し、runtimeや仮定を持つpolicyとは分離します。未使用削除はMinifierのruntime・introspection方針を使うため、専用のfacts cache keyを使います。
 
 ### 最終cost候補のsnapshot再利用
 

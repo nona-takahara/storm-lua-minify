@@ -107,7 +107,7 @@ export class PassOrchestrator {
 
   /**
    * A policy identity owns immutable runtime, assumptions and summary options.
-   * Default language facts share their cache with fold/DCE. Other policies use
+   * Default language facts share their cache with folding. Other policies use
    * their own facts key so runtime evidence cannot leak into language-only passes.
    */
   optimizerAnalysis(
