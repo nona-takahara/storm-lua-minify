@@ -253,3 +253,28 @@ pnpm run verify:lazy-optimizer -- /absolute/path/to/baseline/dist [path/to/exter
 optimizerのread snapshotは、モジュールごとの`PassOrchestrator`が管理します。変換は必要な遅延解析を最初のAST書き換え前にすべて取得し、書き換え中に別の解析を初めて要求してはいけません。変更結果を返した時点でsnapshotが失効します。全体変換の結果も`moduleChanged`へ通知します。独立して`analyzeOptimizer`を呼ぶ利用側は、AST変更時に`invalidate()`する責任を持ちます。失効後のgetterは計算済みでも例外になります。取得済みの解析オブジェクトの寿命も同じで、変換をまたいで保持してはいけません。
 
 `optimizerAnalysis(policy)`のpolicy objectは、runtime・仮定・関数summaryの解析方針を含む不変のcache identityです。同じpolicyを共有する利用側は同じobjectを使い、方針を変える場合は新しいobjectを作ります。内部のMapも変更してはいけません。世代はownerがcache keyへ加えます。既定の言語仕様のみのpolicyはfold・DCEとfactsを共有し、runtimeや仮定を持つpolicyとは分離します。
+
+### 最終cost候補のsnapshot再利用
+
+`Minifier`のcost gateは、従来と同じbaseline・共同trial・consumerからproducerへの削除順、同点の扱い、最終UTF-8 byte比較を使います。候補数や探索範囲は変更しません。キャッシュは1回の候補選択だけで生存し、runtime・仮定・解析policyを含む同じ解決済み設定と入力を使います。
+
+再利用境界は次のとおりです。
+
+| 境界                                                     | キー・所有権                                                                                                                                                                   |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| link完了                                                 | 入力が同じため一度だけ構築します。変換前に全moduleのAST・コメント所有情報を複製し、Resolveを作り直します。                                                                     |
+| 関数変換・field・fold・export DCE・local DCE・再訪の完了 | function rewrite・specialization・field fact・export DCEの4設定をキーにします。後続のproducerが候補を作る可能性があるため、この段階の途中で「候補なし」を確定しません。        |
+| global名計画・alias・scheduler・最終全体解析の完了       | 上記4設定とscheduler設定をキーにします。変換前には全moduleを複製します。以降はASTを変更せず、同じsnapshot上のResolve・Rename結果・全体解析をfield rename候補間で読み取ります。 |
+| 最終出力                                                 | 最終field rename計画が空なら同じsnapshotの出力を再利用します。すべてのproducerとschedulerが終了した後で判定します。非空の計画は通常どおり最終出力を生成・比較します。          |
+
+複製先へ解析を流用しません。`SourceMetadata.fork`は変換で移動したコメント・annotation・削除済み宣言と識別子の所有対応も複製します。位置からの再付着ではありません。specialization履歴とfunction originの対応は複製しません。複製境界は、全producerの開始前と固定点完了後に限るためです。後者の境界より先へ関数変換を追加する場合は、この前提も変更する必要があります。失敗した段階はキャッシュへ公開しません。
+
+module単位のcopy-on-writeは今回は扱いません。whole-programの変換が複数moduleを直接変更するため、書き込み境界の改修が必要です。関数やmoduleごとの独立したbyte見積もりも導入しません。
+
+変更前を別途ビルドした`BASELINE_DIST`と比較するには、次を実行します。実入力のentryは任意です。依存関係はそれぞれのビルドから解決できる状態にしてください。
+
+```sh
+pnpm run verify:cost-snapshots -- "$BASELINE_DIST" "$EXTERNAL_ENTRY"
+```
+
+スクリプトは既存fixtureを3設定・診断on/offで比較し、選択されたコード・Source Map・診断と、選択過程で評価した全候補のmask・byte数・失敗有無の一致を検証します。合成100 local入力と任意の実入力では、同じNodeプロセスで旧→新、新→旧を交互に5対測定し、解析等の呼び出し回数が決定論的に減ることも確認します。経過時間は保証値ではありません。依存をinstallせず実行する場合は、ビルド後に`node scripts/verify-cost-snapshots.cjs "$BASELINE_DIST" "$EXTERNAL_ENTRY"`を使えます。

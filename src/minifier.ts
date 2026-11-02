@@ -74,6 +74,7 @@ import {
   resolveMinifierMode,
 } from "./options";
 import { CompilationProgress } from "./progress";
+import { CostSnapshotClone } from "./costSnapshot";
 
 export type { RuntimeProfile } from "./runtimeEnvironment";
 export type { MinifierMode } from "./options";
@@ -115,6 +116,14 @@ interface EvaluatedCostVariant {
   readonly output: SourceNode;
   readonly byteLength: number;
   readonly variants: CostGateVariants;
+}
+
+// Keys describe all producers that can still affect a stage, not AST similarity.
+class CostEvaluationCache extends Map<string, EvaluatedCostVariant> {
+  linked?: Minifier;
+  readonly optimized = new Map<string, Minifier>();
+  readonly transformed = new Map<string, Minifier>();
+  readonly printed = new Map<string, SourceNode>();
 }
 
 class CostVariantProgress implements CompilationProgress {
@@ -294,7 +303,7 @@ export class Minifier {
    */
   private parseWithCostGateSelection(): SourceNode {
     const gates = this.costGatesToSelect();
-    const evaluated = new Map<string, EvaluatedCostVariant>();
+    const evaluated = new CostEvaluationCache();
     const baseline = this.evaluateCostVariant(
       this.costGateVariants("baseline"),
       "Evaluate cost-gated baseline",
@@ -415,7 +424,7 @@ export class Minifier {
   private evaluateCostVariant(
     variants: CostGateVariants,
     label: string,
-    evaluated: Map<string, EvaluatedCostVariant>,
+    evaluated: CostEvaluationCache,
   ): EvaluatedCostVariant {
     const key = COST_GATE_ABLATION_ORDER.map((gate) =>
       variants[gate] === "trial" ? "1" : "0",
@@ -442,7 +451,7 @@ export class Minifier {
     );
     let output: SourceNode;
     try {
-      output = minifier.parseOnce();
+      output = minifier.parseCostSnapshot(variants, evaluated);
     } catch (error) {
       candidateProgress?.finishFailedCandidate();
       throw error;
@@ -560,12 +569,117 @@ export class Minifier {
     }
   }
 
+  /**
+   * A cached owner never runs another transform. Forks before mutation copy the
+   * entire AST and metadata, and construct their own Resolve/analysis objects.
+   * No specialization history or callable lineage crosses a fork: the first
+   * boundary precedes all producers; the second follows their fixed point.
+   */
+  private forkCostSnapshot(source: Minifier): void {
+    const snapshot = new CostSnapshotClone();
+    copyMap(source.moduleSourceText, this.moduleSourceText);
+    copyMap(source.moduleNameAndFileName, this.moduleNameAndFileName);
+    this.linkOrder.push(...source.linkOrder);
+    source.moduleAST.forEach((ast, name) => {
+      const copy = snapshot.clone(ast);
+      this.moduleAST.set(name, copy);
+      this.moduleResolve.set(name, resolveScopes(copy));
+    });
+    source.moduleMetadata.forEach((metadata, name) =>
+      this.moduleMetadata.set(name, metadata.fork(snapshot)),
+    );
+    this.linkedAstGeneration = source.linkedAstGeneration;
+    this.copyDiagnosticsFrom(source);
+  }
+
+  private parseCostSnapshot(
+    variants: CostGateVariants,
+    cache: CostEvaluationCache,
+  ): SourceNode {
+    // Reentry can expose new specialization/function opportunities after fields,
+    // exports, fold and DCE. These four producers therefore stay in one stage.
+    const prefixKey = [
+      variants.functionRewrite,
+      variants.aggregateSpecialization,
+      variants.fieldFact,
+      variants.exportDce,
+    ].join(":");
+    const transformKey = prefixKey + ":" + variants.scheduler;
+    let transformed = cache.transformed.get(transformKey);
+    if (!transformed) {
+      let optimized = cache.optimized.get(prefixKey);
+      if (!optimized) {
+        if (!cache.linked) {
+          // The first candidate only publishes link state after successful load.
+          const linked = this.newCostSnapshotOwner(variants);
+          linked.loadModules();
+          cache.linked = linked;
+        }
+        optimized = this.newCostSnapshotOwner(variants);
+        optimized.forkCostSnapshot(cache.linked);
+        optimized.optimizeLinkedModules();
+        cache.optimized.set(prefixKey, optimized);
+      }
+      transformed = this.newCostSnapshotOwner(variants);
+      transformed.forkCostSnapshot(optimized);
+      transformed.transformLinkedModules();
+      transformed.finalizeWholeProgramAnalyses();
+      cache.transformed.set(transformKey, transformed);
+    }
+    // All AST producers have finished. Final analyses and Rename results refer
+    // to this exact immutable graph; only candidate-owned maps/diagnostics vary.
+    this.adoptVariantState(transformed);
+    this.wholeProgramObjectsCache = transformed.wholeProgramObjectsCache;
+    this.copyDiagnosticsFrom(transformed);
+    this.planFinalFieldRenames();
+    // An empty final field plan cannot acquire candidates later: every producer,
+    // including reentry and scheduling, has already run. Keep the mask/tie policy.
+    const printKey =
+      transformKey +
+      ":" +
+      (this.wholeProgramFieldRenamesValue?.shortenedFields
+        ? "renamed"
+        : "plain");
+    const output = this.finishOutput(cache.printed.get(printKey));
+    cache.printed.set(printKey, output);
+    return output;
+  }
+
+  private newCostSnapshotOwner(variants: CostGateVariants): Minifier {
+    return new Minifier(
+      this.entryFilePath,
+      this.luaParseSettings,
+      this.mode,
+      variants.scheduler,
+      variants.functionRewrite,
+      variants.fieldFact,
+      variants.aggregateSpecialization,
+      variants.exportDce,
+      variants.fieldRename,
+      this.progress,
+      this.inputCache,
+    );
+  }
+
   private parseOnce(): SourceNode {
-    this.progress?.addSteps(11);
+    this.loadModules();
+    this.optimizeLinkedModules();
+    this.transformLinkedModules();
+    this.finalizeWholeProgramAnalyses();
+    this.planFinalFieldRenames();
+    return this.finishOutput();
+  }
+
+  private loadModules(): void {
+    this.progress?.addSteps(1);
     this.progress?.startStep("Load and parse modules");
     this.link();
-    const initialResolves = new Map(this.moduleResolve);
     this.progress?.tick();
+  }
+
+  private optimizeLinkedModules(): void {
+    this.progress?.addSteps(5);
+    const initialResolves = new Map(this.moduleResolve);
     // #85 consumes #84 function-valued field facts before field DCE can remove
     // callback storage. The field pass then sees specialized calls and includes
     // storage/wrapper cleanup in the same final-output trial.
@@ -589,6 +703,10 @@ export class Minifier {
       ),
     );
     this.progress?.tick();
+  }
+
+  private transformLinkedModules(): void {
+    this.progress?.addSteps(2);
     this.progress?.startStep("Plan global names");
     this.rebuildIdentifiersInUse();
     this.computeGlobalRenames();
@@ -596,6 +714,10 @@ export class Minifier {
     this.progress?.startStep("Transform statements");
     this.transformAll();
     this.progress?.tick();
+  }
+
+  private finalizeWholeProgramAnalyses(): void {
+    this.progress?.addSteps(1);
     this.progress?.startStep("Finalize whole-program analyses");
     if (
       this.functionRewritesEnabled() ||
@@ -617,33 +739,46 @@ export class Minifier {
         this.entryModule,
         (moduleName) => this.getSourceMetadata(moduleName),
       );
-      if (this.fieldRenameVariant === "trial") {
-        this.wholeProgramFieldRenamesValue =
-          this.mode.assumeClosedFieldNames === true
-            ? planNameBasedFieldRenames(
-                this.wholeProgramObjectsValue,
-                this.entryModule,
-                (moduleName) => this.getSourceMetadata(moduleName),
-                { neverRenameFields: this.mode.neverRenameFields },
-              )
-            : planWholeProgramFieldRenames(
-                this.wholeProgramObjectsValue,
-                this.wholeProgramFieldsValue,
-                this.wholeProgramExportsValue,
-                this.entryModule,
-                (moduleName) => this.getSourceMetadata(moduleName),
-              );
-        this.recordWholeProgramFieldRenameDiagnostics(
-          this.wholeProgramFieldRenamesValue,
-        );
-      }
     }
     this.progress?.tick();
+  }
+
+  private planFinalFieldRenames(): void {
+    if (
+      this.fieldRenameVariant === "trial" &&
+      this.wholeProgramObjectsValue &&
+      this.wholeProgramFieldsValue &&
+      this.wholeProgramExportsValue
+    ) {
+      this.wholeProgramFieldRenamesValue =
+        this.mode.assumeClosedFieldNames === true
+          ? planNameBasedFieldRenames(
+              this.wholeProgramObjectsValue,
+              this.entryModule,
+              (moduleName) => this.getSourceMetadata(moduleName),
+              { neverRenameFields: this.mode.neverRenameFields },
+            )
+          : planWholeProgramFieldRenames(
+              this.wholeProgramObjectsValue,
+              this.wholeProgramFieldsValue,
+              this.wholeProgramExportsValue,
+              this.entryModule,
+              (moduleName) => this.getSourceMetadata(moduleName),
+            );
+      this.recordWholeProgramFieldRenameDiagnostics(
+        this.wholeProgramFieldRenamesValue,
+      );
+    }
+  }
+
+  private finishOutput(cachedOutput?: SourceNode): SourceNode {
+    this.progress?.addSteps(2);
     this.progress?.startStep("Rename identifiers");
     this.renameAll();
     this.progress?.tick();
 
     this.progress?.startStep("Generate Lua and source map");
+    if (cachedOutput) return cachedOutput;
     this.hoistedComments.clear();
     const printed = this.mode.requireWrapper
       ? this.printModuleWithRequireWrapper()
@@ -1366,6 +1501,11 @@ export class Minifier {
   }
 
   private adoptVariant(minifier: Minifier, output: SourceNode): SourceNode {
+    this.adoptVariantState(minifier);
+    return output;
+  }
+
+  private adoptVariantState(minifier: Minifier): void {
     this.identifiersInUse.clear();
     minifier.identifiersInUse.forEach((name) =>
       this.identifiersInUse.add(name),
@@ -1386,7 +1526,6 @@ export class Minifier {
     this.wholeProgramFieldsValue = minifier.wholeProgramFieldsValue;
     this.wholeProgramExportsValue = minifier.wholeProgramExportsValue;
     this.wholeProgramFieldRenamesValue = minifier.wholeProgramFieldRenamesValue;
-    return output;
   }
 
   private recordFinalSchedulerDecision(

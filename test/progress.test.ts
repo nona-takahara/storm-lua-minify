@@ -54,7 +54,6 @@ describe("minifier progress", () => {
     const evaluatedVariants = progress.labels.filter(
       (label) => label === "Load and parse modules",
     ).length;
-    expect(evaluatedVariants).toBeGreaterThanOrEqual(2);
-    expect(evaluatedVariants).toBeLessThanOrEqual(8);
+    expect(evaluatedVariants).toBe(1);
   });
 });

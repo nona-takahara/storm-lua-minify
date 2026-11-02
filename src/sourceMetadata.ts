@@ -1,4 +1,5 @@
 import Parser, { Comment } from "luaparse";
+import { CostSnapshotClone } from "./costSnapshot";
 
 export interface StormAnnotations {
   readonly keep: boolean;
@@ -181,6 +182,43 @@ export function isPreservedComment(comment: Comment): boolean {
 
 /** Source comments and annotations associated with statement nodes by range. */
 export class SourceMetadata {
+  /** Copy associations as they stand, rather than reattach comments by range. */
+  fork(snapshot: CostSnapshotClone): SourceMetadata {
+    const target = new SourceMetadata({ type: "Chunk", body: [] }, "");
+    target.afterModule.push(...snapshot.clone(this.afterModule));
+    this.headComments.forEach((comment) =>
+      target.headComments.add(snapshot.clone(comment)),
+    );
+    // Cloning an identifier's original owning statement can add removed nodes.
+    // Map iteration includes those nodes, preserving their annotations as well.
+    for (const [original, copied] of snapshot.copies) {
+      if (!("type" in original)) continue;
+      const statement = original as Parser.Statement;
+      const copy = copied as Parser.Statement;
+      const copyEntry = <T>(
+        source: WeakMap<Parser.Statement, T>,
+        destination: WeakMap<Parser.Statement, T>,
+      ) => {
+        const value = source.get(statement);
+        if (value !== undefined) destination.set(copy, snapshot.clone(value));
+      };
+      copyEntry(this.before, target.before);
+      copyEntry(this.detachedBefore, target.detachedBefore);
+      copyEntry(this.trailing, target.trailing);
+      copyEntry(this.annotations, target.annotations);
+      copyEntry(this.emmyLua, target.emmyLua);
+      const owner = this.statementOfIdentifier.get(
+        original as Parser.Identifier,
+      );
+      if (owner)
+        target.statementOfIdentifier.set(
+          copied as Parser.Identifier,
+          snapshot.clone(owner),
+        );
+    }
+    return target;
+  }
+
   private readonly before = new WeakMap<Parser.Statement, Comment[]>();
   private readonly detachedBefore = new WeakMap<Parser.Statement, Comment[]>();
   private readonly trailing = new WeakMap<Parser.Statement, Comment[]>();

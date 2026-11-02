@@ -61,6 +61,7 @@
     "verify:discardable-local-reads": "pnpm run build && node scripts/verify-discardable-local-reads.cjs",
     "verify:transform-reentry": "pnpm run build && node scripts/verify-transform-reentry.cjs",
     "prepack": "pnpm run build",
+    "verify:cost-snapshots": "pnpm run build && node scripts/verify-cost-snapshots.cjs",
     "verify:lazy-optimizer": "pnpm run build && node scripts/verify-lazy-optimizer.cjs"
   },
   "author": "Nona Takahara <nona_t_2612@yahoo.co.jp>",
