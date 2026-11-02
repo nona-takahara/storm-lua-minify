@@ -804,6 +804,29 @@ export class MinifyFile {
     expression: Parser.Expression,
     argOptions?: ExpressionOptoions,
   ): SourceNode {
+    const result = this.formatExpressionInner(expression, argOptions);
+    if (
+      this.mode.runtimeProfile === "stormworks" &&
+      (expression.type === "CallExpression" ||
+        expression.type === "TableCallExpression" ||
+        expression.type === "StringCallExpression") &&
+      (expression.base.type === "MemberExpression" ||
+        expression.base.type === "IndexExpression") &&
+      expression.base.base.type === "Identifier" &&
+      expression.base.base.name === "property" &&
+      this.minifier.isGlobalReference(this.moduleName, expression.base.base)
+    ) {
+      // A newline before every API call also separates calls within one expression
+      // and nested calls. Keep it in the SourceNode tree for maps and byte costs.
+      return this.sourceNodeHelper(undefined, ["\n", result]);
+    }
+    return result;
+  }
+
+  private formatExpressionInner(
+    expression: Parser.Expression,
+    argOptions?: ExpressionOptoions,
+  ): SourceNode {
     if (expression.type == "Identifier") {
       return this.generateIdentifier(expression);
     } else if (expression.type == "StringLiteral") {
@@ -998,12 +1021,7 @@ export class MinifyFile {
       const result = this.sourceNodeHelper(expression, "{");
       const fields = expression.fields
         .map((field, ix, ar) => {
-          // Stormworks "propert" Trailing Comma: https://nona-takahara.github.io/blog/entry11.html
-          const comma =
-            ix !== ar.length - 1 ||
-            this.formatExpression(field.value).toString().includes("property")
-              ? ","
-              : undefined;
+          const comma = ix !== ar.length - 1 ? "," : undefined;
 
           if (field.type == "TableKey") {
             return this.sourceNodeHelper(
