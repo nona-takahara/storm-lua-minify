@@ -88,11 +88,12 @@ export function analyzeValueFlow(
   facts: OptimizerFacts,
   version = facts.generation,
   interprocedural?: InterproceduralAnalysis,
+  controlFlow = analyzeControlFlow(chunk, resolved, version),
 ): ValueFlowAnalysis {
   if (facts.generation !== version) {
     throw new Error("Value flow requires facts from the same AST generation");
   }
-  const controlFlow = analyzeControlFlow(chunk, resolved, version);
+  if (controlFlow.version !== version) throw new Error("Stale value flow CFG");
   const allocations: Allocation[] = [];
   const definitions: MutableDefinition[] = [];
   const allocationByOrigin = new WeakMap<

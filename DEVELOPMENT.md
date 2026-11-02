@@ -227,3 +227,15 @@ pnpm run verify:closed-field-names -- path/to/node.lua [more.lua ...] [--config 
 指定したLuaを、field名を変えない設定（`--no-field-renaming`）と`--assume-closed-field-names`の2通りでminifyし、Stormworksのスタブ環境（`input`、`output`、`screen`、`map`、`async`、`server`、`property`）で`onTick`と`onDraw`を回して、外へ出した呼び出しの記録を比べます。入力は決まった擬似乱数列で、2つのビルドは同じ値を同じ順で受け取ります。入力は「混合」（整数・小数・大きな値）と「小さな整数（0〜3）」の2通りで、後者はビット列を復号するノードが想定する形です。どちらも実行し、止まったtickも出力に含めます。`pairs`の並びはLua 5.3が実行ごとに変えるため、スタブ側でキー順に固定しています。
 
 記録が違うか、呼び出しが1つもなければ失敗します。乱数の入力が通る経路だけを比べるので、動作が同じことの証明ではありません。スクリプトが入力の途中でerrorになる場合は、両方が同じtickで止まることを確認します。`dofile`・`require`で読むファイルは、指定したLuaと同じディレクトリに置いてください。既定では`lua`を実行します。
+
+### 遅延optimizer解析の比較
+
+```console
+pnpm run verify:lazy-optimizer -- /absolute/path/to/baseline/dist [path/to/external/main.lua]
+```
+
+比較元と現在のリビジョンを別々にビルドし、比較元の`dist`を指定します。両方のビルドから依存パッケージを解決できる環境で実行してください。fixtureを3設定で比較し、出力・Source Map・診断全体の一致を検証します。100 localの合成入力と、任意指定の実入力について、同じNodeプロセス内で両ビルドをwarm upした後、実行順を交互に変えて3対測定します。解析の呼び出し回数も記録し、各対での決定性とvalue flow・statement dataflowの減少をassertします。時間は合否判定に使いません。
+
+optimizerのread snapshotは、モジュールごとの`PassOrchestrator`が管理します。変換は必要な遅延解析を最初のAST書き換え前にすべて取得し、書き換え中に別の解析を初めて要求してはいけません。変更結果を返した時点でsnapshotが失効します。全体変換の結果も`moduleChanged`へ通知します。独立して`analyzeOptimizer`を呼ぶ利用側は、AST変更時に`invalidate()`する責任を持ちます。失効後のgetterは計算済みでも例外になります。取得済みの解析オブジェクトの寿命も同じで、変換をまたいで保持してはいけません。
+
+`optimizerAnalysis(policy)`のpolicy objectは、runtime・仮定・関数summaryの解析方針を含む不変のcache identityです。同じpolicyを共有する利用側は同じobjectを使い、方針を変える場合は新しいobjectを作ります。内部のMapも変更してはいけません。世代はownerがcache keyへ加えます。既定の言語仕様のみのpolicyはfold・DCEとfactsを共有し、runtimeや仮定を持つpolicyとは分離します。

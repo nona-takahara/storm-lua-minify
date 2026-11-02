@@ -59,7 +59,8 @@
     "verify:closed-field-names": "pnpm run build && node scripts/verify-closed-field-names.cjs",
     "verify:effect-semantics": "pnpm run build && node scripts/verify-effect-semantics.cjs",
     "verify:transform-reentry": "pnpm run build && node scripts/verify-transform-reentry.cjs",
-    "prepack": "pnpm run build"
+    "prepack": "pnpm run build",
+    "verify:lazy-optimizer": "pnpm run build && node scripts/verify-lazy-optimizer.cjs"
   },
   "author": "Nona Takahara <nona_t_2612@yahoo.co.jp>",
   "license": "MIT"
