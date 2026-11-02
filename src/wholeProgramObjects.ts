@@ -109,6 +109,9 @@ export function analyzeWholeProgramObjects(
   modules: readonly WholeProgramModule[],
   generation: number,
 ): WholeProgramObjectAnalysis {
+  modules.forEach((module) => {
+    module.analysis.assertCurrent();
+  });
   const moduleByName = new Map(modules.map((module) => [module.name, module]));
   const moduleOfNode = new WeakMap<object, WholeProgramModule>();
   const callableModule = new Map<Callable, WholeProgramModule>();
@@ -678,7 +681,9 @@ export function analyzeWholeProgramObjects(
     });
   });
   const callGraph = combineCallGraphs(
-    modules.map((module) => module.analysis.callGraph),
+    // Module snapshots have independent generations. The linked generation owns
+    // this federation; preserve callable identities while publishing its version.
+    modules.map((module) => ({ ...module.analysis.callGraph, generation })),
     resolvedTargetByCall,
     generation,
   );

@@ -91,7 +91,7 @@ describe("optimizer pass orchestrator", () => {
     }));
     const second = orchestrator.analysis(key, analyze);
 
-    expect(second).not.toBe(first);
+    expect(second === first).toBe(false);
     expect(built).toEqual([0, 1]);
     expect(orchestrator.astGeneration).toBe(1);
     expect(orchestrator.resolveGeneration).toBe(0);
@@ -130,7 +130,7 @@ describe("optimizer pass orchestrator", () => {
       analyzeOptimizerAtGeneration,
     );
 
-    expect(second).not.toBe(first);
+    expect(second === first).toBe(false);
     expect(second.interprocedural.generation).toBe(1);
     expect(
       second.interprocedural.summaries[0].returns.prefix[0].atoms,
