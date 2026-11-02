@@ -81,6 +81,10 @@ storm-lua-minify --no-optimizations --local-renaming script.lua
 storm-lua-minify --config storm-lua-minify.json --no-function-inlining script.lua
 ```
 
+### Stormworksのproperty呼び出し
+
+`runtimeProfile: "stormworks"` では、グローバルの `property` に対する各メソッド呼び出しの前に物理改行を入れます。`requiredWhitespace: " "` でも、同じテーブル・引数リスト・入れ子の式にある呼び出しを別行に置きます。メソッド名によらず適用し、`property` の自動的なグローバル別名化・名前短縮も抑止します。同名のローカル変数や仮引数は対象外です。入力に既にある別名経由の呼び出しを `property.method(...)` へ変換する機能ではありません。テーブルの末尾カンマは強制しません。
+
 ### 仮定モード
 
 `runtime-profile`の影響を受けます。`runtime-profile`は、コマンドでは`stormworks`が既定です。ライブラリAPIで省略した場合は`lua53`として扱います。

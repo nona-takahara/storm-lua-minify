@@ -1486,6 +1486,15 @@ export class Minifier {
     return name && originalName ? { name, originalName } : undefined;
   }
 
+  isGlobalReference(
+    moduleName: string,
+    identifier: Parser.Identifier,
+  ): boolean {
+    const resolved = this.moduleResolve.get(moduleName);
+    if (!resolved) throw new Error(moduleName + " is not found");
+    return resolved.isGlobalReference(identifier);
+  }
+
   getSourceMetadata(moduleName: string): SourceMetadata {
     const metadata = this.moduleMetadata.get(moduleName);
     if (!metadata) {
@@ -1575,6 +1584,8 @@ export class Minifier {
     // neverRenameGlobalsは代入されていない名前にも及ぶ保護指定なので、8bのエイリアス化
     // が誤ってそれらを書き換えてしまわないよう、必ず両方をあわせてexcludeNamesに渡す。
     const excludeGlobalNames = new Set([
+      // Keep property call spelling for the Stormworks source-layout constraint.
+      ...(this.mode.runtimeProfile === "stormworks" ? ["property"] : []),
       ...programWrittenGlobals,
       ...this.globalRenames.keys(),
       ...(this.mode.neverRenameGlobals ?? []),
@@ -1797,6 +1808,8 @@ export class Minifier {
       return;
     }
     const neverRename = new Set([
+      // Keep property call spelling for the Stormworks source-layout constraint.
+      ...(this.mode.runtimeProfile === "stormworks" ? ["property"] : []),
       ...(this.mode.neverRenameGlobals ?? []),
       ...this.annotationProtectedGlobals(),
     ]);
