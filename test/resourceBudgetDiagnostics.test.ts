@@ -53,13 +53,12 @@ describe("resource budget diagnostics", () => {
         .map((item) => item.reason),
     ).toEqual(["specialization-variant-limit"]);
   });
-  test("reports the site cap only above 2048 candidate sites", () => {
-    expect(specialize(Array<number>(2048).fill(1)).createdVariants).toBe(1);
+  test("shares a variant above the former 2048 site cap", () => {
     const result = specialize(Array<number>(2049).fill(1));
-    expect(result.changed).toBe(false);
-    expect(result.createdVariants).toBe(0);
+    expect(result.createdVariants).toBe(1);
+    expect(result.replacedCalls).toBe(2049);
     expect(result.diagnostics.map((item) => item.reason)).toEqual([
-      "specialization-site-limit",
+      "variant-created",
     ]);
   });
   test("reports Lua local exhaustion separately from search caps", () => {
