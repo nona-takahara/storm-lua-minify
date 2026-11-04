@@ -17,6 +17,11 @@ describe("intraprocedural control-flow graph", () => {
     ["if", "if flag then local f=function() return 1 end use(f) end"],
     ["while", "while flag do local function f() return 1 end use(f) break end"],
     ["repeat", "repeat local function f() return 1 end use(f) until flag"],
+    ["numeric for", "for i=1,2 do local function f() return i end use(f) end"],
+    [
+      "generic for",
+      "for k,v in pairs(values) do local function f() return v end use(f) end",
+    ],
   ])("creates a separate function unit inside %s blocks", (_kind, source) => {
     const chunk = Parser.parse(source, { luaVersion: "5.3" });
     const block = chunk.body[0];
@@ -28,6 +33,8 @@ describe("intraprocedural control-flow graph", () => {
               | Parser.DoStatement
               | Parser.WhileStatement
               | Parser.RepeatStatement
+              | Parser.ForNumericStatement
+              | Parser.ForGenericStatement
           ).body;
     const declaration = body[0];
     const fn =
