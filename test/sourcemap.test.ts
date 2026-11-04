@@ -112,6 +112,8 @@ describe("generated source maps", () => {
       const secondCall = locateInGenerated(code, "setColor", 1);
       const pos = consumer.originalPositionFor(secondCall);
       assert.equal(pos.source, "main.lua");
+      assert.equal(pos.line, 5);
+      assert.equal(pos.column, 7);
       assert.equal(pos.name, "setColor");
     });
   });

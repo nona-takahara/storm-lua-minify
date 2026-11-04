@@ -5,6 +5,7 @@ import {
   encodeLuaByteString,
   luaByteStringKey,
 } from "../src/luaString";
+import { executeLua } from "./lib/luaExecution";
 
 function decode(raw: string): number[] | undefined {
   const chunk = Parser.parse(`return ${raw}`, { luaVersion: "5.3" });
@@ -48,14 +49,27 @@ describe("Lua byte string decoder", () => {
   });
 
   test.each([
-    { bytes: [] },
-    { bytes: [0, 10, 13, 255] },
-    { bytes: [0x22, 0x27, 0x5c] },
-    { bytes: [0x61, 0xe3, 0x81, 0x82] },
-  ])("printer representation round-trips byte sequence $bytes", ({ bytes }) => {
-    const raw = encodeLuaByteString({ bytes: Uint8Array.from(bytes) });
-    expect(decode(raw)).toEqual(bytes);
-  });
+    { label: "an empty string", bytes: [] },
+    { label: "control and high bytes", bytes: [0, 10, 13, 255] },
+    { label: "quotes and backslash", bytes: [0x22, 0x27, 0x5c] },
+    { label: "UTF-8 bytes", bytes: [0x61, 0xe3, 0x81, 0x82] },
+    {
+      label: "all 256 byte values",
+      bytes: Array.from({ length: 256 }, (_, byte) => byte),
+    },
+  ])(
+    "printer representation preserves $label in decoder and Lua",
+    ({ bytes }) => {
+      const raw = encodeLuaByteString({ bytes: Uint8Array.from(bytes) });
+      expect(decode(raw)).toEqual(bytes);
+      const source = `local s=${raw} local bytes={} for i=1,#s do bytes[i]=string.byte(s,i) end print(#s,table.concat(bytes,","))`;
+      expect(executeLua(source)).toEqual({
+        status: 0,
+        stdout: `${String(bytes.length)}\t${bytes.join(",")}\n`,
+        stderr: "",
+      });
+    },
+  );
 
   test.each([
     ['"\\xg0"', "invalid-escape"],
