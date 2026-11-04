@@ -14,7 +14,7 @@ function specialize(values: number[], activeLocals = 0) {
     activeLocals === 0
       ? ""
       : `local ${Array.from({ length: activeLocals }, (_, index) => `v${String(index)}`).join(",")} `;
-  const source = `${locals}local function f(x) return x end consume(${values.map((value) => `f(${String(value)})`).join(",")})`;
+  const source = `${locals}local function f(x) return x end consume({${values.map((value) => `f(${String(value)})`).join(",")}})`;
   const { chunk, resolved, analysis } = analyzeLua(source);
   const objects = analyzeWholeProgramObjects(
     [{ name: "main", chunk, resolved, analysis }],
@@ -42,24 +42,23 @@ function specialize(values: number[], activeLocals = 0) {
 }
 
 describe("resource budget diagnostics", () => {
-  test("reports the 128 variant cap separately from runtime limits", () => {
+  test("reports runtime locals before the larger signature budget", () => {
     const result = specialize(
-      Array.from({ length: 129 }, (_, index) => [index, index]).flat(),
+      Array.from({ length: 200 }, (_, index) => [index, index]).flat(),
     );
-    expect(result.createdVariants).toBe(128);
+    expect(result.createdVariants).toBe(199);
     expect(
       result.diagnostics
         .filter((item) => item.reason !== "variant-created")
         .map((item) => item.reason),
-    ).toEqual(["specialization-variant-limit"]);
+    ).toEqual(["runtime-resource-limit"]);
   });
-  test("reports the site cap only above 2048 candidate sites", () => {
-    expect(specialize(Array<number>(2048).fill(1)).createdVariants).toBe(1);
+  test("shares a variant above the former 2048 site cap", () => {
     const result = specialize(Array<number>(2049).fill(1));
-    expect(result.changed).toBe(false);
-    expect(result.createdVariants).toBe(0);
+    expect(result.createdVariants).toBe(1);
+    expect(result.replacedCalls).toBe(2049);
     expect(result.diagnostics.map((item) => item.reason)).toEqual([
-      "specialization-site-limit",
+      "variant-created",
     ]);
   });
   test("reports Lua local exhaustion separately from search caps", () => {

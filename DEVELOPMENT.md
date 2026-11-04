@@ -115,7 +115,7 @@ npmへの公開は、`.github/workflows/publish.yml`が行います。以下の�
 
 ### 共通事項
 
-`report:*`、`verify:effect-semantics`、`verify:transform-reentry`、`verify:discardable-local-reads`は、`package.json`のコマンドを経由すると先にTypeScriptをビルドし、生成された`dist/`を読み込みます。`verify:lua-budget`はminifierを使わないため、ビルドせずに実行します。
+`report:*`、`verify:effect-semantics`、`verify:transform-reentry`、`verify:discardable-local-reads`、`verify:specialization-budget`は、`package.json`のコマンドを経由すると先にTypeScriptをビルドし、生成された`dist/`を読み込みます。`verify:lua-budget`はminifierを使わないため、ビルドせずに実行します。
 
 entry fileを受け取るreportコマンドでは、pnpmの引数とスクリプトの引数を`--`で区切ります。
 
@@ -135,7 +135,9 @@ reportコマンドはJSONを標準出力へ書きます。共通する主なフ�
 
 ### optimizer diagnostics
 
-`collectOptimizationDiagnostics: true`の診断名は、探索の128 variants上限が`specialization-variant-limit`、2048 candidate sites超過が`specialization-site-limit`、Luaのlocal/register等の実行資源制限が`runtime-resource-limit`です。旧名`resource-budget`は廃止しました。診断名を列挙する利用側は、この3種類へ移行してください。探索上限・Luaの制限・候補選択は変更していません。
+`collectOptimizationDiagnostics: true`の診断名は、元関数ごとの1024 signature生成上限が`specialization-variant-limit`、Luaのlocal/register等の実行資源制限が`runtime-resource-limit`です。2048 candidate sitesによる全体の打ち切りは廃止し、`specialization-site-limit`は発行しません。旧名`resource-budget`は廃止済みです。Luaの実行資源制限は維持します。
+
+探索予算はコンパイル中の再訪と派生variantで共有します。同一signatureのvariantは、既存の束縛が生存し、挿入先で字句的に参照できる場合に再利用します。候補順は呼び出し箇所数の降順、仮引数位置の昇順、literalキーのUTF-16コード単位の辞書順です。各group内はAST順のcall-site idで並べ、代表literalと挿入位置を固定します。単純なreturn列へのboolean／nil複製が明らかに増加する場合だけ、楽観的な局所サイズ評価で生成を省きます。foldやfield削除などの可能性がある式はこの判定で除外せず、最終出力のcost gateへ渡します。
 
 cost gateが捕捉した例外は、`pass: "optimizer-cost-failure"`、`reason: "trial-failed"`の追加レコードに残します。任意の`failure`には`stage`（`full-trial`／`ablation`）、ablationで無効化した`gate`、`kind`（`analysis-nonconvergence`／`unexpected-error`／`non-error-thrown`）、取得可能なら例外の`name`と`message`を記録します。解析未収束は専用の`AnalysisConvergenceError`で識別し、他のErrorを実装不具合とは断定しません。パイプライン内部の失敗位置は記録しません。共同trial失敗時のbaseline採用、ablation失敗時の継続、baseline例外の伝播は従来どおりです。既存の最終採否レコードも維持します。
 
@@ -223,6 +225,32 @@ pnpm run verify:transform-reentry
 ```
 
 延期したinline、定数畳み込み・未使用削除後の関数変換、specializationを対象に、1回目と2回目の圧縮結果の一致、および元コードと圧縮後の戻り値・エラー・副作用の一致をLua 5.3で確認します。既定の実行ファイルは`lua5.3`です。別の実行ファイルを使う場合は`LUA53`で指定します。
+
+### 特殊化探索予算の局所化
+
+```console
+pnpm run verify:specialization-budget
+```
+
+2050 callsを含む合成入力で特殊化の採用と縮小、Lua 5.3の実行結果、不利な小入力の出力不変を検証します。Lua実行ファイルは`LUA53`（既定`lua5.3`）で指定できます。
+
+変更前のソースを別のディレクトリにビルドした場合は、次のコマンドで変更前後を比較できます。baselineのビルドにも同じ依存を使用してください。
+
+```console
+node scripts/verify-specialization-budget.cjs --baseline-dist path/to/baseline/dist
+```
+
+既存fixtureをlua53／stormworks設定で処理し、コード・Source Map・診断の完全一致を確認します。合成入力では旧site上限による拒否と現在の縮小を確認します。その後、同じNodeプロセスでwarm-upし、変更前後の実行順を対ごとに反転させて5対を測定します。JSONの各測定値・中央値・比率は性能保証ではありません。
+
+### 多数のsignatureを持つ入力の測定
+
+既定の1024は、測定で完走した1000 signatureまでを覆う有限の予算です。1024自体の最適性や、大きな本体と多数の仮定を組み合わせた場合の資源使用量を保証する値ではありません。公開オプションは追加しません。
+
+```console
+pnpm run measure:specialization-budget -- --baseline-dist path/to/baseline/dist
+```
+
+共通関数を1000／1025種類の長い文字列で呼ぶ合成moduleを生成します。1000では同じNodeプロセスでwarm-up後に実行順を対ごとに反転して5対、1025では補足の1対を測定します。`--expose-gc`が有効なら各計測前にGCし、その時間は計測に含めません。別のNodeプロセスで両ビルドのピークRSSも測り、Lua 5.3で元入力と両出力の全戻り値・型を比較します。1025では1024 variantsと探索上限の拒否診断を確認し、Lua実行資源の拒否がないことを検証します。Luaは`LUA53`（既定`lua5.3`）で指定できます。比較元には探索予算局所化前のdevelop（`2b7b2c480204ea73b909fdbe56cc700ec594e4a5`）をビルドしたdistを指定してください。
 
 ### `assume-closed-field-names`の動作確認
 

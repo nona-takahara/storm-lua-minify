@@ -59,6 +59,8 @@
     "verify:closed-field-names": "pnpm run build && node scripts/verify-closed-field-names.cjs",
     "verify:effect-semantics": "pnpm run build && node scripts/verify-effect-semantics.cjs",
     "verify:discardable-local-reads": "pnpm run build && node scripts/verify-discardable-local-reads.cjs",
+    "measure:specialization-budget": "pnpm run build && node --expose-gc scripts/measure-specialization-budget.cjs",
+    "verify:specialization-budget": "pnpm run build && node scripts/verify-specialization-budget.cjs",
     "verify:transform-reentry": "pnpm run build && node scripts/verify-transform-reentry.cjs",
     "prepack": "pnpm run build",
     "verify:cost-snapshots": "pnpm run build && node scripts/verify-cost-snapshots.cjs",
