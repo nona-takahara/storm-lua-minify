@@ -1,6 +1,25 @@
 import { describe, expect, test } from "vitest";
 import { SourceMapConsumer } from "source-map";
 import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
+import { functionRewriteCases } from "./lib/functionRewriteCases";
+import { executeLua } from "./lib/luaExecution";
+
+describe("function rewrites execution", () => {
+  test.each(functionRewriteCases)("preserves $name", ({ source, stdout }) => {
+    const { code } = minifyTemporaryLuaSource(source, {
+      requireWrapper: false,
+      runtimeProfile: "stormworks",
+      requiredWhitespace: " ",
+      globalAliasing: false,
+    });
+    // Wrap after optimization to preserve the original return-position input.
+    const observe = (chunk: string) =>
+      executeLua(`print(pcall(function()\n${chunk}\nend))`);
+    const expected = { status: 0, stdout, stderr: "" };
+    expect(observe(source), "original program").toEqual(expected);
+    expect(observe(code), "minified program").toEqual(expected);
+  });
+});
 
 describe("function rewrites integration", () => {
   test("keeps an omitted tail parameter separate from a same-named global", () => {
