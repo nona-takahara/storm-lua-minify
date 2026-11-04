@@ -1,6 +1,7 @@
 import { SourceMapConsumer } from "source-map";
 import { describe, expect, test } from "vitest";
 import { MinifierMode } from "../src/minifier";
+import { executeLua } from "./lib/luaExecution";
 import {
   minifyTemporaryLuaProject,
   minifyTemporaryLuaSource,
@@ -12,10 +13,20 @@ const mode: MinifierMode = {
   globalAliasing: false,
 };
 
-function fixedPoint(source: string, options: MinifierMode = {}) {
+function fixedPoint(
+  source: string,
+  stdout: string,
+  options: MinifierMode = {},
+) {
   const first = minifyTemporaryLuaSource(source, { ...mode, ...options });
   const second = minifyTemporaryLuaSource(first.code, { ...mode, ...options });
   expect(second.code).toBe(first.code);
+  const expected = { status: 0, stdout, stderr: "" };
+  const observe = (code: string) =>
+    executeLua(`print(pcall(function()\n${code}\nend))`);
+  expect(observe(source), "original program").toEqual(expected);
+  expect(observe(first.code), "first compilation").toEqual(expected);
+  expect(observe(second.code), "second compilation").toEqual(expected);
   return first;
 }
 
@@ -23,27 +34,37 @@ describe("transform reentry", () => {
   test("revisits deferred tail inline with a new Resolve", () => {
     const result = fixedPoint(
       "local function a(x)return x+1 end local function b(x)return a(x) end return b(2)",
+      "true\t3\n",
     );
     expect(result.code).toBe("do return 2+1 end");
   });
   test("revisits inline after fold and unused local removal", () => {
     expect(
-      fixedPoint("local function f()local x=1+2 return x end return f()+0", {
-        constantOptimizations: true,
-      }).code,
+      fixedPoint(
+        "local function f()local x=1+2 return x end return f()+0",
+        "true\t3\n",
+        {
+          constantOptimizations: true,
+        },
+      ).code,
     ).toBe("return 3");
   });
   test("revisits summary constants with function rewrites disabled", () => {
     expect(
-      fixedPoint("local function a()return 1+2 end local x=a() return x", {
-        constantOptimizations: true,
-        functionOptimizations: false,
-      }).code,
+      fixedPoint(
+        "local function a()return 1+2 end local x=a() return x",
+        "true\t3\n",
+        {
+          constantOptimizations: true,
+          functionOptimizations: false,
+        },
+      ).code,
     ).toBe("return 3");
   });
   test("revisits specialization after actual arguments become constant", () => {
     const result = fixedPoint(
       "local flag=true local function f(x)if x then return 1 end return 2 end return f(flag)+f(flag)",
+      "true\t2\n",
       { constantOptimizations: true },
     );
     expect(result.code).toContain("if true then");
@@ -52,6 +73,7 @@ describe("transform reentry", () => {
   test("finishes specialization of multiple constant parameters", () => {
     const result = fixedPoint(
       "local flag=true local function f(x,y)if x then return y end return 2 end return f(flag,3)+f(flag,3)",
+      "true\t6\n",
       { constantOptimizations: true },
     );
     expect(result.code).not.toContain("(true");
@@ -59,6 +81,7 @@ describe("transform reentry", () => {
   test("reuses an existing specialization when more actuals become constant", () => {
     const result = fixedPoint(
       "local flag=true local function f(x)if x then return 1 end return 2 end return f(true)+f(true)+f(flag)+f(flag)",
+      "true\t4\n",
       { constantOptimizations: true },
     );
     expect(result.code.match(/function/g)).toHaveLength(1);
@@ -67,6 +90,7 @@ describe("transform reentry", () => {
   test("revisits a nested callable copied by tail inline without creating a new root", () => {
     const result = fixedPoint(
       "local function outer()local flag=true local function f(x)if x then return 1 end return 2 end return f(flag)+f(flag) end return outer()",
+      "true\t2\n",
       { constantOptimizations: true },
     );
     expect(result.code).not.toContain("(true)");
@@ -114,6 +138,7 @@ describe("transform reentry", () => {
       const arguments_ = parameters.map(() => "flag").join(",");
       const result = fixedPoint(
         `local flag=1 local function f(${parameters.join(",")})${body} return 2 end return f(${arguments_})+f(${arguments_})`,
+        "true\t2\n",
         { constantOptimizations: true },
       );
       expect(result.code).toMatch(/function \w+\(\)/);
@@ -131,6 +156,7 @@ describe("transform reentry", () => {
       expect(
         fixedPoint(
           `${functions.join(" ")} local x=f${String(depth - 1)}() return x`,
+          "true\t3\n",
           { constantOptimizations: true, functionOptimizations: false },
         ).code,
       ).toBe("return 3");
@@ -146,6 +172,7 @@ describe("transform reentry", () => {
         );
       const result = fixedPoint(
         `${functions.join(" ")} return f${String(depth - 1)}(2)`,
+        "true\t3\n",
         { constantOptimizations: true },
       );
       expect(result.code).not.toContain("function");
