@@ -49,6 +49,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "verify:interference": "pnpm run build && node scripts/verify-interference.cjs",
     "verify:lua-budget": "node scripts/verify-lua-resource-budget.cjs",
     "report:optimizer": "pnpm run build && node scripts/report-optimizer-diagnostics.cjs",
     "report:whole-program-objects": "pnpm run build && node scripts/report-whole-program-objects.cjs",

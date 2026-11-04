@@ -141,12 +141,14 @@ export function assignRenames(
 
 type InterferenceGraph = ReadonlyMap<Symbol, ReadonlySet<Symbol>>;
 
-function buildVariableInterference(
+/** Internal graph boundary, also used to compare construction strategies. */
+export function buildVariableInterference(
   chunk: Parser.Chunk,
   resolved: ResolveResult,
   symbols: readonly Symbol[],
   allowLocalNameReuse: boolean,
   analysis: RenameOptions["analysis"],
+  strategy: LiveInterferenceStrategy = "auto",
 ): InterferenceGraph {
   const graph = mutableGraph(symbols);
   const facts = analysis?.facts ?? analyzeOptimizerFacts(chunk, resolved);
@@ -156,9 +158,8 @@ function buildVariableInterference(
   if (facts.generation !== liveness.controlFlow.version)
     throw new Error("Identifier coloring requires one AST generation");
 
+  addLiveInterference(graph, liveness, strategy);
   liveness.controlFlow.nodes.forEach((node) => {
-    addClique(graph, liveness.liveIn(node));
-    addClique(graph, liveness.liveOut(node));
     liveness.defs(node).forEach((definition) => {
       liveness.liveOut(node).forEach((live) => {
         addEdge(graph, definition, live);
@@ -245,6 +246,88 @@ function buildVariableInterference(
 
   addLexicalEdges(graph, symbols, allowLocalNameReuse);
   return graph;
+}
+
+export type LiveInterferenceStrategy = "auto" | "clique" | "bitset";
+
+/** Choose by estimated work, never by elapsed time or an exploration limit. */
+export function selectLiveInterferenceStrategy(
+  graph: InterferenceGraph,
+  liveness: SymbolLivenessAnalysis,
+): Exclude<LiveInterferenceStrategy, "auto"> {
+  // Small graphs do not repay indexing and allocating per-symbol bitsets.
+  const symbolCount = graph.size;
+  if (symbolCount < 32) return "clique";
+  let cliquePairs = 0;
+  let memberships = 0;
+  for (const node of liveness.controlFlow.nodes) {
+    for (const live of [liveness.liveIn(node), liveness.liveOut(node)]) {
+      let present = 0;
+      live.forEach((symbol) => {
+        if (graph.has(symbol)) present++;
+      });
+      memberships += present;
+      cliquePairs += (present * (present - 1)) / 2;
+    }
+  }
+  const words = Math.ceil((2 * liveness.controlFlow.nodes.length) / 32);
+  const bitsetWork =
+    memberships + (symbolCount * (symbolCount - 1) * words) / 2;
+  // Conservative margin for allocation/indexing costs on sparse inputs. This
+  // estimates all word comparisons, though intersecting pairs stop earlier.
+  return cliquePairs > 4 * bitsetWork ? "bitset" : "clique";
+}
+
+/** Internal live-point edge builder, before declaration and lexical edges. */
+export function addLiveInterference(
+  graph: Map<Symbol, Set<Symbol>>,
+  liveness: SymbolLivenessAnalysis,
+  strategy: LiveInterferenceStrategy,
+): void {
+  const selected =
+    strategy === "auto"
+      ? selectLiveInterferenceStrategy(graph, liveness)
+      : strategy;
+  if (selected === "clique") {
+    liveness.controlFlow.nodes.forEach((node) => {
+      addClique(graph, liveness.liveIn(node));
+      addClique(graph, liveness.liveOut(node));
+    });
+    return;
+  }
+
+  const symbols = [...graph.keys()];
+  const words = Math.ceil((2 * liveness.controlFlow.nodes.length) / 32);
+  const points = symbols.map(() => new Uint32Array(words));
+  const pointsBySymbol = new Map(
+    symbols.map((symbol, index) => [symbol, points[index]]),
+  );
+  let point = 0;
+  for (const node of liveness.controlFlow.nodes) {
+    // In and out are distinct points: a definition can kill an input binding
+    // without making it coexist with an output binding.
+    for (const live of [liveness.liveIn(node), liveness.liveOut(node)]) {
+      const word = Math.floor(point / 32);
+      const bit = 1 << (point % 32);
+      live.forEach((symbol) => {
+        const points = pointsBySymbol.get(symbol);
+        if (points) points[word] |= bit;
+      });
+      point++;
+    }
+  }
+  for (let left = 0; left < symbols.length; left++) {
+    const leftPoints = points[left];
+    for (let right = left + 1; right < symbols.length; right++) {
+      const rightPoints = points[right];
+      for (let word = 0; word < words; word++) {
+        if ((leftPoints[word] & rightPoints[word]) !== 0) {
+          addEdge(graph, symbols[left], symbols[right]);
+          break;
+        }
+      }
+    }
+  }
 }
 
 function requireResolutionOrder(
