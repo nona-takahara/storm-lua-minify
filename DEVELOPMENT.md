@@ -61,7 +61,7 @@ pnpm run format
 
 ## CIとリリース
 
-CIは`main`と`develop`へのプルリクエストで動きます。詳細は`.github/workflows/ci.yml`を確認してください。
+CIはすべてのプルリクエストと、`main`・`develop`へのpushで動きます。他のPRのブランチを宛先とするstacked PRでも、smokeと後段の詳細チェックを実行します。詳細は`.github/workflows/ci.yml`を確認してください。
 
 Dependabotは、npmの依存とGitHub Actionsの更新を、`develop`向けのプルリクエストとして週に一度提案します。公開から7日経過していないバージョンは提案されません。設定は`.github/dependabot.yml`にあります。
 
