@@ -66,7 +66,9 @@ interface VariantGroup {
   readonly literals: ReadonlyMap<number, PrimitiveLiteral>;
 }
 
-const MAX_SIGNATURES_PER_ROOT = 128;
+// Covers the measured range through 1000 signatures while retaining a finite
+// guard against unmeasured combinations of large bodies and many assumptions.
+const MAX_SIGNATURES_PER_ROOT = 1024;
 
 /** Compilation-local producer history; Callable objects are rebuilt each generation. */
 export class SpecializationHistory {
