@@ -2,6 +2,7 @@ import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
 import { MinifierMode } from "../src/minifier";
 import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
+import { executeLua } from "./lib/luaExecution";
 
 function minifyExact(source: string, mode: MinifierMode): string {
   return minifyTemporaryLuaSource(source, mode, {
@@ -36,6 +37,14 @@ use(first,second)
       Buffer.byteLength(disabled),
     );
     expect(() => Parser.parse(enabled, { luaVersion: "5.3" })).not.toThrow();
+    const prelude =
+      'function tick() print("tick") end function use(a,b) print(a,b) end\n';
+    const expected = { status: 0, stdout: "tick\n1\t2\n", stderr: "" };
+    expect(executeLua(prelude + source), "original program").toEqual(expected);
+    expect(executeLua(prelude + enabled), "merged reads").toEqual(expected);
+    expect(executeLua(prelude + disabled), "merging disabled").toEqual(
+      expected,
+    );
   });
 
   test("field-sensitive mode crosses a different-key write", () => {
@@ -146,7 +155,13 @@ consume(tableValue)
 local second=tableValue.y
 use(first,second)
 `;
-    expect(minify(source)).toBe(minify(source, { tableReadMerging: false }));
+    const code = minify(source);
+    expect(code).toBe(minify(source, { tableReadMerging: false }));
+    const prelude =
+      "function consume(value) value.y=9 end function use(a,b) print(a,b) end\n";
+    const expected = { status: 0, stdout: "1\t9\n", stderr: "" };
+    expect(executeLua(prelude + source), "original program").toEqual(expected);
+    expect(executeLua(prelude + code), "escaped table write").toEqual(expected);
   });
 
   test("does not move reads when a closure publishes an alias", () => {
@@ -161,7 +176,12 @@ mutate()
 local second=tableValue.y
 use(first,second)
 `;
-    expect(minify(source)).toBe(minify(source, { tableReadMerging: false }));
+    const code = minify(source);
+    expect(code).toBe(minify(source, { tableReadMerging: false }));
+    const prelude = "function use(a,b) print(a,b) end\n";
+    const expected = { status: 0, stdout: "1\t9\n", stderr: "" };
+    expect(executeLua(prelude + source), "original program").toEqual(expected);
+    expect(executeLua(prelude + code), "closure alias write").toEqual(expected);
   });
 
   test("does not move reads for a fresh table assigned to an upvalue", () => {
