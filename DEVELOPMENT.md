@@ -34,20 +34,7 @@ pnpm test
 
 関数書換えの実行ケースは`test/cases/functionRewriteSemantics.json`を通常テストと`verify:effect-semantics`で共有しています。前段CLI smokeはそのうち2ケースと小さな算術ケースに絞り、全ケースを前段へ重複配置しません。後段では関数の戻り値個数・省略引数・副作用・エラー伝播、table read移動、property呼出しの評価を確認します。fallback診断は段階と例外種別ごとの名前付きケースで確認します。
 
-`test/`以下には、スナップショット、ラウンドトリップパース、識別子衝突検知のテストがあります。既知バグの再現ケースは`test.todo`として登録され、修正されるまではtodoとして扱われます。
-
-スナップショットを更新する場合は、環境変数`UPDATE_SNAPSHOTS`を設定します。
-
-```console
-UPDATE_SNAPSHOTS=1 pnpm test
-```
-
-PowerShellでは次のように実行します。
-
-```powershell
-$env:UPDATE_SNAPSHOTS = "1"
-pnpm test
-```
+`test/`以下には、Lua実行・ラウンドトリップパース・識別子衝突検知・Source Mapのテストがあります。一般的なoptimizer出力は全文snapshotに固定せず、`test/lib/fixtureExecution.ts`の明示した期待値へ元入力と生成Luaをそれぞれ照合します。tableを出力するfixtureはmodule IDを観測し、アドレス表示の差を除きます。外部APIやextensionless dofileはfixture用の実行環境を明記します。新しいfixtureには期待する値・副作用・実行環境も追加してください。printerの明示した互換形式やオプションは、専用の出力テストで引き続き確認します。既知バグの再現ケースは`test.todo`として登録され、修正されるまではtodoとして扱われます。
 
 ## Lintとformat
 

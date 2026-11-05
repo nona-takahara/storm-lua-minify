@@ -4,7 +4,6 @@ import { RawSourceMap } from "source-map";
 import { Minifier, MinifierMode } from "../../src/minifier";
 
 export const FIXTURES_DIR = path.join(__dirname, "..", "fixtures");
-export const SNAPSHOTS_DIR = path.join(__dirname, "..", "snapshots");
 
 export const LUAPARSE_SETTINGS: Partial<Options> = {
   locations: true,
@@ -28,10 +27,6 @@ export function fixtureEntryPath(fixture: string, entry = "main.lua"): string {
   return path.join(FIXTURES_DIR, fixture, entry);
 }
 
-export function slug(c: Pick<FixtureCase, "fixture" | "mode">): string {
-  return `${c.fixture}.${c.mode.requireWrapper ? "m" : "sl"}`;
-}
-
 export function runMinifier(c: FixtureCase): {
   code: string;
   map: RawSourceMap;
@@ -48,7 +43,7 @@ export function runMinifier(c: FixtureCase): {
   return { code, map: map.toJSON() };
 }
 
-// Every case satisfies the approved-output, parseability, and binding contracts.
+// Every case has explicit execution, parseability, binding and source-map contracts.
 export const WORKING_CASES: FixtureCase[] = [
   {
     label: "single file",

@@ -2,36 +2,58 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import Parser from "luaparse";
+import { SourceMapConsumer } from "source-map";
 import { describe, test } from "vitest";
 import { findIdentifierCollisions } from "./lib/collision";
+import { executeLua } from "./lib/luaExecution";
+import { fixtureExecution } from "./lib/fixtureExecution";
 import {
   KNOWN_BUG_CASES,
   runMinifier,
-  slug,
-  SNAPSHOTS_DIR,
+  fixtureEntryPath,
   WORKING_CASES,
 } from "./lib/helpers";
 
-const UPDATE_SNAPSHOTS = process.env.UPDATE_SNAPSHOTS === "1";
-
 describe("minified output contract", () => {
   describe.each(WORKING_CASES)("$label", (fixture) => {
-    test("matches the approved output, remains valid Lua, and preserves binding identity", async () => {
+    test("preserves observed behavior, valid Lua, binding identity and source origins", async () => {
       const { code, map } = runMinifier(fixture);
-      const snapshotPath = path.join(SNAPSHOTS_DIR, `${slug(fixture)}.lua`);
-
-      if (UPDATE_SNAPSHOTS) {
-        fs.writeFileSync(snapshotPath, code);
-      } else {
-        assert.ok(
-          fs.existsSync(snapshotPath),
-          `Missing approved output: ${snapshotPath}. Run UPDATE_SNAPSHOTS=1 pnpm test to create it.`,
+      const input = fixtureEntryPath(fixture.fixture, fixture.entry);
+      const { prelude, stdout } = fixtureExecution(fixture.fixture);
+      for (const source of [fs.readFileSync(input, "utf8"), code]) {
+        assert.deepEqual(
+          executeLua(
+            `${prelude}\nprint(pcall(function()\n${source}\nend))`,
+            path.dirname(input),
+          ),
+          { status: 0, stdout, stderr: "" },
         );
-        assert.equal(code, fs.readFileSync(snapshotPath, "utf8"));
       }
 
       assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
       assert.deepEqual(await findIdentifierCollisions(code, map), []);
+      await SourceMapConsumer.with(map, null, (consumer) => {
+        let mapped = 0;
+        consumer.eachMapping((mapping) => {
+          const origin = consumer.originalPositionFor({
+            line: mapping.generatedLine,
+            column: mapping.generatedColumn,
+          });
+          if (origin.source === null) return;
+          assert.ok(origin.line !== null && origin.column !== null);
+          const content = consumer.sourceContentFor(origin.source);
+          assert.ok(content !== null);
+          assert.ok(
+            origin.line >= 1 && origin.line <= content.split("\n").length,
+          );
+          assert.ok(
+            origin.column >= 0 &&
+              origin.column <= content.split("\n")[origin.line - 1].length,
+          );
+          mapped++;
+        });
+        assert.ok(mapped > 0);
+      });
     });
   });
 

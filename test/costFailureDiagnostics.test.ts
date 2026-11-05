@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import { AnalysisConvergenceError } from "../src/analysisConvergenceError";
 import { Minifier } from "../src/minifier";
 import { executeLua } from "./lib/luaExecution";
+import { matchesCostCandidate } from "./lib/costCandidate";
 import {
   createTemporaryLuaProject,
   minifyLuaProject,
@@ -39,22 +40,32 @@ describe("cost gate failure diagnostics", () => {
         const source = "return 1";
         const project = createTemporaryLuaProject({ "main.lua": source });
         const run = (collectOptimizationDiagnostics: boolean) => {
-          let calls = 0;
+          let injected = false;
           const spy = vi
             .spyOn(prototype, "parseCostSnapshot")
             .mockImplementation(function (this: Minifier, ...args: unknown[]) {
-              calls++;
-              if (calls === (stage === "full-trial" ? 2 : 3))
+              if (
+                matchesCostCandidate(
+                  args,
+                  stage === "full-trial"
+                    ? "full-trial"
+                    : { without: "fieldRename" },
+                )
+              ) {
+                injected = true;
                 // eslint-disable-next-line @typescript-eslint/only-throw-error -- Exercise JavaScript non-Error throws as well.
                 throw failure.error;
+              }
               return parseCostSnapshot.apply(this, args);
             });
           try {
-            return minifyLuaProject(project, {
+            const result = minifyLuaProject(project, {
               runtimeProfile: "stormworks",
               requireWrapper: false,
               collectOptimizationDiagnostics,
             });
+            expect(injected).toBe(true);
+            return result;
           } finally {
             spy.mockRestore();
           }
@@ -105,8 +116,9 @@ describe("cost gate failure diagnostics", () => {
     const error = new AnalysisConvergenceError("baseline failed");
     const spy = vi
       .spyOn(prototype, "parseCostSnapshot")
-      .mockImplementation(() => {
-        throw error;
+      .mockImplementation(function (this: Minifier, ...args: unknown[]) {
+        if (matchesCostCandidate(args, "baseline")) throw error;
+        return parseCostSnapshot.apply(this, args);
       });
     try {
       expect(() =>
