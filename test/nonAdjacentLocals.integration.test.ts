@@ -2,6 +2,7 @@ import Parser from "luaparse";
 import { describe, expect, test } from "vitest";
 import { MinifierMode } from "../src/minifier";
 import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
+import { executeLua } from "./lib/luaExecution";
 
 function minify(source: string, mode: Partial<MinifierMode>): string {
   return minifyTemporaryLuaSource(
@@ -98,20 +99,39 @@ describe("effect-aware non-adjacent locals pipeline", () => {
     );
   });
 
-  test.each(["if flag then tick() end", "while flag do tick() break end"])(
-    "shortens across a proven structured control boundary: %s",
+  describe.each(["if flag then tick() end", "while flag do tick() break end"])(
+    "structured control boundary: %s",
     (middle) => {
-      const source = `local first=makeFirst() ${middle} local second=makeSecond() use(first,second)`;
-      const disabled = minify(source, {
-        runtimeProfile: "stormworks",
-        localDeclarationHoisting: false,
-      });
-      const enabled = minify(source, { runtimeProfile: "stormworks" });
+      test.each([false, true])("preserves order with flag=%s", (flag) => {
+        const source = `local first=makeFirst() ${middle} local second=makeSecond() use(first,second)`;
+        const disabled = minify(source, {
+          runtimeProfile: "stormworks",
+          localDeclarationHoisting: false,
+        });
+        const enabled = minify(source, { runtimeProfile: "stormworks" });
 
-      expect(Buffer.byteLength(enabled)).toBeLessThan(
-        Buffer.byteLength(disabled),
-      );
-      expect(() => Parser.parse(enabled, { luaVersion: "5.3" })).not.toThrow();
+        expect(Buffer.byteLength(enabled)).toBeLessThan(
+          Buffer.byteLength(disabled),
+        );
+        expect(() =>
+          Parser.parse(enabled, { luaVersion: "5.3" }),
+        ).not.toThrow();
+        const prelude = `flag=${flag ? "true" : "false"} function makeFirst() print("first") return 1 end function tick() print("tick") end function makeSecond() print("second") return 2 end function use(a,b) print(a,b) end\n`;
+        const expected = {
+          status: 0,
+          stdout: `first\n${flag ? "tick\n" : ""}second\n1\t2\n`,
+          stderr: "",
+        };
+        expect(executeLua(prelude + source), "original program").toEqual(
+          expected,
+        );
+        expect(executeLua(prelude + enabled), "hoisting enabled").toEqual(
+          expected,
+        );
+        expect(executeLua(prelude + disabled), "hoisting disabled").toEqual(
+          expected,
+        );
+      });
     },
   );
 

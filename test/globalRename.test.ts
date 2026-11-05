@@ -3,8 +3,32 @@ import assert from "node:assert/strict";
 import Parser from "luaparse";
 import { resolveScopes, ResolveResult } from "../src/resolver";
 import { classifyAndRenameGlobals } from "../src/globalRename";
+import { minifyTemporaryLuaProject } from "./lib/minifierHarness";
+import { executeLua } from "./lib/luaExecution";
 
 describe("global identifier renaming", () => {
+  test.each([false, true])(
+    "preserves cross-module globals and same-named fields (wrapper=%s)",
+    (requireWrapper) => {
+      const files = {
+        "main.lua": 'local data=require("dep") print(counter,data.counter)',
+        "dep.lua": "counter=7 return {counter=9}",
+      };
+      const { code, directory } = minifyTemporaryLuaProject(files, {
+        requireWrapper,
+        optimizations: false,
+        globalRenaming: true,
+        localRenaming: true,
+        globalAliasing: true,
+      });
+      assert.doesNotMatch(code, /\bcounter=7\b/);
+      assert.match(code, /counter=9/);
+      const expected = { status: 0, stdout: "7\t9\n", stderr: "" };
+      assert.deepEqual(executeLua(files["main.lua"], directory), expected);
+      assert.deepEqual(executeLua(code, directory), expected);
+    },
+  );
+
   function resolve(code: string): ResolveResult {
     return resolveScopes(Parser.parse(code, { luaVersion: "5.3" }));
   }

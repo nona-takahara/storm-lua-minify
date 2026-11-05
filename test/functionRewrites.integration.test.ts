@@ -464,6 +464,13 @@ end
     // Every local is renamed and `name` is not a global in the source, so a
     // surviving `name` token is a reference that lost its binding.
     expect(code).not.toMatch(/\bname\b/);
+    const expected = { status: 0, stdout: "axle\t7\tTRAIN1\n", stderr: "" };
+    expect(executeLua(source + "\nonVehicleLoad(7)"), "original hook").toEqual(
+      expected,
+    );
+    expect(executeLua(code + "\nonVehicleLoad(7)"), "minified hook").toEqual(
+      expected,
+    );
   });
 
   test("keeps a parameter reached through a colon call whose receiver type is unknown", () => {
@@ -517,5 +524,13 @@ end
     });
     expect(result.code).not.toMatch(/\(nil,/);
     expect(result.code).toMatch(/print\("axle",(\w+),(\w+)\)/);
+    const expected = { status: 0, stdout: "axle\t7\tTRAIN1\n", stderr: "" };
+    expect(executeLua(source + "\nonVehicleLoad(7)"), "original hook").toEqual(
+      expected,
+    );
+    expect(
+      executeLua(result.code + "\nonVehicleLoad(7)"),
+      "minified hook",
+    ).toEqual(expected);
   });
 });
