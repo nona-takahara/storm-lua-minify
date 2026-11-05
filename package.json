@@ -24,7 +24,7 @@
     "dist"
   ],
   "dependencies": {
-    "commander": "^12.1.0",
+    "commander": "^15.0.0",
     "luaparse": "^0.3.1",
     "source-map": "^0.8.0"
   },
