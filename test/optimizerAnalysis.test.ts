@@ -23,6 +23,14 @@ function fixture() {
 
 afterEach(() => vi.restoreAllMocks());
 
+const lazyAnalyses = [
+  "valueFlow",
+  "tableEffects",
+  "statementDataflow",
+  "controlFlow",
+  "symbolLiveness",
+] as const;
+
 describe("lazy optimizer snapshots", () => {
   test("summary-only readers build none of the heavy analyses", () => {
     const flow = vi.spyOn(values, "analyzeValueFlow");
@@ -72,39 +80,36 @@ describe("lazy optimizer snapshots", () => {
     for (const spy of spies) expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  test("first lazy access after a binding-preserving write rejects the old snapshot", () => {
-    const { chunk, passes } = fixture();
-    const before = passes.optimizerAnalysis();
-    passes.run("append-call", () => {
-      chunk.body.push(Parser.parse("use(2)").body[0]);
-      return { changed: true, invalidatesResolve: false };
-    });
-    const flow = vi.spyOn(values, "analyzeValueFlow");
-    for (const read of [
-      () => before.valueFlow,
-      () => before.tableEffects,
-      () => before.statementDataflow,
-      () => before.controlFlow,
-      () => before.symbolLiveness,
-    ])
-      expect(read).toThrow(/stale optimizer/);
-    expect(flow).toHaveBeenCalledTimes(0);
-    expect(passes.optimizerAnalysis().valueFlow.version).toBe(1);
-  });
+  test.each(lazyAnalyses)(
+    "first lazy %s access after a binding-preserving write rejects the old snapshot",
+    (name) => {
+      const { chunk, passes } = fixture();
+      const before = passes.optimizerAnalysis();
+      passes.run("append-call", () => {
+        chunk.body.push(Parser.parse("use(2)").body[0]);
+        return { changed: true, invalidatesResolve: false };
+      });
+      const flow = vi.spyOn(values, "analyzeValueFlow");
+      expect(() => before[name]).toThrow(/stale optimizer/);
+      expect(flow).toHaveBeenCalledTimes(0);
+      expect(passes.optimizerAnalysis().valueFlow.version).toBe(1);
+    },
+  );
 
-  test("materialized getters also reject after Resolve invalidation", () => {
-    const { chunk, passes } = fixture();
-    const before = passes.optimizerAnalysis();
-    const materialized = before.statementDataflow;
-    passes.run("insert-local", () => {
-      chunk.body.unshift(Parser.parse("local extra=1").body[0]);
-      return { changed: true, invalidatesResolve: true };
-    });
-    expect(() => before.statementDataflow).toThrow(/stale optimizer/);
-    expect(passes.optimizerAnalysis().statementDataflow === materialized).toBe(
-      false,
-    );
-  });
+  test.each(lazyAnalyses)(
+    "materialized %s also rejects after Resolve invalidation",
+    (name) => {
+      const { chunk, passes } = fixture();
+      const before = passes.optimizerAnalysis();
+      const materialized = before[name];
+      passes.run("insert-local", () => {
+        chunk.body.unshift(Parser.parse("local extra=1").body[0]);
+        return { changed: true, invalidatesResolve: true };
+      });
+      expect(() => before[name]).toThrow(/stale optimizer/);
+      expect(passes.optimizerAnalysis()[name]).not.toBe(materialized);
+    },
+  );
 
   test("a throwing transform expires its read snapshot", () => {
     const { passes } = fixture();
