@@ -3,6 +3,7 @@ import { SourceMapConsumer } from "source-map";
 import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
 import { functionRewriteCases } from "./lib/functionRewriteCases";
 import { executeLua } from "./lib/luaExecution";
+import { expectLuaProjectOutput } from "./lib/luaProjectAssertions";
 
 describe("function rewrites execution", () => {
   test.each(functionRewriteCases)("preserves $name", ({ source, stdout }) => {
@@ -132,6 +133,21 @@ return first(1,sideEffect())
     }).code;
 
     expect(allowed.length).toBeLessThan(preserved.length);
+    for (const code of [source, preserved, allowed]) {
+      expect(executeLua(`print(pcall(function()\n${code}\nend))`)).toEqual({
+        status: 0,
+        stdout: "true\t1\n",
+        stderr: "",
+      });
+    }
+  });
+
+  test("preserves the active function parameter count under strict Lua introspection", () => {
+    const result = minifyTemporaryLuaSource(
+      'local function first(value,unused)return value,debug.getinfo(1,"u").nparams end return first(1,2)',
+      { runtimeProfile: "lua53", requiredWhitespace: " " },
+    );
+    expectLuaProjectOutput(result, "true\t1\t2\n");
   });
 
   test("gates aggregate variants on Lua local-lifetime permission", () => {
@@ -159,6 +175,8 @@ return first(1,sideEffect())
         reason: "variant-created",
       }),
     );
+    expectLuaProjectOutput(preserved, "true\t6\n");
+    expectLuaProjectOutput(allowed, "true\t6\n");
   });
 
   test("inlines a closed single-use function and removes its declaration", () => {

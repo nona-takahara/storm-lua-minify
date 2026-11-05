@@ -6,9 +6,9 @@ const eslintConfigPrettier = require("eslint-config-prettier");
 
 module.exports = tseslint.config(
   {
-    // Local agent worktrees contain their own generated dist trees and toolchain
-    // versions. They are separate repositories, not lint inputs of this checkout.
-    ignores: ["dist/**", ".worktrees/**", ".claude/worktrees/**"],
+    // Temporary copies and agent worktrees can contain generated dist trees and
+    // independent toolchains. Lint the source and tests of this checkout.
+    ignores: ["dist/**", ".temp/**", ".worktrees/**", ".claude/worktrees/**"],
   },
   {
     files: ["src/**/*.ts", "test/**/*.ts"],

@@ -6,6 +6,39 @@ import {
 } from "../src/options";
 
 describe("optimization option resolution decision table", () => {
+  test.each([
+    {
+      name: "CLI root overrides a deeper config leaf",
+      layers: {
+        config: { unusedLocalRemoval: false },
+        cli: { optimizations: true },
+      },
+      expected: true,
+    },
+    {
+      name: "explicit leaf overrides disabled ancestors within its source",
+      layers: {
+        cli: {
+          optimizations: false,
+          unusedCodeRemoval: false,
+          unusedLocalRemoval: true,
+        },
+      },
+      expected: true,
+    },
+    {
+      name: "omitted higher layers inherit the defaults hierarchy",
+      layers: {
+        defaults: { deadCodeOptimizations: false },
+        config: { functionInlining: true },
+        cli: { runtimeProfile: "stormworks" as const },
+      },
+      expected: false,
+    },
+  ])("$name", ({ layers, expected }) => {
+    expect(resolveMinifierMode(layers).unusedLocalRemoval).toBe(expected);
+  });
+
   test.each(optimizationLeafDefinitions)(
     "$name uses its documented default when no layer selects it",
     (definition) => {
