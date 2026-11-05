@@ -1,12 +1,45 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import Parser from "luaparse";
 import { describe, test } from "vitest";
 import { Minifier } from "../src/minifier";
+import { executeLua } from "./lib/luaExecution";
+import { walkBlockDeep } from "../src/astWalk";
+import { resolveScopes } from "../src/resolver";
+import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
 import {
   fixtureEntryPath,
   LUAPARSE_SETTINGS,
   runMinifier,
 } from "./lib/helpers";
+
+function statementsOf(code: string): Parser.Statement[] {
+  const result: Parser.Statement[] = [];
+  walkBlockDeep(Parser.parse(code, { luaVersion: "5.3" }).body, {
+    onStatement: (statement) => result.push(statement),
+  });
+  return result;
+}
+
+function hasNamedFunction(code: string, name: string): boolean {
+  return statementsOf(code).some(
+    (statement) =>
+      statement.type === "FunctionDeclaration" &&
+      statement.identifier?.type === "Identifier" &&
+      statement.identifier.name === name,
+  );
+}
+
+function hasGlobalWrite(code: string, name: string): boolean {
+  return statementsOf(code).some(
+    (statement) =>
+      statement.type === "AssignmentStatement" &&
+      statement.variables.some(
+        (variable) => variable.type === "Identifier" && variable.name === name,
+      ),
+  );
+}
 
 describe("minifier options visible to library users", () => {
   test("Storm annotations independently protect names, declarations, and comments", () => {
@@ -20,12 +53,57 @@ describe("minifier options visible to library users", () => {
       },
     });
 
-    assert.match(code, /--# file header\nfunction\nonTick/);
-    assert.match(code, /local\ndescriptive=2/);
-    assert.doesNotMatch(code, /retained|unused/);
-    assert.match(code, /--# before call\nprint\([a-zA-Z_]\)/);
-    assert.match(code, /print\([a-zA-Z_]\)\n--# after call/);
-    assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
+    const parsed = Parser.parse(code, { luaVersion: "5.3", comments: true });
+    const comments = parsed.comments?.map((comment) => comment.raw) ?? [];
+    for (const comment of [
+      "--# file header",
+      "--# before call",
+      "--# after call",
+    ])
+      assert.ok(comments.includes(comment));
+    assert.ok(
+      comments.indexOf("--# before call") < comments.indexOf("--# after call"),
+    );
+    assert.ok(hasNamedFunction(code, "onTick"));
+    const locals = statementsOf(code).filter(
+      (statement): statement is Parser.LocalStatement =>
+        statement.type === "LocalStatement",
+    );
+    assert.ok(
+      locals.some((statement) =>
+        statement.variables.some((variable) => variable.name === "descriptive"),
+      ),
+    );
+    // keep protects the declaration; it does not require a particular renamed spelling.
+    assert.ok(
+      locals.some((statement) =>
+        statement.init.some(
+          (value) => value.type === "NumericLiteral" && value.value === 1,
+        ),
+      ),
+    );
+    assert.ok(
+      !locals.some((statement) =>
+        statement.variables.some((variable) => variable.name === "unused"),
+      ),
+    );
+    assert.ok(
+      !locals.some((statement) =>
+        statement.init.some(
+          (value) => value.type === "NumericLiteral" && value.value === 3,
+        ),
+      ),
+    );
+    const input = fixtureEntryPath("annotations");
+    for (const source of [fs.readFileSync(input, "utf8"), code]) {
+      assert.deepEqual(
+        executeLua(
+          `print(pcall(function()\n${source}\nonTick()\nend))`,
+          path.dirname(input),
+        ),
+        { status: 0, stdout: "4\n2\n1\nnested\ntick\ntrue\n", stderr: "" },
+      );
+    }
   });
 
   test("configured and annotated global names are both preserved", () => {
@@ -41,8 +119,8 @@ describe("minifier options visible to library users", () => {
       },
     });
 
-    assert.match(code, /function\nonTick/);
-    assert.match(code, /configuredGlobal=4/);
+    assert.ok(hasNamedFunction(code, "onTick"));
+    assert.ok(hasGlobalWrite(code, "configuredGlobal"));
   });
 
   test("global renaming is opt-in", () => {
@@ -62,8 +140,8 @@ describe("minifier options visible to library users", () => {
       mode: { ...common, globalRenaming: true },
     }).code;
 
-    assert.match(defaultCode, /configuredGlobal=4/);
-    assert.doesNotMatch(optedInCode, /configuredGlobal/);
+    assert.ok(hasGlobalWrite(defaultCode, "configuredGlobal"));
+    assert.ok(!hasGlobalWrite(optedInCode, "configuredGlobal"));
   });
 
   test("unused-code removal can be disabled without changing other minification", () => {
@@ -78,44 +156,66 @@ describe("minifier options visible to library users", () => {
       },
     });
 
-    assert.match(code, /local\n[a-zA-Z_]=3/);
+    assert.ok(
+      statementsOf(code).some(
+        (statement) =>
+          statement.type === "LocalStatement" &&
+          statement.init.some(
+            (value) => value.type === "NumericLiteral" && value.value === 3,
+          ),
+      ),
+    );
     assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
   });
 
-  test("identifier optimizations can be disabled while syntax is still minified", () => {
+  test("identifier opt-out preserves bindings independently of output layout", () => {
     const { code } = runMinifier({
       label: "identifier optimizations disabled",
       fixture: "single-file",
-      mode: { requireWrapper: false, identifierOptimizations: false },
+      mode: {
+        requireWrapper: false,
+        identifierOptimizations: false,
+        functionOptimizations: false,
+        statementOptimizations: false,
+        constantOptimizations: false,
+        deadCodeOptimizations: false,
+        objectOptimizations: false,
+      },
     });
 
-    assert.match(code, /local\nfunction\nadd\(first,second\)/);
-    assert.match(code, /local\ntotal=0/);
-    assert.match(code, /for\nindex=1,10\ndo\ntotal=add\(total,index\)end/);
+    const original = fs.readFileSync(fixtureEntryPath("single-file"), "utf8");
+    const names = (source: string) =>
+      resolveScopes(Parser.parse(source, { luaVersion: "5.3" }))
+        .symbols.map((symbol) => symbol.name)
+        .sort();
+    assert.deepEqual(names(code), names(original));
+    for (const source of [original, code])
+      assert.deepEqual(executeLua(source), {
+        status: 0,
+        stdout: "55\t3\n",
+        stderr: "",
+      });
   });
 
-  test.each([
-    ["direct module splicing", false, /local\nfunction/],
-    ["require wrapper", true, /^function\nrequire\(m,r\)/],
-  ] as const)(
-    "%s uses LF for required whitespace by default and accepts a space instead",
-    (_label, requireWrapper, lineFeedPattern) => {
-      const fixture = requireWrapper ? "require-call" : "single-file";
-      const lineFeed = runMinifier({
-        label: "required whitespace LF",
-        fixture,
-        mode: { requireWrapper },
+  test.each([false, true])(
+    "uses the configured token separator (wrapper=%s)",
+    (requireWrapper) => {
+      // Isolate the explicit printer option from unrelated optimization passes.
+      const mode = { requireWrapper, optimizations: false };
+      const lineFeed = minifyTemporaryLuaSource("return 42", mode).code;
+      const space = minifyTemporaryLuaSource("return 42", {
+        ...mode,
+        requiredWhitespace: " ",
       }).code;
-      const space = runMinifier({
-        label: "required whitespace space",
-        fixture,
-        mode: { requireWrapper, requiredWhitespace: " " },
-      }).code;
-
-      assert.match(lineFeed, lineFeedPattern);
-      assert.equal(Buffer.byteLength(lineFeed), Buffer.byteLength(space));
-      assert.doesNotThrow(() => Parser.parse(lineFeed, { luaVersion: "5.3" }));
-      assert.doesNotThrow(() => Parser.parse(space, { luaVersion: "5.3" }));
+      assert.ok(lineFeed.includes("return\n42"));
+      assert.ok(space.includes("return 42"));
+      for (const source of [lineFeed, space]) {
+        assert.doesNotThrow(() => Parser.parse(source, { luaVersion: "5.3" }));
+        assert.deepEqual(
+          executeLua(`print(pcall(function()\n${source}\nend))`),
+          { status: 0, stdout: "true\t42\n", stderr: "" },
+        );
+      }
     },
   );
 

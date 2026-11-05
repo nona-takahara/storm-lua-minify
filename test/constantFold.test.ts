@@ -1,8 +1,6 @@
 import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "fs";
-import os from "os";
-import path from "path";
 import Parser from "luaparse";
 import { SourceMapConsumer } from "source-map";
 import { resolveScopes } from "../src/resolver";
@@ -14,13 +12,13 @@ import {
 } from "../src/constantFold";
 import { SourceMetadata } from "../src/sourceMetadata";
 import { analyzeOptimizerFacts } from "../src/optimizerFacts";
-import { Minifier } from "../src/minifier";
 import {
   decodeLuaStringLiteral,
   luaByteStringKey,
   luaByteStringOfText,
 } from "../src/luaString";
 import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
+import { executeLua } from "./lib/luaExecution";
 
 const PARSE_SETTINGS = {
   luaVersion: "5.3" as const,
@@ -54,27 +52,42 @@ function foldExpr(exprSource: string): Parser.Expression {
 }
 
 function minifyWith(code: string, constantOptimizations: boolean): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "storm-const-fold-test-"));
-  const filePath = path.join(dir, "main.lua");
-  fs.writeFileSync(filePath, code);
-  try {
-    const minifier = new Minifier(
-      filePath,
-      { locations: true, luaVersion: "5.3", ranges: true, scope: true },
-      {
-        requireWrapper: false,
-        constantOptimizations,
-        interproceduralConstantPropagation: constantOptimizations,
-      },
-    );
-    const sourceNode = minifier.parse();
-    return sourceNode.toStringWithSourceMap({ file: "main.min.lua" }).code;
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  return minifyTemporaryLuaSource(code, {
+    requireWrapper: false,
+    constantOptimizations,
+    interproceduralConstantPropagation: constantOptimizations,
+  }).code;
 }
 
 describe("constant optimization", () => {
+  test.each([
+    ["1+2", "number\tinteger\t3\n"],
+    ["-7//2", "number\tinteger\t-4\n"],
+    ["-7%3", "number\tinteger\t2\n"],
+    ["3/1", "number\tfloat\t3.0\n"],
+    ["5.5%-2", "number\tfloat\t-0.5\n"],
+    ["2^2", "number\tfloat\t4.0\n"],
+    ["0x7fffffffffffffff+2", "number\tinteger\t-9223372036854775807\n"],
+    ["0x7fffffffffffffff+1", "number\tinteger\t-9223372036854775808\n"],
+    ["true and false", "boolean\tnil\tfalse\n"],
+    ["[[abc]]..[[def]]", "string\tnil\tabcdef\n"],
+    ['#"あ"', "number\tinteger\t3\n"],
+  ])("preserves the Lua value and type of %s", (expression, stdout) => {
+    const source = `local value=${expression} print(type(value),math.type(value),value)`;
+    const expected = { status: 0, stdout, stderr: "" };
+    assert.deepEqual(executeLua(source), expected);
+    assert.deepEqual(executeLua(minifyWith(source, true)), expected);
+  });
+
+  test.each(["1//0", "1%0", '1<"a"'])(
+    "preserves runtime failure of %s",
+    (expression) => {
+      const source = `local ok=pcall(function() return ${expression} end) print(ok)`;
+      const expected = { status: 0, stdout: "false\n", stderr: "" };
+      assert.deepEqual(executeLua(source), expected);
+      assert.deepEqual(executeLua(minifyWith(source, true)), expected);
+    },
+  );
   test("propagates a pure function summary into a direct scalar call", () => {
     const source = `
 local function answer() return 42 end
@@ -659,30 +672,14 @@ print(value,output)
     local x = 1 + 2
     return x
   `;
-    const dir = fs.mkdtempSync(
-      path.join(os.tmpdir(), "storm-const-fold-default-"),
-    );
-    const filePath = path.join(dir, "main.lua");
-    fs.writeFileSync(filePath, code);
-    try {
-      const withoutOption = new Minifier(
-        filePath,
-        { locations: true, luaVersion: "5.3", ranges: true, scope: true },
-        { requireWrapper: false },
-      )
-        .parse()
-        .toStringWithSourceMap({ file: "main.min.lua" }).code;
-      const withOptionFalse = new Minifier(
-        filePath,
-        { locations: true, luaVersion: "5.3", ranges: true, scope: true },
-        { requireWrapper: false, constantOptimizations: false },
-      )
-        .parse()
-        .toStringWithSourceMap({ file: "main.min.lua" }).code;
-      assert.equal(withoutOption, withOptionFalse);
-      assert.ok(withoutOption.includes("+"));
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    const withoutOption = minifyTemporaryLuaSource(code, {
+      requireWrapper: false,
+    }).code;
+    const withOptionFalse = minifyTemporaryLuaSource(code, {
+      requireWrapper: false,
+      constantOptimizations: false,
+    }).code;
+    assert.equal(withoutOption, withOptionFalse);
+    assert.ok(withoutOption.includes("+"));
   });
 });

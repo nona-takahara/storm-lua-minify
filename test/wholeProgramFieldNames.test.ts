@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { expectLuaProjectOutput } from "./lib/luaProjectAssertions";
 import {
   minifyTemporaryLuaProject,
   minifyTemporaryLuaSource,
@@ -17,7 +18,7 @@ const closed = {
 function plan(source: string, extra: object = {}) {
   const result = minifyTemporaryLuaSource(source, { ...closed, ...extra });
   return {
-    code: result.code,
+    ...result,
     plan: result.minifier.wholeProgramFieldRenames,
     diagnostics: result.minifier.optimizationDiagnostics,
   };
@@ -47,6 +48,7 @@ return dep.long_function_name(table_value.long_data_field) + dep:long_method_nam
     ])
       expect(result.code).not.toContain(name);
     expect(result.minifier.wholeProgramFieldRenames?.shortenedFields).toBe(3);
+    expectLuaProjectOutput(result, "true\t8\n");
   });
 
   test("shortens fields reached through a parameter that object analysis cannot resolve", () => {
@@ -104,10 +106,11 @@ return commands["long_only_string_key"]()`);
   });
 
   test("keeps names read out of Stormworks API results, even when the program defines them", () => {
-    const { code, diagnostics } = plan(`
+    const result = plan(`
 local players = server.getPlayers()
 local own = { long_player_name = 1 }
 return players[1].long_player_name + own.long_player_name`);
+    const { code, diagnostics } = result;
     expect(code).toContain("long_player_name");
     expect(diagnostics).toContainEqual(
       expect.objectContaining({
@@ -117,6 +120,10 @@ return players[1].long_player_name + own.long_player_name`);
         decision: "rejected",
       }),
     );
+    expectLuaProjectOutput(result, "true\t5\n", {
+      prelude:
+        "server={getPlayers=function()return {{long_player_name=4}} end}",
+    });
   });
 
   test("follows an external table through loop variables, locals, and arguments", () => {
@@ -132,12 +139,13 @@ return total + own.long_looped_field`);
   });
 
   test("keeps the identifier keys of a table that is indexed with a computed key", () => {
-    const { code, diagnostics } = plan(`
+    const result = plan(`
 local handlers = { long_handler_key = function() return 1 end }
 local plain = { long_plain_field = 2 }
 handlers.long_late_handler = function() return 3 end
 local selected = handlers[server.getKey()]
 return selected() + plain.long_plain_field`);
+    const { code, diagnostics } = result;
     expect(code).toContain("long_handler_key");
     expect(code).toContain("long_late_handler");
     expect(code).not.toContain("long_plain_field");
@@ -148,6 +156,9 @@ return selected() + plain.long_plain_field`);
         reason: "dynamic-key",
       }),
     );
+    expectLuaProjectOutput(result, "true\t3\n", {
+      prelude: 'server={getKey=function()return "long_handler_key" end}',
+    });
   });
 
   test("keeps keys of a nested lookup table reached through a field", () => {
@@ -159,13 +170,15 @@ return find(server.getKey())`);
   });
 
   test("keeps a name that is read from a standard library table, directly or through a local", () => {
-    const { code } = plan(`
+    const result = plan(`
 local limits = { max = 1, floor = 2, long_limit_value = 3 }
 local m = math
 return math.max(limits.max, 0) + m.floor(limits.floor) + limits.long_limit_value`);
+    const { code } = result;
     expect(code).toContain("limits.max");
     expect(code).toContain("limits.floor");
     expect(code).not.toContain("long_limit_value");
+    expectLuaProjectOutput(result, "true\t6\n");
   });
 
   test("renames a library-looking name when no library table reads it", () => {

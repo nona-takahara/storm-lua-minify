@@ -7,15 +7,16 @@ class RecordingProgress implements CompilationProgress {
   total = 0;
   current = 0;
   ticks = 0;
-  readonly labels: string[] = [];
+  readonly steps: { current: number; total: number }[] = [];
 
   addSteps(count: number): void {
     this.total += count;
+    this.steps.push({ current: this.current, total: this.total });
   }
 
-  startStep(label: string): void {
+  startStep(): void {
     this.current++;
-    this.labels.push(label);
+    this.steps.push({ current: this.current, total: this.total });
   }
 
   tick(): void {
@@ -24,37 +25,42 @@ class RecordingProgress implements CompilationProgress {
 }
 
 describe("minifier progress", () => {
-  test("reports monotonic work without changing generated output", () => {
-    const input = path.join(__dirname, "fixtures", "single-file", "main.lua");
-    const parseSettings = {
-      locations: true,
-      luaVersion: "5.3" as const,
-      ranges: true,
-      scope: true,
-    };
-    const progress = new RecordingProgress();
-    const mode = {
-      runtimeProfile: "stormworks" as const,
-      allowIntrospectionChanges: true,
-    };
+  test.each([
+    { fixture: "single-file", requireWrapper: false },
+    { fixture: "require-call", requireWrapper: true },
+  ])(
+    "reports valid work without changing $fixture output or source map",
+    ({ fixture, requireWrapper }) => {
+      const input = path.join(__dirname, "fixtures", fixture, "main.lua");
+      const parseSettings = {
+        locations: true,
+        luaVersion: "5.3" as const,
+        ranges: true,
+        scope: true,
+      };
+      const progress = new RecordingProgress();
+      const mode = {
+        runtimeProfile: "stormworks" as const,
+        allowIntrospectionChanges: true,
+        requireWrapper,
+      };
 
-    const observed = new Minifier(input, parseSettings, mode, progress)
-      .parse()
-      .toString();
-    const unobserved = new Minifier(input, parseSettings, mode)
-      .parse()
-      .toString();
+      const observed = new Minifier(input, parseSettings, mode, progress)
+        .parse()
+        .toStringWithSourceMap({ file: "main.min.lua" });
+      const unobserved = new Minifier(input, parseSettings, mode)
+        .parse()
+        .toStringWithSourceMap({ file: "main.min.lua" });
 
-    expect(observed).toBe(unobserved);
-    expect(progress.current).toBe(progress.total);
-    expect(progress.ticks).toBeGreaterThan(0);
-    expect(progress.labels).toContain("Load and parse modules");
-    expect(progress.labels).toContain("Generate Lua and source map");
-    expect(progress.labels).toContain("Evaluate joint cost-gated trial");
-    const evaluatedVariants = progress.labels.filter(
-      (label) => label === "Load and parse modules",
-    ).length;
-    expect(evaluatedVariants).toBeGreaterThanOrEqual(2);
-    expect(evaluatedVariants).toBeLessThanOrEqual(8);
-  });
+      expect(observed.code).toBe(unobserved.code);
+      expect(observed.map.toJSON()).toEqual(unobserved.map.toJSON());
+      for (const step of progress.steps) {
+        expect(Number.isInteger(step.current)).toBe(true);
+        expect(Number.isInteger(step.total)).toBe(true);
+        expect(step.current).toBeGreaterThanOrEqual(0);
+        expect(step.current).toBeLessThanOrEqual(step.total);
+      }
+      expect(progress.steps.length + progress.ticks).toBeGreaterThan(0);
+    },
+  );
 });

@@ -12,6 +12,97 @@ function successorKinds(node: ControlFlowNode | undefined): string[] {
 }
 
 describe("intraprocedural control-flow graph", () => {
+  test.each([
+    ["do", "do local function f() return 1 end use(f) end"],
+    ["if", "if flag then local f=function() return 1 end use(f) end"],
+    ["while", "while flag do local function f() return 1 end use(f) break end"],
+    ["repeat", "repeat local function f() return 1 end use(f) until flag"],
+    ["numeric for", "for i=1,2 do local function f() return i end use(f) end"],
+    [
+      "generic for",
+      "for k,v in pairs(values) do local function f() return v end use(f) end",
+    ],
+  ])("creates a separate function unit inside %s blocks", (_kind, source) => {
+    const chunk = Parser.parse(source, { luaVersion: "5.3" });
+    const block = chunk.body[0];
+    const body =
+      block.type === "IfStatement"
+        ? block.clauses[0].body
+        : (
+            block as
+              | Parser.DoStatement
+              | Parser.WhileStatement
+              | Parser.RepeatStatement
+              | Parser.ForNumericStatement
+              | Parser.ForGenericStatement
+          ).body;
+    const declaration = body[0];
+    const fn =
+      declaration.type === "FunctionDeclaration"
+        ? declaration
+        : ((declaration as Parser.LocalStatement)
+            .init[0] as Parser.FunctionDeclaration);
+    const flow = analyze(chunk);
+    expect(flow.units).toHaveLength(2);
+    const unit = flow.units.find((candidate) => candidate.owner === fn);
+    expect(unit?.parent).toBe(flow.units[0]);
+    expect(flow.nodeOf(fn.body[0])?.unit).toBe(unit);
+  });
+
+  test("preserves function parentage across lexical blocks without duplicate units", () => {
+    const chunk = Parser.parse(
+      "do local function outer() if flag then return function() return 1 end end end use(outer) end",
+      { luaVersion: "5.3" },
+    );
+    const outer = (chunk.body[0] as Parser.DoStatement)
+      .body[0] as Parser.FunctionDeclaration;
+    const conditional = outer.body[0] as Parser.IfStatement;
+    const returned = conditional.clauses[0].body[0] as Parser.ReturnStatement;
+    const inner = returned.arguments[0] as Parser.FunctionDeclaration;
+    const flow = analyze(chunk);
+    expect(flow.units).toHaveLength(3);
+    const outerUnit = flow.units.find((unit) => unit.owner === outer);
+    const innerUnit = flow.units.find((unit) => unit.owner === inner);
+    expect(outerUnit?.parent).toBe(flow.units[0]);
+    expect(innerUnit?.parent).toBe(outerUnit);
+    expect(flow.nodeOf(inner.body[0])?.unit).toBe(innerUnit);
+  });
+
+  test("routes nested breaks to the nearest loop continuation", () => {
+    const chunk = Parser.parse(
+      "while outer do while inner do break end afterInner() break end afterOuter()",
+      { luaVersion: "5.3" },
+    );
+    const outer = chunk.body[0] as Parser.WhileStatement;
+    const inner = outer.body[0] as Parser.WhileStatement;
+    const flow = analyze(chunk);
+    expect(
+      flow.nodeOf(inner.body[0])?.successors.map((edge) => edge.to),
+    ).toEqual([flow.nodeOf(outer.body[1])]);
+    expect(
+      flow.nodeOf(outer.body[2])?.successors.map((edge) => edge.to),
+    ).toEqual([flow.nodeOf(chunk.body[1])]);
+  });
+
+  test("executes a repeat body before its condition and returns to that body", () => {
+    const chunk = Parser.parse("repeat tick() until ready finish()", {
+      luaVersion: "5.3",
+    });
+    const repeat = chunk.body[0] as Parser.RepeatStatement;
+    const flow = analyze(chunk);
+    const body = flow.nodeOf(repeat.body[0]);
+    const condition = flow.nodes.find(
+      (node) => node.statement === repeat && node.kind === "condition",
+    );
+    expect(flow.nodeOf(repeat)?.successors.map((edge) => edge.to)).toEqual([
+      body,
+    ]);
+    expect(body?.successors.map((edge) => edge.to)).toEqual([condition]);
+    expect(condition?.successors.map((edge) => [edge.kind, edge.to])).toEqual([
+      ["loop-exit", flow.nodeOf(chunk.body[1])],
+      ["loop-back", body],
+    ]);
+  });
   test("represents both arms and the join of an if/elseif/else", () => {
     const chunk = Parser.parse(
       "local a=1 if first then a=2 elseif second then a=3 else a=4 end use(a)",

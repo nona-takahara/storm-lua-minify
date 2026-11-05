@@ -1,8 +1,95 @@
 import { describe, expect, test } from "vitest";
 import { SourceMapConsumer } from "source-map";
 import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
+import { functionRewriteCases } from "./lib/functionRewriteCases";
+import { executeLua } from "./lib/luaExecution";
+import { expectLuaProjectOutput } from "./lib/luaProjectAssertions";
+
+describe("function rewrites execution", () => {
+  test.each(functionRewriteCases)("preserves $name", ({ source, stdout }) => {
+    const { code } = minifyTemporaryLuaSource(source, {
+      requireWrapper: false,
+      runtimeProfile: "stormworks",
+      requiredWhitespace: " ",
+      globalAliasing: false,
+    });
+    // Wrap after optimization to preserve the original return-position input.
+    const observe = (chunk: string) =>
+      executeLua(`print(pcall(function()\n${chunk}\nend))`);
+    const expected = { status: 0, stdout, stderr: "" };
+    expect(observe(source), "original program").toEqual(expected);
+    expect(observe(code), "minified program").toEqual(expected);
+  });
+});
 
 describe("function rewrites integration", () => {
+  test("keeps an omitted tail parameter separate from a same-named global", () => {
+    const { code } = minifyTemporaryLuaSource(
+      "x=42 local function f(x)if x then return 1 end return 2 end return f()",
+      {
+        runtimeProfile: "stormworks",
+        requiredWhitespace: " ",
+        globalAliasing: false,
+      },
+    );
+    expect(code).not.toContain("function");
+    expect(code).not.toMatch(/if x\b/);
+  });
+
+  test.each([
+    [
+      "a tail call",
+      "local function pair()return 10,20 end return f(pair())+f(pair())",
+    ],
+    [
+      "a string call",
+      'local function pair(s)return 10,20 end return f(pair"x")+f(pair"x")',
+    ],
+    [
+      "a table call",
+      "local function pair(t)return 10,20 end return f(pair{})+f(pair{})",
+    ],
+    [
+      "a vararg tail",
+      "local function run(...)return f(...)+f(...) end return run(10,20)",
+    ],
+    [
+      "constant-parameter inference",
+      "local function pair()return 10,20 end local function run(a,b)return f(a,b)+f(a,b) end return run(pair())+run(pair())",
+    ],
+    [
+      "a colon receiver",
+      "local object={} function object:f(a,b)return b end local function pair()return 10,20 end return object:f(pair())+object:f(pair())",
+    ],
+    [
+      "a field callback",
+      "local object={} function object.f(a,b)return b end local function pair()return 10,20 end return object.f(pair())+object.f(pair())",
+    ],
+  ])("does not specialize expanded values from %s as nil", (_, calls) => {
+    const { code } = minifyTemporaryLuaSource(
+      "local function f(a,b)return b end " + calls,
+      {
+        runtimeProfile: "stormworks",
+        requiredWhitespace: " ",
+        globalAliasing: false,
+      },
+    );
+    expect(code).not.toContain("nil");
+  });
+
+  test("keeps a nonfinal call single-valued after specializing a trailing literal", () => {
+    const { code } = minifyTemporaryLuaSource(
+      "local function pair()return 10,20 end local function f(a,b,c)if c==nil then return b end return c end return f(pair(),7)+f(pair(),7)",
+      {
+        runtimeProfile: "stormworks",
+        requiredWhitespace: " ",
+        globalAliasing: false,
+      },
+    );
+    // The cost gate may retain the original literal instead of the variant.
+    expect(code).toMatch(/\(\w+\(\),(?:7|nil)\)/);
+  });
+
   test("prunes a trailing unused parameter but leaves surplus actual evaluation", () => {
     const source = `
 local function first(value,unused) return value end
@@ -46,6 +133,21 @@ return first(1,sideEffect())
     }).code;
 
     expect(allowed.length).toBeLessThan(preserved.length);
+    for (const code of [source, preserved, allowed]) {
+      expect(executeLua(`print(pcall(function()\n${code}\nend))`)).toEqual({
+        status: 0,
+        stdout: "true\t1\n",
+        stderr: "",
+      });
+    }
+  });
+
+  test("preserves the active function parameter count under strict Lua introspection", () => {
+    const result = minifyTemporaryLuaSource(
+      'local function first(value,unused)return value,debug.getinfo(1,"u").nparams end return first(1,2)',
+      { runtimeProfile: "lua53", requiredWhitespace: " " },
+    );
+    expectLuaProjectOutput(result, "true\t1\t2\n");
   });
 
   test("gates aggregate variants on Lua local-lifetime permission", () => {
@@ -73,6 +175,8 @@ return first(1,sideEffect())
         reason: "variant-created",
       }),
     );
+    expectLuaProjectOutput(preserved, "true\t6\n");
+    expectLuaProjectOutput(allowed, "true\t6\n");
   });
 
   test("inlines a closed single-use function and removes its declaration", () => {
@@ -350,5 +454,101 @@ return choose(true,1)+choose(true,2)+choose(true,3)
       expect(origin.line).toBe(2);
       expect(origin.name).toBe("external");
     });
+  });
+
+  test("does not leave an unbound reference when a function inlined into another is itself inlined in the same pass", () => {
+    const source = `
+local function print_axle(id, name)
+  print("axle", id, name)
+end
+local function load_axles(vehicle_id, names)
+  for _, name in ipairs(names) do
+    print_axle(vehicle_id, name)
+  end
+end
+local VehicleInfo = {}
+function VehicleInfo.new(vehicle_id, bridge)
+  load_axles(vehicle_id, bridge.names)
+end
+function onVehicleLoad(vehicle_id)
+  VehicleInfo.new(vehicle_id, { names = { "TRAIN1" } })
+end
+`;
+    const { code } = minifyTemporaryLuaSource(source, {
+      requireWrapper: false,
+      runtimeProfile: "stormworks",
+    });
+
+    // Every local is renamed and `name` is not a global in the source, so a
+    // surviving `name` token is a reference that lost its binding.
+    expect(code).not.toMatch(/\bname\b/);
+    const expected = { status: 0, stdout: "axle\t7\tTRAIN1\n", stderr: "" };
+    expect(executeLua(source + "\nonVehicleLoad(7)"), "original hook").toEqual(
+      expected,
+    );
+    expect(executeLua(code + "\nonVehicleLoad(7)"), "minified hook").toEqual(
+      expected,
+    );
+  });
+
+  test("keeps a parameter reached through a colon call whose receiver type is unknown", () => {
+    // Issue #135: the colon call resolves only as a field callback, so its
+    // receiver must be counted as parameter 0 (`self`), not as an extra actual.
+    const source = `
+local function create_instance(target, class)
+    for k, v in pairs(class) do
+        if type(v) == "function" then target[k] = v end
+    end
+    return target
+end
+local function print_axle(id, name)
+    print("axle", id, name)
+end
+local function load_axles(vehicle_id, names, force)
+    for _, name in ipairs(names) do
+        print_axle(vehicle_id, name)
+    end
+    if force then print_axle(vehicle_id, "") end
+end
+local VehicleInfo = {}
+function VehicleInfo.new(vehicle_id, bridge)
+    load_axles(vehicle_id, bridge.names, false)
+end
+local Bridge = {}
+function Bridge.new()
+    local obj = create_instance({}, Bridge)
+    obj.vehicles = {}
+    obj.names = { "TRAIN1" }
+    return obj
+end
+function Bridge:broadcast(sign)
+    for _, v in pairs(self.vehicles) do
+        v:send(sign, self)
+    end
+end
+function Bridge:load_vehicle(vehicle_id)
+    self.vehicles[vehicle_id] = VehicleInfo.new(vehicle_id, self)
+end
+local bridge = Bridge.new()
+function onVehicleLoad(vehicle_id)
+    bridge:load_vehicle(vehicle_id)
+end
+function onTick()
+end
+`;
+    const result = minifyTemporaryLuaSource(source, {
+      requireWrapper: false,
+      runtimeProfile: "stormworks",
+    });
+    expect(result.code).not.toMatch(/\(nil,/);
+    expect(result.code).toMatch(/print\("axle",(\w+),(\w+)\)/);
+    const expected = { status: 0, stdout: "axle\t7\tTRAIN1\n", stderr: "" };
+    expect(executeLua(source + "\nonVehicleLoad(7)"), "original hook").toEqual(
+      expected,
+    );
+    expect(
+      executeLua(result.code + "\nonVehicleLoad(7)"),
+      "minified hook",
+    ).toEqual(expected);
   });
 });

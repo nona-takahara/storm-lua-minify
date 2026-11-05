@@ -22,7 +22,9 @@ export type OptimizationDiagnosticReason =
   | "binding-shadow-hazard"
   | "output-name-unknown"
   | "nonpositive-cost"
-  | "resource-budget"
+  | "specialization-variant-limit"
+  | "specialization-site-limit"
+  | "runtime-resource-limit"
   | "final-output-shorter"
   | "final-output-not-shorter"
   | "trial-failed"
@@ -110,6 +112,14 @@ export interface OptimizationDiagnostic {
   readonly estimatedByteSavings?: number;
   readonly estimatedOpportunityBytes?: number;
   readonly sourceRange?: readonly [number, number];
+  readonly failure?: {
+    readonly stage: "full-trial" | "ablation";
+    readonly gate?: string;
+    readonly kind:
+      "analysis-nonconvergence" | "unexpected-error" | "non-error-thrown";
+    readonly name?: string;
+    readonly message?: string;
+  };
 }
 
 /**

@@ -6,6 +6,8 @@ Stormworks: Build and Rescue 以外の用途にも使用可能です。
 
 # 使い方
 
+実行にはNode.js 24以上が必要です。
+
 ```
 npm i storm-lua-minify
 
@@ -80,6 +82,10 @@ storm-lua-minify --no-optimizations --local-renaming script.lua
 ```console
 storm-lua-minify --config storm-lua-minify.json --no-function-inlining script.lua
 ```
+
+### Stormworksのproperty呼び出し
+
+`runtimeProfile: "stormworks"` では、グローバルの `property` に対する各メソッド呼び出しの前に物理改行を入れます。`requiredWhitespace: " "` でも、同じテーブル・引数リスト・入れ子の式にある呼び出しを別行に置きます。メソッド名によらず適用し、`property` の自動的なグローバル別名化・名前短縮も抑止します。同名のローカル変数や仮引数は対象外です。入力に既にある別名経由の呼び出しを `property.method(...)` へ変換する機能ではありません。テーブルの末尾カンマは強制しません。
 
 ### 仮定モード
 
@@ -203,3 +209,5 @@ storm-lua-minify --assume-closed-field-names --never-rename-field ui_id script.l
 # 開発者向けガイド
 
 開発環境の構築、テスト構成、最適化を追加するときの判断基準、`scripts/`の調査・検証コマンドについては[開発者向けガイド](DEVELOPMENT.md)を参照してください。
+
+ライブラリAPIの`collectOptimizationDiagnostics: true`では、探索上限を`specialization-variant-limit`／`specialization-site-limit`、Luaの実行資源制限を`runtime-resource-limit`で区別します（旧`resource-budget`は廃止）。cost gateの例外は任意の`failure`に種類と共同trial／ablationの段階を記録します。診断は既定offで、生成コード・Source Mapに影響しません。詳細は[開発ガイド](DEVELOPMENT.md#optimizer-diagnostics)を参照してください。

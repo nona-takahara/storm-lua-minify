@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { selectTransactionalMinifierVariant } from "../src/optimizerTransaction";
+import { executeLua } from "./lib/luaExecution";
+import { expectLuaProjectOutput } from "./lib/luaProjectAssertions";
 import {
   createTemporaryLuaProject,
   minifyTemporaryLuaSource,
@@ -106,6 +108,8 @@ use(run)
     );
 
     expect(selected.code).toBe(baseline.code);
+    expectLuaProjectOutput(selected, "true\t7\n", { prelude: "value=7" });
+    expectLuaProjectOutput(baseline, "true\t7\n", { prelude: "value=7" });
     expect(selected.minifier.optimizationDiagnostics).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -144,9 +148,8 @@ use(first,second)
   });
 
   test("keeps baseline and its source map when trial is not shorter", () => {
-    const entryFilePath = fixture(
-      "--# preserved\nlocal descriptive=1 return descriptive",
-    );
+    const source = "--# preserved\nlocal descriptive=1 return descriptive";
+    const entryFilePath = fixture(source);
     const result = selectTransactionalMinifierVariant({
       entryFilePath,
       luaParseSettings: { luaVersion: "5.3" },
@@ -160,6 +163,12 @@ use(first,second)
       sources: unknown;
     };
     expect(sourceMap.sources).toContain("main.lua");
+    for (const program of [source, result.selected.code])
+      expect(executeLua(`print(pcall(function()\n${program}\nend))`)).toEqual({
+        status: 0,
+        stdout: "true\t1\n",
+        stderr: "",
+      });
   });
 
   test("remains deterministic across modules", () => {
@@ -183,7 +192,8 @@ use(first,second)
   });
 
   test("isolates a trial failure from the selected baseline", () => {
-    const entryFilePath = fixture("local value=1 return value");
+    const source = "local value=1 return value";
+    const entryFilePath = fixture(source);
     const failingReservedNames = {
       [Symbol.iterator](): Iterator<string> {
         throw new Error("trial-only failure");
@@ -200,5 +210,11 @@ use(first,second)
     });
     expect(result).toMatchObject({ accepted: false, reason: "trial-failed" });
     expect(result.selected).toEqual(result.baseline);
+    for (const program of [source, result.selected.code])
+      expect(executeLua(`print(pcall(function()\n${program}\nend))`)).toEqual({
+        status: 0,
+        stdout: "true\t1\n",
+        stderr: "",
+      });
   });
 });

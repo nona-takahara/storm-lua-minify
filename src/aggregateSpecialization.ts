@@ -1,7 +1,7 @@
 import Parser from "luaparse";
 import { walkStatement } from "./astWalk";
 import { CallSite, Callable } from "./callGraph";
-import { copyNodeOrigin } from "./generatedNode";
+import { copyNodeOrigin, functionOriginOf } from "./generatedNode";
 import { ResolveResult, Scope, Symbol } from "./resolver";
 import { SourceMetadata } from "./sourceMetadata";
 import { WholeProgramFieldAnalysis } from "./wholeProgramFields";
@@ -25,7 +25,9 @@ export type SpecializationRefusalReason =
   | "multiple-callback-storage"
   | "unknown-capture"
   | "unsupported-shape"
-  | "resource-budget";
+  | "specialization-variant-limit"
+  | "specialization-site-limit"
+  | "runtime-resource-limit";
 
 export interface AggregateSpecializationDiagnostic {
   readonly callable: Callable;
@@ -35,6 +37,7 @@ export interface AggregateSpecializationDiagnostic {
 
 export interface AggregateSpecializationResult {
   readonly changed: boolean;
+  readonly changedModules: ReadonlySet<string>;
   readonly candidateCallables: number;
   readonly createdVariants: number;
   readonly replacedCalls: number;
@@ -63,8 +66,92 @@ interface VariantGroup {
   readonly literals: ReadonlyMap<number, PrimitiveLiteral>;
 }
 
-const MAX_VARIANTS = 128;
-const MAX_CANDIDATE_SITES = 2048;
+// Covers the measured range through 1000 signatures while retaining a finite
+// guard against unmeasured combinations of large bodies and many assumptions.
+const MAX_SIGNATURES_PER_ROOT = 1024;
+
+/** Compilation-local producer history; Callable objects are rebuilt each generation. */
+export class SpecializationHistory {
+  private initialized = false;
+  private readonly roots = new WeakMap<
+    Parser.FunctionDeclaration,
+    Parser.FunctionDeclaration
+  >();
+  private readonly generatedByRoot = new WeakMap<
+    Parser.FunctionDeclaration,
+    number
+  >();
+  private readonly eligible = new WeakSet<Parser.FunctionDeclaration>();
+  private readonly ranks = new WeakMap<Parser.FunctionDeclaration, number>();
+  private readonly variants = new WeakMap<
+    Parser.FunctionDeclaration,
+    Map<string, Parser.FunctionDeclaration>
+  >();
+
+  initialize(objects: WholeProgramObjectAnalysis): void {
+    if (this.initialized) return;
+    this.initialized = true;
+    objects.modules.forEach((module) => {
+      module.analysis.callGraph.functions.forEach((callable) => {
+        const origin = functionOriginOf(callable.declaration);
+        this.eligible.add(origin);
+        this.roots.set(origin, origin);
+        // A field callback can acquire one explicit receiver when normalized.
+        this.ranks.set(
+          functionOriginOf(callable.declaration),
+          callable.declaration.parameters.length + 1,
+        );
+      });
+    });
+  }
+
+  canGenerate(declaration: Parser.FunctionDeclaration, key: string): boolean {
+    declaration = functionOriginOf(declaration);
+    return (
+      this.eligible.has(declaration) &&
+      !this.variants.get(declaration)?.has(key)
+    );
+  }
+
+  hasBudget(declaration: Parser.FunctionDeclaration): boolean {
+    const origin = functionOriginOf(declaration);
+    const root = this.roots.get(origin) ?? origin;
+    return (this.generatedByRoot.get(root) ?? 0) < MAX_SIGNATURES_PER_ROOT;
+  }
+
+  existing(
+    declaration: Parser.FunctionDeclaration,
+    key: string,
+  ): Parser.FunctionDeclaration | undefined {
+    return this.variants.get(functionOriginOf(declaration))?.get(key);
+  }
+
+  record(
+    declaration: Parser.FunctionDeclaration,
+    key: string,
+    variant: Parser.FunctionDeclaration,
+  ): void {
+    declaration = functionOriginOf(declaration);
+    const variants =
+      this.variants.get(declaration) ??
+      new Map<string, Parser.FunctionDeclaration>();
+    const root = this.roots.get(declaration) ?? declaration;
+    this.roots.set(variant, root);
+    this.generatedByRoot.set(root, (this.generatedByRoot.get(root) ?? 0) + 1);
+    variants.set(key, variant);
+    this.variants.set(declaration, variants);
+    const parentRank = this.ranks.get(declaration);
+    if (parentRank === undefined || variant.parameters.length >= parentRank)
+      throw new Error(
+        "Specialization must reduce the remaining parameter rank",
+      );
+    // Generated direct calls have no implicit receiver. Every descendant removes
+    // at least one more formal, so variant-to-variant specialization is finite.
+    this.eligible.add(variant);
+    this.ranks.set(variant, variant.parameters.length);
+    // Inline copies share these identities; they never become new roots.
+  }
+}
 
 /**
  * Build one callable-oriented plan for direct, method, and stable-field calls.
@@ -75,9 +162,12 @@ export function applyAggregateSpecialization(
   objects: WholeProgramObjectAnalysis,
   fields: WholeProgramFieldAnalysis,
   modules: readonly AggregateSpecializationModule[],
+  history = new SpecializationHistory(),
 ): AggregateSpecializationResult {
   if (objects.generation !== fields.generation)
     throw new Error("Cannot specialize mixed whole-program generations");
+  history.initialize(objects);
+  const changedModules = new Set<string>();
   const moduleOfCallable = new Map<Callable, AggregateSpecializationModule>();
   objects.modules.forEach((module) => {
     const target = modules.find((candidate) => candidate.name === module.name);
@@ -112,7 +202,16 @@ export function applyAggregateSpecialization(
     const callback = callbacks.get(site.call);
     let actuals: readonly Parser.Expression[] = site.call.arguments;
     let parameterOffset = 0;
+    // A colon call passes its receiver as the first actual, so the receiver
+    // occupies parameter 0 (`self`) even when only the field-callback
+    // resolution (and not the method resolution) identified the target.
+    const colonReceiver =
+      site.call.base.type === "MemberExpression" &&
+      site.call.base.indexer === ":"
+        ? site.call.base.base
+        : undefined;
     if (method) actuals = [method.receiver, ...site.call.arguments];
+    else if (colonReceiver) actuals = [colonReceiver, ...site.call.arguments];
     else if (callback && site.call.base.type === "MemberExpression") {
       // Preserve evaluation of the callback receiver before its arguments.
       actuals = [site.call.base.base, ...site.call.arguments];
@@ -122,7 +221,22 @@ export function applyAggregateSpecialization(
     normalized.push({ site, callable, module, actuals, parameterOffset });
     sitesByCallable.set(callable, normalized);
   });
+  // Call-site ids follow AST order. Keep the representative literal and the
+  // insertion point stable even if analysis consumers enumerate calls differently.
+  sitesByCallable.forEach((sites) =>
+    sites.sort((left, right) => left.site.id - right.site.id),
+  );
   const constantParameters = inferConstantParameters(sitesByCallable);
+  const containingBody = new WeakMap<Parser.Statement, Parser.Statement[]>();
+  const indexBodies = (body: Parser.Statement[]): void => {
+    body.forEach((statement) => {
+      containingBody.set(statement, body);
+      childBlocks(statement).forEach(indexBodies);
+    });
+  };
+  modules.forEach((module) => {
+    indexBodies(module.chunk.body);
+  });
 
   const diagnostics: AggregateSpecializationDiagnostic[] = [];
   const unavailableNames = new Set(
@@ -162,23 +276,6 @@ export function applyAggregateSpecialization(
   let createdVariants = 0;
   let replacedCalls = 0;
   const introducedByBody = new Map<Parser.Statement[], number>();
-  const totalSites = [...sitesByCallable.values()].reduce(
-    (sum, sites) => sum + sites.length,
-    0,
-  );
-  if (totalSites > MAX_CANDIDATE_SITES) {
-    sitesByCallable.forEach((_, callable) =>
-      diagnostics.push({ callable, reason: "resource-budget", count: 1 }),
-    );
-    return {
-      changed: false,
-      candidateCallables: sitesByCallable.size,
-      createdVariants: 0,
-      replacedCalls: 0,
-      diagnostics,
-    };
-  }
-
   sitesByCallable.forEach((sites, callable) => {
     const ownerModule = moduleOfCallable.get(callable);
     if (!ownerModule || sites.length === 0) return;
@@ -190,47 +287,97 @@ export function applyAggregateSpecialization(
     }
     const groups = variantGroups(callable, sites, constantParameters);
     groups.forEach((group) => {
-      if (createdVariants >= MAX_VARIANTS) {
-        diagnostics.push({ callable, reason: "resource-budget", count: 1 });
-        return;
-      }
+      // Include receiver normalization in the assumption signature: a callback
+      // variant has an explicit receiver slot, unlike a direct-call variant.
+      const offset = group.sites[0].parameterOffset;
+      if (group.sites.some((site) => site.parameterOffset !== offset)) return;
+      const signature = JSON.stringify([
+        offset,
+        [...group.literals].map(([index, literal]) => [
+          index,
+          literalKey(literal),
+        ]),
+      ]);
       const insertionModule = group.sites[0].module;
       if (group.sites.some((site) => site.module !== insertionModule)) return;
       const firstOwner = group.sites[0].site.owner;
-      const insertionBody = bodyContaining(
-        insertionModule.chunk.body,
-        firstOwner,
-      );
+      const insertionBody = containingBody.get(firstOwner);
       if (
         !insertionBody ||
         group.sites.some(
-          (site) =>
-            bodyContaining(insertionModule.chunk.body, site.site.owner) !==
-            insertionBody,
+          (site) => containingBody.get(site.site.owner) !== insertionBody,
         )
       ) {
         diagnostics.push({ callable, reason: "unknown-capture", count: 1 });
         return;
       }
-      const introduced = introducedByBody.get(insertionBody) ?? 0;
-      if (introduced >= insertionModule.maxIntroducedLocalsAt(firstOwner)) {
-        diagnostics.push({ callable, reason: "resource-budget", count: 1 });
-        return;
+      let variant = history.existing(callable.declaration, signature);
+      if (variant) {
+        // Reuse only a still-live, lexically visible binding. Never move a closure
+        // across declarations, where a capture could bind a different symbol.
+        const existingOrigin = functionOriginOf(variant);
+        const index = insertionBody.findIndex(
+          (statement) =>
+            statement.type === "FunctionDeclaration" &&
+            functionOriginOf(statement) === existingOrigin,
+        );
+        if (index >= 0)
+          variant = insertionBody[index] as Parser.FunctionDeclaration;
+        if (
+          index < 0 ||
+          group.sites.some(
+            (site) => insertionBody.indexOf(site.site.owner) <= index,
+          )
+        )
+          return;
+      } else {
+        if (!history.canGenerate(callable.declaration, signature)) return;
+        if (!history.hasBudget(callable.declaration)) {
+          diagnostics.push({
+            callable,
+            reason: "specialization-variant-limit",
+            count: 1,
+          });
+          return;
+        }
+        // Only rule out growth in a flat return tuple. Expressions that could
+        // unlock folding, field cleanup or control-flow simplification pass
+        // through to the unchanged final-output cost gate.
+        if (clearlyUnprofitable(callable, group, ownerModule)) return;
+        const introduced = introducedByBody.get(insertionBody) ?? 0;
+        if (introduced >= insertionModule.maxIntroducedLocalsAt(firstOwner)) {
+          diagnostics.push({
+            callable,
+            reason: "runtime-resource-limit",
+            count: 1,
+          });
+          return;
+        }
+        let variantIndex = createdVariants;
+        let variantName = `__stormVariant${String(variantIndex)}`;
+        while (unavailableNames.has(variantName)) {
+          variantIndex++;
+          variantName = `__stormVariant${String(variantIndex)}`;
+        }
+        unavailableNames.add(variantName);
+        variant = makeVariant(callable, group, variantName, ownerModule);
+        if (!variant) {
+          diagnostics.push({ callable, reason: "unknown-capture", count: 1 });
+          return;
+        }
+        history.record(callable.declaration, signature, variant);
+        insertionBody.splice(insertionBody.indexOf(firstOwner), 0, variant);
+        introducedByBody.set(insertionBody, introduced + 1);
+        createdVariants++;
+        diagnostics.push({
+          callable,
+          reason: "variant-created",
+          count: group.sites.length,
+        });
       }
-      let variantIndex = createdVariants;
-      let variantName = `__stormVariant${String(variantIndex)}`;
-      while (unavailableNames.has(variantName)) {
-        variantIndex++;
-        variantName = `__stormVariant${String(variantIndex)}`;
-      }
-      unavailableNames.add(variantName);
-      const variant = makeVariant(callable, group, variantName, ownerModule);
-      if (!variant) {
-        diagnostics.push({ callable, reason: "unknown-capture", count: 1 });
-        return;
-      }
-      insertionBody.splice(insertionBody.indexOf(firstOwner), 0, variant);
-      introducedByBody.set(insertionBody, introduced + 1);
+      if (variant.identifier?.type !== "Identifier") return;
+      const variantName = variant.identifier.name;
+      changedModules.add(insertionModule.name);
       group.sites.forEach((normalized) => {
         const call = normalized.site.call;
         if (call.type !== "CallExpression") return;
@@ -238,6 +385,18 @@ export function applyAggregateSpecialization(
           const parameterIndex = index - normalized.parameterOffset;
           return parameterIndex < 0 || !group.literals.has(parameterIndex);
         });
+        const retainedTail = retainedActuals.at(-1);
+        if (
+          retainedTail &&
+          canExpand(retainedTail) &&
+          (retainedTail !== normalized.actuals.at(-1) ||
+            call.arguments.length === 0)
+        ) {
+          // Removing a trailing literal must not turn an earlier single-valued
+          // call into an expanding tail. A surplus nil keeps the adjustment
+          // without requiring a parenthesis node that luaparse does not retain.
+          retainedActuals.push({ type: "NilLiteral", value: null, raw: "nil" });
+        }
         const replacement: Parser.Identifier = {
           type: "Identifier",
           name: variantName,
@@ -249,16 +408,11 @@ export function applyAggregateSpecialization(
         );
         replacedCalls++;
       });
-      createdVariants++;
-      diagnostics.push({
-        callable,
-        reason: "variant-created",
-        count: group.sites.length,
-      });
     });
   });
   return {
-    changed: createdVariants > 0,
+    changed: replacedCalls > 0,
+    changedModules,
     candidateCallables,
     createdVariants,
     replacedCalls,
@@ -323,6 +477,31 @@ function insideScope(symbol: Symbol, scope: Scope): boolean {
   return false;
 }
 
+function canExpand(expression: Parser.Expression): boolean {
+  return (
+    expression.type === "CallExpression" ||
+    expression.type === "TableCallExpression" ||
+    expression.type === "StringCallExpression" ||
+    expression.type === "VarargLiteral"
+  );
+}
+
+/** Missing syntax slots are nil only when the final actual cannot expand. */
+function actualAt(
+  site: NormalizedSite,
+  parameterIndex: number,
+): Parser.Expression | undefined {
+  const index = parameterIndex + site.parameterOffset;
+  if (index < site.actuals.length) return site.actuals[index];
+  // Use the original argument list: a synthetic receiver is always single-valued.
+  const tail =
+    site.site.call.type === "CallExpression"
+      ? site.site.call.arguments.at(-1)
+      : undefined;
+  // Keep expandable slots unknown to grouping and parameter inference.
+  return tail && canExpand(tail) ? tail : undefined;
+}
+
 function variantGroups(
   callable: Callable,
   sites: readonly NormalizedSite[],
@@ -339,7 +518,7 @@ function variantGroups(
   >();
   sites.forEach((site) => {
     callable.declaration.parameters.forEach((_, parameterIndex) => {
-      const actual = site.actuals.at(parameterIndex + site.parameterOffset);
+      const actual = actualAt(site, parameterIndex);
       const direct = primitiveLiteral(actual);
       const actualSymbol =
         !direct && actual?.type === "Identifier"
@@ -368,7 +547,7 @@ function variantGroups(
       ([leftKey, left], [rightKey, right]) =>
         right.sites.length - left.sites.length ||
         left.parameterIndex - right.parameterIndex ||
-        leftKey.localeCompare(rightKey),
+        (leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0),
     )
     .flatMap(([key, candidate]) => {
       const grouped = candidate.sites.filter((site) => !assigned.has(site));
@@ -395,7 +574,7 @@ function inferConstantParameters(
       callable.parameters.forEach((parameter, parameterIndex) => {
         if (result.has(parameter) || sites.length === 0) return;
         const values = sites.map((site) => {
-          const actual = site.actuals.at(parameterIndex + site.parameterOffset);
+          const actual = actualAt(site, parameterIndex);
           const direct = primitiveLiteral(actual);
           if (direct) return direct;
           if (!actual || actual.type !== "Identifier") return undefined;
@@ -416,6 +595,57 @@ function inferConstantParameters(
     });
   }
   return result;
+}
+
+/** An optimistic bound, restricted to tuples with no downstream folding work. */
+function clearlyUnprofitable(
+  callable: Callable,
+  group: VariantGroup,
+  module: AggregateSpecializationModule,
+): boolean {
+  const declaration = callable.declaration;
+  const statement = declaration.body[0];
+  if (declaration.body.length !== 1 || statement.type !== "ReturnStatement")
+    return false;
+  const literalWidths = new Map<Symbol, number>();
+  for (const [index, literal] of group.literals) {
+    // Strings and numbers can be reprinted more compactly. Leave them to the
+    // final gate rather than treating their raw spelling as a lower bound.
+    if (literal.type !== "BooleanLiteral" && literal.type !== "NilLiteral")
+      return false;
+    literalWidths.set(
+      callable.parameters[index],
+      literal.type === "NilLiteral" ? 3 : literal.value ? 4 : 5,
+    );
+  }
+  let growth = 0;
+  for (const expression of statement.arguments) {
+    if (expression.type === "Identifier") {
+      const symbol = module.resolved.symbolOf(expression);
+      const width = symbol ? literalWidths.get(symbol) : undefined;
+      if (width !== undefined)
+        growth += Math.max(0, width - Buffer.byteLength(expression.name));
+    } else if (!primitiveLiteral(expression)) return false;
+  }
+  // Allow even deletion of the entire original declaration, plus the full
+  // original call syntax, as potential savings. This intentionally overstates
+  // savings; only obvious repeated-literal expansion is rejected.
+  const declarationRange = (declaration as { range?: [number, number] }).range;
+  if (!declarationRange) return false;
+  let savings = declarationRange[1] - declarationRange[0];
+  for (const site of group.sites) {
+    const call = site.site.call;
+    if (
+      call.type !== "CallExpression" ||
+      call.base.type !== "Identifier" ||
+      site.parameterOffset !== 0
+    )
+      return false;
+    const callRange = (call as { range?: [number, number] }).range;
+    if (!callRange) return false;
+    savings += callRange[1] - callRange[0];
+  }
+  return growth > savings;
 }
 
 function makeVariant(
@@ -528,19 +758,6 @@ function indexNodes(
     else Object.values(value).forEach(visit);
   };
   visit(body);
-}
-
-function bodyContaining(
-  body: Parser.Statement[],
-  owner: Parser.Statement,
-): Parser.Statement[] | undefined {
-  if (body.includes(owner)) return body;
-  for (const statement of body)
-    for (const child of childBlocks(statement)) {
-      const found = bodyContaining(child, owner);
-      if (found) return found;
-    }
-  return undefined;
 }
 
 function childBlocks(statement: Parser.Statement): Parser.Statement[][] {

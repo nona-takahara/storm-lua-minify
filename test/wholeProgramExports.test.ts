@@ -1,6 +1,7 @@
 import { SourceMapConsumer } from "source-map";
 import { describe, expect, test } from "vitest";
 import { minifyTemporaryLuaProject } from "./lib/minifierHarness";
+import { expectLuaProjectOutput } from "./lib/luaProjectAssertions";
 
 const mode = {
   requireWrapper: true,
@@ -46,6 +47,7 @@ return first.used()+second.used()
     expect(result.code).not.toContain("dead_function");
     expect(result.code).not.toContain("dead_constant");
     expect(result.code).not.toContain("private_helper_only_for_dead_export");
+    expectLuaProjectOutput(result, "true\t2\n");
     expect(result.minifier.wholeProgramExports?.generation).toBe(
       result.minifier.wholeProgramObjects?.generation,
     );
@@ -72,6 +74,7 @@ return first.used()+second.used()
     );
     expect(result.code).toContain('mark("initializer")');
     expect(result.code).not.toContain("exports.dead=");
+    expectLuaProjectOutput(result, "true\tinitializer\n");
     expect(result.minifier.optimizationDiagnostics).toContainEqual(
       expect.objectContaining({
         pass: "whole-program-export-dce",
@@ -157,6 +160,7 @@ return exports
     );
     expect(result.code).toContain("used=1");
     expect(result.code).not.toContain("dead=2");
+    expectLuaProjectOutput(result, "true\t1\n");
   });
 
   test("keeps fields used by a global function and by a directly called module-return function", () => {
@@ -292,11 +296,12 @@ return exports
     );
     expect(result.code).toMatch(/local\s+value=2\s+return\s+value/);
     expect(result.code).not.toContain("value=1");
+    expectLuaProjectOutput(result, "true\t2\n");
     expect(result.code).not.toContain("exports.dead");
   });
 
   test.each([true, false])(
-    "preserves require caching and output semantics with requireWrapper=%s",
+    "preserves configured module initialization with requireWrapper=%s",
     (requireWrapper) => {
       const result = minify(
         `count=count+1 local exports={used=count,unused=2} return exports`,
@@ -305,6 +310,11 @@ return exports
       );
       expect(result.code).toContain("count=count+1");
       expect(result.code).not.toContain("unused=2");
+      expectLuaProjectOutput(
+        result,
+        requireWrapper ? "true\t1\t1\t1\n" : "true\t1\t2\t2\n",
+        { originalStdout: "true\t1\t1\t1\n" },
+      );
     },
   );
 

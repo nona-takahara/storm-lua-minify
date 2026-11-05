@@ -73,6 +73,7 @@ export function analyzeStatementDataflow(
   chunk: Parser.Chunk,
   facts: OptimizerFacts,
   valueFlow: ValueFlowAnalysis,
+  liveness = analyzeSymbolLiveness(valueFlow.controlFlow, facts),
 ): StatementDataflowAnalysis {
   if (facts.generation !== valueFlow.version) {
     throw new Error("Statement dataflow requires one AST generation");
@@ -80,11 +81,9 @@ export function analyzeStatementDataflow(
   const controlFlow = valueFlow.controlFlow;
   const symbolIds = new Map<Symbol, number>();
   const globalIds = new Map<GlobalBinding, number>();
-  const dependencies: StatementDependenceEdge[] = [];
-  const dependenciesByFrom = new WeakMap<
-    Parser.Statement,
-    WeakMap<Parser.Statement, readonly StatementDependenceEdge[]>
-  >();
+  const summaries = new WeakMap<Parser.Statement, StatementSummary>();
+  const bodies: Parser.Statement[][] = [];
+  let allDependencies: readonly StatementDependenceEdge[] | undefined;
   const bodyOf = new WeakMap<Parser.Statement, Parser.Statement[]>();
   const indexOf = new WeakMap<Parser.Statement, number>();
 
@@ -185,46 +184,62 @@ export function analyzeStatementDataflow(
     };
   };
 
-  const liveness = analyzeSymbolLiveness(controlFlow, facts);
+  if (liveness.controlFlow !== controlFlow)
+    throw new Error("Stale dataflow liveness");
 
   const analyzeBody = (body: Parser.Statement[]): void => {
     body.forEach((statement, index) => {
       bodyOf.set(statement, body);
       indexOf.set(statement, index);
     });
-    const summaries = body.map(summarize);
-    for (let left = 0; left < body.length; left++) {
-      for (let right = left + 1; right < body.length; right++) {
-        dependencies.push(
-          ...edgesBetween(
-            body[left],
-            summaries[left],
-            body[right],
-            summaries[right],
-          ),
-        );
-      }
-    }
+    bodies.push(body);
+    body.forEach((statement) => summaries.set(statement, summarize(statement)));
     body.forEach((statement) => {
       childBodies(statement).forEach(analyzeBody);
     });
   };
   analyzeBody(chunk.body);
-  dependencies.forEach((edge) => {
-    let byTarget = dependenciesByFrom.get(edge.from);
-    if (!byTarget) {
-      byTarget = new WeakMap();
-      dependenciesByFrom.set(edge.from, byTarget);
-    }
-    const current = byTarget.get(edge.to) ?? [];
-    byTarget.set(edge.to, [...current, edge]);
-  });
+
+  // Keep only per-statement summaries. Pair queries neither enumerate unrelated
+  // statements nor retain a potentially quadratic cache of requested edges.
+  const dependenciesBetween = (
+    first: Parser.Statement,
+    last: Parser.Statement,
+  ): readonly StatementDependenceEdge[] => {
+    const left = summaries.get(first);
+    const right = summaries.get(last);
+    const firstIndex = indexOf.get(first);
+    const lastIndex = indexOf.get(last);
+    if (
+      !left ||
+      !right ||
+      bodyOf.get(first) !== bodyOf.get(last) ||
+      firstIndex === undefined ||
+      lastIndex === undefined ||
+      firstIndex >= lastIndex
+    )
+      return [];
+    return edgesBetween(first, left, last, right);
+  };
 
   return {
     generation: facts.generation,
     controlFlow,
     symbolLiveness: liveness,
-    dependencies,
+    // Compatibility for callers explicitly requesting the complete lexical DAG.
+    // Schedulers use pair queries and never pay for this quadratic enumeration.
+    get dependencies() {
+      if (!allDependencies) {
+        const edges: StatementDependenceEdge[] = [];
+        bodies.forEach((body) => {
+          for (let left = 0; left < body.length; left++)
+            for (let right = left + 1; right < body.length; right++)
+              edges.push(...dependenciesBetween(body[left], body[right]));
+        });
+        allDependencies = edges;
+      }
+      return allDependencies;
+    },
     liveIn: (node) => liveness.liveIn(node),
     liveOut: (node) => liveness.liveOut(node),
     isLiveBefore: (statement, symbol) => {
@@ -235,8 +250,7 @@ export function analyzeStatementDataflow(
       const node = controlFlow.nodeOf(statement);
       return !!node && liveness.liveOut(node).has(symbol);
     },
-    dependenciesBetween: (first, last) =>
-      dependenciesByFrom.get(first)?.get(last) ?? [],
+    dependenciesBetween,
     canMoveBefore: (moving, target) => {
       const body = bodyOf.get(moving);
       if (!body || body !== bodyOf.get(target)) {
@@ -258,10 +272,8 @@ export function analyzeStatementDataflow(
         return { allowed: false, reason: "unknown-edge" };
       for (let index = targetIndex; index < movingIndex; index++) {
         const obstacle = body[index];
-        const edge = dependencies.find(
-          (candidate) => candidate.from === obstacle && candidate.to === moving,
-        );
-        if (edge) return { allowed: false, reason: edge.kind };
+        const edges = dependenciesBetween(obstacle, moving);
+        if (edges.length > 0) return { allowed: false, reason: edges[0].kind };
       }
       return { allowed: true };
     },

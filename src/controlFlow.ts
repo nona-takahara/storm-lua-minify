@@ -306,11 +306,16 @@ export function analyzeControlFlow(
     indexPoints(body);
 
     const nestedFunctions: Parser.FunctionDeclaration[] = [];
-    body.forEach((statement) => {
-      walkStatement(statement, {
-        onFunction: (fn) => nestedFunctions.push(fn),
+    const collectFunctions = (statements: Parser.Statement[]): void => {
+      statements.forEach((statement) => {
+        walkStatement(statement, {
+          onFunction: (fn) => nestedFunctions.push(fn),
+        });
+        // Descend lexical blocks here; function bodies belong to their own unit.
+        childBodiesOfStatement(statement).forEach(collectFunctions);
       });
-    });
+    };
+    collectFunctions(body);
     nestedFunctions.forEach((fn) => {
       if (analyzedFunctions.has(fn)) return;
       analyzedFunctions.add(fn);

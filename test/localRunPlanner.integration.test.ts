@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { MinifierMode } from "../src/minifier";
 import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
+import { executeLua } from "./lib/luaExecution";
+import { expectLuaProgramsOutput } from "./lib/luaProjectAssertions";
 
 function minify(source: string, mode: Partial<MinifierMode>): string {
   return minifyTemporaryLuaSource(
@@ -23,7 +25,11 @@ describe("local-run planner profiles", () => {
       localDeclarationMerging: false,
     });
 
-    expect(enabled).toBe("local first,second=f(),g()use(first,second)");
+    expectLuaProgramsOutput(
+      [source, enabled, disabled],
+      "f\ng\nuse\t1\t2\ntrue\n",
+      'function f() print("f") return 1 end function g() print("g") return 2 end function use(...) print("use",...) end',
+    );
     expect(Buffer.byteLength(enabled)).toBeLessThan(
       Buffer.byteLength(disabled),
     );
@@ -45,8 +51,11 @@ describe("local-run planner profiles", () => {
       identifierOptimizations: false,
     });
 
-    expect(stormworks).toBe("local a,b=f()b=g(a)use(a,b)");
-    expect(optedOut).toBe(lua);
+    expectLuaProgramsOutput(
+      [source, stormworks, optedOut, lua],
+      "f\ng\t1\nuse\t1\t2\ntrue\n",
+      'function f() print("f") return 1 end function g(x) print("g",x) return x+1 end function use(...) print("use",...) end',
+    );
     expect(Buffer.byteLength(stormworks)).toBeLessThan(
       Buffer.byteLength(optedOut),
     );
@@ -65,12 +74,16 @@ describe("local-run planner profiles", () => {
       allowObservableTableReadChanges: true,
     });
 
-    expect(safe.replace(/\s+/g, " ")).toContain(
-      "tableValue.x=2 local after=tableValue.x",
-    );
-    expect(aggressive.replace(/\s+/g, " ")).toContain(
-      "local before,after=tableValue.x,tableValue.x tableValue.x=2",
-    );
     expect(Buffer.byteLength(aggressive)).toBeLessThan(Buffer.byteLength(safe));
+    const prelude = "function use(before,after) print(before,after) end\n";
+    const unchanged = { status: 0, stdout: "1\t2\n", stderr: "" };
+    expect(executeLua(prelude + source)).toEqual(unchanged);
+    expect(executeLua(prelude + safe)).toEqual(unchanged);
+    // This opt-in explicitly permits the second read to observe the old value.
+    expect(executeLua(prelude + aggressive)).toEqual({
+      status: 0,
+      stdout: "1\t1\n",
+      stderr: "",
+    });
   });
 });

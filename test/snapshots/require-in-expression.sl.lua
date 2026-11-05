@@ -1,1 +1,0 @@
-print((function()return{a=function()return"hello"end}end)().a())

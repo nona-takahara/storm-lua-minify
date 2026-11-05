@@ -78,6 +78,42 @@ function execute(file, cwd) {
   };
 }
 
+const functionRewriteFixtures = require("../test/cases/functionRewriteSemantics.json");
+
+function verifyFunctionRewriteFixture(fixture) {
+  const sourceFile = path.join(directory, `${fixture.name}.lua`);
+  fs.writeFileSync(sourceFile, fixture.source);
+  const code = new Minifier(
+    sourceFile,
+    { luaVersion: "5.3" },
+    {
+      requireWrapper: false,
+      runtimeProfile: "stormworks",
+      requiredWhitespace: " ",
+      globalAliasing: false,
+    },
+  )
+    .parse()
+    .toStringWithSourceMap({ file: `${fixture.name}.min.lua` }).code;
+  // Wrap after minifying so the exact return-position input is optimized.
+  const executeChunk = (source, suffix) => {
+    const file = path.join(directory, `${fixture.name}-${suffix}.lua`);
+    fs.writeFileSync(file, `print(pcall(function()\n${source}\nend))`);
+    return execute(file);
+  };
+  const expected = { status: 0, stdout: fixture.stdout, stderr: "" };
+  const original = executeChunk(fixture.source, "original");
+  const minified = executeChunk(code, "minified");
+  if (
+    JSON.stringify(original) !== JSON.stringify(expected) ||
+    JSON.stringify(minified) !== JSON.stringify(expected)
+  ) {
+    throw new Error(
+      `semantic mismatch in ${fixture.name}\nexpected=${JSON.stringify(expected)}\noriginal=${JSON.stringify(original)}\nminified=${JSON.stringify(minified)}\ncode=${code}`,
+    );
+  }
+}
+
 function verifyWholeProgramMethodFixture() {
   const fixtureDirectory = path.join(directory, "whole-program-method");
   fs.mkdirSync(fixtureDirectory);
@@ -256,13 +292,14 @@ try {
       );
     }
   });
+  functionRewriteFixtures.forEach(verifyFunctionRewriteFixture);
   verifyWholeProgramMethodFixture();
   verifyWholeProgramFieldFixture();
   verifyWholeProgramExportFixture(true);
   verifyWholeProgramExportFixture(false);
   verifyFieldRenameFixture();
   process.stdout.write(
-    `${lua}: ${String(fixtures.length + 5)} effect-aware fixtures matched exactly\n`,
+    `${lua}: ${String(fixtures.length + functionRewriteFixtures.length + 5)} effect-aware fixtures matched exactly\n`,
   );
 } finally {
   fs.rmSync(directory, { recursive: true, force: true });

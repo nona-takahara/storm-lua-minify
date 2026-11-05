@@ -1,5 +1,16 @@
 import Parser from "luaparse";
 import { resolveScopes, ResolveResult } from "./resolver";
+import {
+  analyzeOptimizer,
+  OptimizerAnalysis,
+  OptimizerAnalysisOptions,
+  OPTIMIZER_ANALYSIS_CACHE_KEY,
+} from "./optimizerAnalysis";
+import {
+  analyzeOptimizerFacts,
+  analyzeOptimizerFactsAtGeneration,
+  OPTIMIZER_FACTS_CACHE_KEY,
+} from "./optimizerFacts";
 
 export interface TransformResult {
   readonly changed: boolean;
@@ -16,6 +27,7 @@ export interface PassRecord extends TransformResult {
 
 export interface GenerationBoundAnalysis {
   readonly generation: number;
+  invalidate?(): void;
 }
 
 /**
@@ -39,6 +51,7 @@ export class PassOrchestrator {
   constructor(
     private readonly chunk: Parser.Chunk,
     initialResolve: ResolveResult,
+    private readonly onChange?: (resolved: ResolveResult) => void,
   ) {
     this.resolvedValue = initialResolve;
   }
@@ -92,13 +105,66 @@ export class PassOrchestrator {
     return value;
   }
 
+  /**
+   * A policy identity owns immutable runtime, assumptions and summary options.
+   * Default language facts share their cache with folding. Other policies use
+   * their own facts key so runtime evidence cannot leak into language-only passes.
+   */
+  optimizerAnalysis(
+    policy: Readonly<OptimizerAnalysisOptions> = DEFAULT_OPTIMIZER_POLICY,
+  ): OptimizerAnalysis {
+    const isDefault = policy === DEFAULT_OPTIMIZER_POLICY;
+    return this.analysis(
+      isDefault ? OPTIMIZER_ANALYSIS_CACHE_KEY : policy,
+      (chunk, resolved, generation) => {
+        const facts = this.analysis(
+          isDefault ? OPTIMIZER_FACTS_CACHE_KEY : this.factsKeyFor(policy),
+          isDefault
+            ? analyzeOptimizerFactsAtGeneration
+            : (ast, scope, version) =>
+                analyzeOptimizerFacts(ast, scope, {
+                  ...policy,
+                  generation: version,
+                }),
+        );
+        return analyzeOptimizer(
+          chunk,
+          resolved,
+          { ...policy, generation },
+          facts,
+        );
+      },
+    );
+  }
+
+  private readonly policyFactsKeys = new WeakMap<object, object>();
+  private factsKeyFor(policy: object): object {
+    let key = this.policyFactsKeys.get(policy);
+    if (!key) {
+      key = {};
+      this.policyFactsKeys.set(policy, key);
+    }
+    return key;
+  }
+
+  private invalidateAnalyses(): void {
+    this.analysisCache.forEach(({ value }) => value.invalidate?.());
+    this.analysisCache.clear();
+  }
+
   run(
     name: string,
     transform: (resolved: ResolveResult) => TransformResult,
   ): TransformResult {
     const astBefore = this.astGenerationValue;
     const resolveBefore = this.resolveGenerationValue;
-    const result = transform(this.resolvedValue);
+    let result: TransformResult;
+    try {
+      result = transform(this.resolvedValue);
+    } catch (error) {
+      this.invalidateAnalyses();
+      throw error;
+    }
     if (!result.changed && result.invalidatesResolve) {
       throw new Error(
         `Pass ${name} cannot invalidate Resolve without changing the AST`,
@@ -106,12 +172,13 @@ export class PassOrchestrator {
     }
     if (result.changed) {
       this.astGenerationValue++;
-      this.analysisCache.clear();
+      this.invalidateAnalyses();
     }
     if (result.invalidatesResolve) {
       this.resolvedValue = resolveScopes(this.chunk);
       this.resolveGenerationValue++;
     }
+    if (result.changed) this.onChange?.(this.resolvedValue);
     this.recordsValue.push({
       name,
       ...result,
@@ -142,3 +209,6 @@ export const UNCHANGED: TransformResult = {
   changed: false,
   invalidatesResolve: false,
 };
+
+const DEFAULT_OPTIMIZER_POLICY: Readonly<OptimizerAnalysisOptions> =
+  Object.freeze({});

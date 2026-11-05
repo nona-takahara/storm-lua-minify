@@ -1,3 +1,4 @@
+import { AnalysisConvergenceError } from "./analysisConvergenceError";
 import Parser from "luaparse";
 import {
   analyzeControlFlow,
@@ -88,11 +89,12 @@ export function analyzeValueFlow(
   facts: OptimizerFacts,
   version = facts.generation,
   interprocedural?: InterproceduralAnalysis,
+  controlFlow = analyzeControlFlow(chunk, resolved, version),
 ): ValueFlowAnalysis {
   if (facts.generation !== version) {
     throw new Error("Value flow requires facts from the same AST generation");
   }
-  const controlFlow = analyzeControlFlow(chunk, resolved, version);
+  if (controlFlow.version !== version) throw new Error("Stale value flow CFG");
   const allocations: Allocation[] = [];
   const definitions: MutableDefinition[] = [];
   const allocationByOrigin = new WeakMap<
@@ -218,7 +220,9 @@ export function analyzeValueFlow(
     );
     while (changed) {
       if (iterations++ > iterationLimit) {
-        throw new Error("Value-flow finite lattice failed to converge");
+        throw new AnalysisConvergenceError(
+          "Value-flow finite lattice failed to converge",
+        );
       }
       changed = false;
       // CFG nodes are constructed from the continuation backwards. Reverse iteration is therefore

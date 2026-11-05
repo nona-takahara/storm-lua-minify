@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { SourceMapConsumer } from "source-map";
 import { minifyTemporaryLuaProject } from "./lib/minifierHarness";
+import { expectLuaProjectOutput } from "./lib/luaProjectAssertions";
 
 const objectModule = `
 local Object={}
@@ -71,6 +72,7 @@ return enabled.enabled,disabled.enabled
     );
     expect(result.code).toMatch(/return\s+true,false/);
     expect(result.code).not.toContain(".enabled=enabled");
+    expectLuaProjectOutput(result, "true\ttrue\tfalse\n");
     expect(result.minifier.optimizationDiagnostics).toContainEqual(
       expect.objectContaining({
         pass: "constructor-field-final-cost",
@@ -87,6 +89,9 @@ return enabled.enabled,disabled.enabled
     );
     expect(result.code).toContain("effect()");
     expect(result.code).not.toContain(".unused=");
+    expectLuaProjectOutput(result, "effect\ntrue\t1\n", {
+      prelude: 'function effect() print("effect") return 7 end',
+    });
   });
 
   test("feeds a finite field value into branch folding", () => {
@@ -105,6 +110,7 @@ value.enabled=false
 return value.enabled
 `);
     expect(result.code).toContain("value.enabled");
+    expectLuaProjectOutput(result, "true\tfalse\n");
     expect(result.minifier.optimizationDiagnostics).toContainEqual(
       expect.objectContaining({
         pass: "whole-program-constructor-fields",
@@ -237,6 +243,7 @@ return value.enabled
         reason: "dead-field-write",
       }),
     );
+    expectLuaProjectOutput(result, "true\t3\n");
   });
 
   test("reports callback reassignment as a conservative aggregate plan", () => {
@@ -259,6 +266,7 @@ return value.enabled
       "self.cache=enabled",
     );
     expect(result.code).toContain("value.cache");
+    expectLuaProjectOutput(result, "true\ttrue\n");
     expect(
       result.minifier.wholeProgramFields?.facts.some(
         (fact) => fact.field === "cache" && fact.value?.kind === "empty-table",
@@ -284,6 +292,7 @@ return value.enabled
       },
     );
     expect(result.code).toMatch(/return\s*"base"/);
+    expectLuaProjectOutput(result, "true\tbase\n");
   });
 
   test("keeps diagnostics observational and maps replaced reads to their source", async () => {

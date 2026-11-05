@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { expectLuaProjectOutput } from "./lib/luaProjectAssertions";
 import {
   minifyTemporaryLuaProject,
   minifyTemporaryLuaSource,
@@ -30,6 +31,7 @@ return object:long_method()+a+b
     expect(result.code).not.toContain("long_method");
     expect(result.code).not.toContain("long_value");
     expect(result.minifier.wholeProgramFieldRenames?.shortenedFields).toBe(2);
+    expectLuaProjectOutput(result, "true\t12\n");
     expect(result.minifier.wholeProgramFieldRenames?.generation).toBe(
       result.minifier.wholeProgramObjects?.generation,
     );
@@ -51,6 +53,7 @@ return object:long_method()+a+b
       mode,
     );
     expect(result.code).not.toContain("internal_public_name");
+    expectLuaProjectOutput(result, "true\t7\n");
   });
 
   test("connects prototype and instance keys through a key-preserving factory", () => {
@@ -80,6 +83,7 @@ return instance:long_method_name()`,
     expect(result.code).not.toContain("long_method_name");
     expect(result.code).not.toContain("long_field_name");
     expect(result.code).not.toContain('~="new"');
+    expectLuaProjectOutput(result, "true\t9\n");
     expect(
       result.minifier.wholeProgramFieldRenames?.keyTransfers,
     ).toBeGreaterThan(0);
@@ -96,6 +100,7 @@ return target.long_field_name
       mode,
     );
     expect(result.code).not.toContain("long_field_name");
+    expectLuaProjectOutput(result, "true\t3\n");
     expect(result.minifier.optimizationDiagnostics).toContainEqual(
       expect.objectContaining({
         pass: "whole-program-field-rename",
@@ -116,6 +121,7 @@ return first.first_long_name+first.second_long_name+second.third_long_name
     );
     expect(result.code).toMatch(/\{a=1,b=2\}|\{b=1,a=2\}/);
     expect(result.code).toContain("{a=3}");
+    expectLuaProjectOutput(result, "true\t6\n");
     expect(
       result.minifier.wholeProgramFieldRenames?.reusedKeys,
     ).toBeGreaterThan(0);
@@ -127,6 +133,7 @@ return first.first_long_name+first.second_long_name+second.third_long_name
       mode,
     );
     expect(collision.code).toContain("{a=1,b=2}");
+    expectLuaProjectOutput(collision, "true\t3\n");
 
     const multiObject = minifyTemporaryLuaSource(
       `
@@ -138,6 +145,12 @@ return selected.long_field_name
       mode,
     );
     expect(multiObject.code).not.toContain("long_field_name");
+    expectLuaProjectOutput(multiObject, "true\t1\n", {
+      prelude: "condition=true",
+    });
+    expectLuaProjectOutput(multiObject, "true\t2\n", {
+      prelude: "condition=false",
+    });
   });
 
   test.each([
@@ -208,6 +221,7 @@ return object.long_field_name
       mode,
     );
     expect(keyOutput.code).toContain("long_field_name");
+    expectLuaProjectOutput(keyOutput, "long_field_name\t1\ntrue\t1\n");
     expect(keyOutput.minifier.optimizationDiagnostics).toContainEqual(
       expect.objectContaining({
         pass: "whole-program-field-rename",
@@ -226,6 +240,7 @@ return object.long_field_name
       mode,
     );
     expect(customIterator.code).toContain("long_field_name");
+    expectLuaProjectOutput(customIterator, "long_field_name\t1\ntrue\t1\n");
   });
 
   test("keeps diagnostics observational and the result parseable", () => {

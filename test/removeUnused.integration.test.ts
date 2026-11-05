@@ -1,11 +1,47 @@
 import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import Parser from "luaparse";
+import fs from "node:fs";
 import { SourceMapConsumer } from "source-map";
-import { runMinifier } from "./lib/helpers";
+import { fixtureEntryPath, runMinifier } from "./lib/helpers";
 import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
+import { executeLua } from "./lib/luaExecution";
 
 describe("unused-code removal integration", () => {
+  describe.each([
+    {
+      name: "surplus initializer evaluation",
+      source:
+        "local function mark(v) print(v) return v end local first,unused=mark(1),mark(2),mark(3) return first",
+      stdout: "1\n2\n3\ntrue\t1\n",
+    },
+    {
+      name: "retained tuple slots around an effectful middle",
+      source:
+        "local function mark(v) print(v) return v end local first,unused,last=mark(1),mark(2),mark(3) return first,last",
+      stdout: "1\n2\n3\ntrue\t1\t3\n",
+    },
+    {
+      name: "an unused initializer that throws",
+      source:
+        'local function first() print("first") return 1 end local used,unused=first(),error("sentinel",0) return used',
+      stdout: "first\nfalse\tsentinel\n",
+    },
+  ])("$name", ({ source, stdout }) => {
+    test.each([true, false])("unusedCodeRemoval=%s", (unusedCodeRemoval) => {
+      const expected = { status: 0, stdout, stderr: "" };
+      const observe = (code: string) =>
+        executeLua(`print(pcall(function()\n${code}\nend))`);
+      assert.deepEqual(observe(source), expected);
+      const { code } = minifyTemporaryLuaSource(source, {
+        requireWrapper: false,
+        runtimeProfile: "stormworks",
+        unusedCodeRemoval,
+      });
+      assert.deepEqual(observe(code), expected);
+    });
+  });
+
   test("composes with require splicing, comments, rename, and local merging", async () => {
     const { code, map } = runMinifier({
       label: "unused stage 4 integration",
@@ -18,6 +54,17 @@ describe("unused-code removal integration", () => {
     assert.match(code, /sideEffect\(\)\n--# after effects/);
     assert.doesNotMatch(code, /removableName|removable/);
     assert.match(code, /local\n[a-zA-Z_]=produce\(\)/);
+    const prelude =
+      'function dependencyEffect() print("dep") end function sideEffect() print("side") end function produce() print("produce") return 7 end\n';
+    const expected = {
+      status: 0,
+      stdout: "dep\nside\nproduce\n7\n",
+      stderr: "",
+    };
+    const source = fs.readFileSync(fixtureEntryPath("unused-stage4"), "utf8");
+    const cwd = fixtureEntryPath("unused-stage4", ".");
+    assert.deepEqual(executeLua(prelude + source, cwd), expected);
+    assert.deepEqual(executeLua(prelude + code, cwd), expected);
 
     const generatedIndex = code.indexOf("sideEffect");
     assert.notEqual(generatedIndex, -1);

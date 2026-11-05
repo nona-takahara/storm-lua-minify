@@ -6,12 +6,16 @@
 
 パッケージマネージャーにはpnpmを使用します。対応するNode.jsとpnpmのバージョンは`package.json`の`engines`と`packageManager`を参照してください。
 
+Node.js 24系を開発・CI・公開ジョブの共通環境とし、選択するメジャーバージョンは`.node-version`に記載します。利用者向けの最低要件はNode.js 24です。`@types/node`も24系を使い、より新しいNode.jsにしかないAPIが型検査を通ることを防ぎます。
+
 ```console
 pnpm install --frozen-lockfile
 pnpm run build
 ```
 
 ## テスト
+
+テストにはLua 5.3の実行環境が必要です。既定では`lua5.3`を使用します。別の名前やパスでインストールされている場合は、環境変数`LUA53`にLua 5.3の実行ファイルを指定してください。未導入や実行失敗をスキップせず、テスト失敗として扱います。CIでは両方のジョブにLua 5.3を導入しています。
 
 ```console
 pnpm run test:smoke
@@ -22,24 +26,19 @@ pnpm test
 
 - ホワイトボックステスト: 内部の解析・変換境界を直接観測する
 - 契約テスト: 公開された入力と出力を仕様として記述する
-- スモークテスト: 配布CLIが起動し、LuaとSource Mapを生成できることを5秒のタイムアウトで確認する
+- スモークテスト: ビルド済みCLIの代表入力について、LuaとSource Mapの生成、Luaの構文と実行結果を確認する。さらにAPIのtrial失敗からの回復を確認する。各テストのタイムアウトは5秒
 
 通常の`pnpm test`はホワイトボックステストと契約テストを実行します。`pnpm run test:smoke`はビルド後にスモークテストだけを実行します。CIではスモークテストが成功した場合に限り、lint、format、全テストへ進みます。
 
-`test/`以下には、スナップショット、ラウンドトリップパース、識別子衝突検知のテストがあります。既知バグの再現ケースは`test.todo`として登録され、修正されるまではtodoとして扱われます。
+Vitestの設定ファイルは`.mts`でESMと明示します。これにより、Viteのnative config loaderでも設定のimport構文を読み込めます。製品のCommonJS出力とは別に設定します。
 
-スナップショットを更新する場合は、環境変数`UPDATE_SNAPSHOTS`を設定します。
+前段smokeの基準は、出力の機能が保たれていることです。圧縮をあきらめてbaselineへ戻っても、期待する値・副作用を保つ有効なLuaなら成功とします。圧縮率や最適化の採用、fallback理由そのものを前段の合否条件にしません。後段では最適化ごとの採用・拒否理由、内部解析、Source Mapなどを詳しく検証し、失敗箇所を切り分けます。
 
-```console
-UPDATE_SNAPSHOTS=1 pnpm test
-```
+意味保存のテストは、元入力と出力の両方を、明示した期待結果と独立に比較します。単に両者が一致するだけでは、両方が失敗するケースを見逃すためです。Lua子プロセスは2秒で打ち切り、終了状態・標準出力・標準エラーを確認します。文字列やbyte数のassertionは、変換の適用や圧縮効果を保証する別のテストとして残します。
 
-PowerShellでは次のように実行します。
+関数書換えの実行ケースは`test/cases/functionRewriteSemantics.json`を通常テストと`verify:effect-semantics`で共有しています。前段CLI smokeはそのうち2ケースと小さな算術ケースに絞り、全ケースを前段へ重複配置しません。後段では関数の戻り値個数・省略引数・副作用・エラー伝播、table read移動、property呼出しの評価を確認します。fallback診断は段階と例外種別ごとの名前付きケースで確認します。
 
-```powershell
-$env:UPDATE_SNAPSHOTS = "1"
-pnpm test
-```
+`test/`以下には、Lua実行・ラウンドトリップパース・識別子衝突検知・Source Mapのテストがあります。一般的なoptimizer出力は全文snapshotに固定せず、`test/lib/fixtureExecution.ts`の明示した期待値へ元入力と生成Luaをそれぞれ照合します。tableを出力するfixtureはmodule IDを観測し、アドレス表示の差を除きます。外部APIやextensionless dofileはfixture用の実行環境を明記します。新しいfixtureには期待する値・副作用・実行環境も追加してください。printerの明示した互換形式やオプションは、専用の出力テストで引き続き確認します。既知バグの再現ケースは`test.todo`として登録され、修正されるまではtodoとして扱われます。
 
 ## Lintとformat
 
@@ -53,9 +52,28 @@ pnpm run format
 
 ## CIとリリース
 
-CIは`main`と`develop`へのプルリクエストで動きます。詳細は`.github/workflows/ci.yml`を確認してください。
+CIはすべてのプルリクエストと、`main`・`develop`へのpushで動きます。他のPRのブランチを宛先とするstacked PRでも、smokeと後段の詳細チェックを実行します。詳細は`.github/workflows/ci.yml`を確認してください。
 
 Dependabotは、npmの依存とGitHub Actionsの更新を、`develop`向けのプルリクエストとして週に一度提案します。公開から7日経過していないバージョンは提案されません。設定は`.github/dependabot.yml`にあります。
+
+### 依存ライブラリのメジャー更新
+
+メジャー更新は依存ごとに確認します。複数を同時に検証する場合も、どの組み合わせを使ったかを残し、個別の更新が検証済みか区別してください。検証用の依存更新は別の作業領域で行い、採用する変更だけをPRへ含めます。
+
+| 更新対象        | 受け入れ時に確認すること                                                                                                                                                                                       |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Commander 15    | Node.js 24で、ビルドしたCommonJSのCLIからESMのCommanderを読み込めること。0件・1件・複数の入力、`--`以降のファイル名、繰り返し指定、正負のbooleanと未指定値、configとの優先順位、help/version、成果物を確認する |
+| TypeScript 6    | `module: "node20"`でNodeのモジュール解決と`require(ESM)`を扱い、CommonJS出力を維持する。`types: ["node"]`を明示し、製品とテストの両方を型検査する。非推奨エラーの抑制で済ませない                              |
+| `@eslint/js` 10 | 新しいrecommendedルールによる指摘と、既存のTypeScript向けルールとの組み合わせを確認する。実行結果を保つ修正を優先し、一括無効化しない                                                                          |
+| `@types/node`   | サポートするNode.jsのメジャーに合わせる。24系をサポートする間は、26系への更新提案をそのまま採用しない                                                                                                          |
+
+更新後は`pnpm install --frozen-lockfile`、`pnpm run test:smoke`、`pnpm test`、`pnpm run lint`、`pnpm run format:check`、`pnpm pack --dry-run`を確認します。smokeではビルド済みのCLIを別プロセスで実行するため、テストランナー内のimportだけでは見つからない起動失敗も検出します。
+
+Commanderは引数解析に加えてhelp生成と値の検証に利用しているため、組み込みの`util.parseArgs`への置換は、補助実装とCLI互換性の維持に必要な負担を比較して判断します。Vitestも継続利用します。`node:test`へ移す場合は、表形式テスト・部分一致・spy・一時ファイルの後始末を代表例で比較し、テストの意図と失敗理由が読み取りやすいことを確認してから範囲を決めます。依存数の削減だけを採用理由にしません。
+
+変更仕様の参照先: [Commanderの変更履歴](https://github.com/tj/commander.js/blob/v15.0.0/CHANGELOG.md)、[TypeScript 6の移行情報](https://devblogs.microsoft.com/typescript/announcing-typescript-6-0/)、[ESLint 10の移行情報](https://eslint.org/docs/latest/use/migrate-to-10.0.0)。
+
+### npmへの公開
 
 npmへの公開は、`.github/workflows/publish.yml`が行います。以下のリリース手順に従ってください。
 
@@ -115,7 +133,7 @@ npmへの公開は、`.github/workflows/publish.yml`が行います。以下の�
 
 ### 共通事項
 
-`report:*`と`verify:effect-semantics`は、`package.json`のコマンドを経由すると先にTypeScriptをビルドし、生成された`dist/`を読み込みます。`verify:lua-budget`はminifierを使わないため、ビルドせずに実行します。
+`report:*`、`verify:effect-semantics`、`verify:transform-reentry`、`verify:discardable-local-reads`、`verify:specialization-budget`は、`package.json`のコマンドを経由すると先にTypeScriptをビルドし、生成された`dist/`を読み込みます。`verify:lua-budget`はminifierを使わないため、ビルドせずに実行します。
 
 entry fileを受け取るreportコマンドでは、pnpmの引数とスクリプトの引数を`--`で区切ります。
 
@@ -134,6 +152,14 @@ reportコマンドはJSONを標準出力へ書きます。共通する主なフ�
 時間は簡易測定値であり、厳密なbenchmarkではありません。また、`adoptedByStrictCostGate`は実行結果の同値性を示すものではありません。意味論の確認には`verify:effect-semantics`を使用します。
 
 ### optimizer diagnostics
+
+`collectOptimizationDiagnostics: true`の診断名は、元関数ごとの1024 signature生成上限が`specialization-variant-limit`、Luaのlocal/register等の実行資源制限が`runtime-resource-limit`です。2048 candidate sitesによる全体の打ち切りは廃止し、`specialization-site-limit`は発行しません。旧名`resource-budget`は廃止済みです。Luaの実行資源制限は維持します。
+
+探索予算はコンパイル中の再訪と派生variantで共有します。同一signatureのvariantは、既存の束縛が生存し、挿入先で字句的に参照できる場合に再利用します。候補順は呼び出し箇所数の降順、仮引数位置の昇順、literalキーのUTF-16コード単位の辞書順です。各group内はAST順のcall-site idで並べ、代表literalと挿入位置を固定します。単純なreturn列へのboolean／nil複製が明らかに増加する場合だけ、楽観的な局所サイズ評価で生成を省きます。foldやfield削除などの可能性がある式はこの判定で除外せず、最終出力のcost gateへ渡します。
+
+cost gateが捕捉した例外は、`pass: "optimizer-cost-failure"`、`reason: "trial-failed"`の追加レコードに残します。任意の`failure`には`stage`（`full-trial`／`ablation`）、ablationで無効化した`gate`、`kind`（`analysis-nonconvergence`／`unexpected-error`／`non-error-thrown`）、取得可能なら例外の`name`と`message`を記録します。解析未収束は専用の`AnalysisConvergenceError`で識別し、他のErrorを実装不具合とは断定しません。パイプライン内部の失敗位置は記録しません。共同trial失敗時のbaseline採用、ablation失敗時の継続、baseline例外の伝播は従来どおりです。既存の最終採否レコードも維持します。
+
+`summarizeOptimizationDiagnostics`の既存bucket形式は維持します。失敗レコードも拒否1件として集計されますが、詳細は元の`optimizationDiagnostics`を参照してください。`report:optimizer`は集計に加えて`failures`配列を出力します。`report:aggregate-specialization`の`refusalReasons`は新しい診断名をそのままキーにします。
 
 ```console
 pnpm run report:optimizer
@@ -210,6 +236,40 @@ pnpm run verify:effect-semantics
 LUA53=/path/to/lua pnpm run verify:effect-semantics
 ```
 
+### 関数変換の再訪と固定点
+
+```console
+pnpm run verify:transform-reentry
+```
+
+延期したinline、定数畳み込み・未使用削除後の関数変換、specializationを対象に、1回目と2回目の圧縮結果の一致、および元コードと圧縮後の戻り値・エラー・副作用の一致をLua 5.3で確認します。既定の実行ファイルは`lua5.3`です。別の実行ファイルを使う場合は`LUA53`で指定します。
+
+### 特殊化探索予算の局所化
+
+```console
+pnpm run verify:specialization-budget
+```
+
+2050 callsを含む合成入力で特殊化の採用と縮小、Lua 5.3の実行結果、不利な小入力の出力不変を検証します。Lua実行ファイルは`LUA53`（既定`lua5.3`）で指定できます。
+
+変更前のソースを別のディレクトリにビルドした場合は、次のコマンドで変更前後を比較できます。baselineのビルドにも同じ依存を使用してください。
+
+```console
+node scripts/verify-specialization-budget.cjs --baseline-dist path/to/baseline/dist
+```
+
+既存fixtureをlua53／stormworks設定で処理し、コード・Source Map・診断の完全一致を確認します。合成入力では旧site上限による拒否と現在の縮小を確認します。その後、同じNodeプロセスでwarm-upし、変更前後の実行順を対ごとに反転させて5対を測定します。JSONの各測定値・中央値・比率は性能保証ではありません。
+
+### 多数のsignatureを持つ入力の測定
+
+既定の1024は、測定で完走した1000 signatureまでを覆う有限の予算です。1024自体の最適性や、大きな本体と多数の仮定を組み合わせた場合の資源使用量を保証する値ではありません。公開オプションは追加しません。
+
+```console
+pnpm run measure:specialization-budget -- --baseline-dist path/to/baseline/dist
+```
+
+共通関数を1000／1025種類の長い文字列で呼ぶ合成moduleを生成します。1000では同じNodeプロセスでwarm-up後に実行順を対ごとに反転して5対、1025では補足の1対を測定します。`--expose-gc`が有効なら各計測前にGCし、その時間は計測に含めません。別のNodeプロセスで両ビルドのピークRSSも測り、Lua 5.3で元入力と両出力の全戻り値・型を比較します。1025では1024 variantsと探索上限の拒否診断を確認し、Lua実行資源の拒否がないことを検証します。Luaは`LUA53`（既定`lua5.3`）で指定できます。比較元には探索予算局所化前のdevelop（`2b7b2c480204ea73b909fdbe56cc700ec594e4a5`）をビルドしたdistを指定してください。
+
 ### `assume-closed-field-names`の動作確認
 
 ```console
@@ -219,3 +279,71 @@ pnpm run verify:closed-field-names -- path/to/node.lua [more.lua ...] [--config 
 指定したLuaを、field名を変えない設定（`--no-field-renaming`）と`--assume-closed-field-names`の2通りでminifyし、Stormworksのスタブ環境（`input`、`output`、`screen`、`map`、`async`、`server`、`property`）で`onTick`と`onDraw`を回して、外へ出した呼び出しの記録を比べます。入力は決まった擬似乱数列で、2つのビルドは同じ値を同じ順で受け取ります。入力は「混合」（整数・小数・大きな値）と「小さな整数（0〜3）」の2通りで、後者はビット列を復号するノードが想定する形です。どちらも実行し、止まったtickも出力に含めます。`pairs`の並びはLua 5.3が実行ごとに変えるため、スタブ側でキー順に固定しています。
 
 記録が違うか、呼び出しが1つもなければ失敗します。乱数の入力が通る経路だけを比べるので、動作が同じことの証明ではありません。スクリプトが入力の途中でerrorになる場合は、両方が同じtickで止まることを確認します。`dofile`・`require`で読むファイルは、指定したLuaと同じディレクトリに置いてください。既定では`lua`を実行します。
+
+### local読み取りの破棄
+
+```console
+pnpm run verify:discardable-local-reads
+```
+
+Lua 5.3（既定は`lua5.3`、`LUA53`で指定可能）で、local・仮引数・upvalueの未使用コピー削除について戻り値・エラー・副作用を入力と出力で比較します。削除対象では出力の縮小も確認し、globalのmetatable経由の読み取り、束縛前参照、debugによるlocal・upvalueの観測が残ることを検証します。標準出力・標準エラーは一時ファイル経由で取得します。
+
+### 遅延optimizer解析の比較
+
+```console
+pnpm run verify:lazy-optimizer -- /absolute/path/to/baseline/dist [path/to/external/main.lua]
+```
+
+比較元と現在のリビジョンを別々にビルドし、比較元の`dist`を指定します。両方のビルドから依存パッケージを解決できる環境で実行してください。fixtureを3設定で比較し、出力・Source Map・診断全体の一致を検証します。100 localの合成入力と、任意指定の実入力について、同じNodeプロセス内で両ビルドをwarm upした後、実行順を交互に変えて3対測定します。解析の呼び出し回数も記録し、各対での決定性とvalue flow・statement dataflowの減少をassertします。時間は合否判定に使いません。
+
+optimizerのread snapshotは、モジュールごとの`PassOrchestrator`が管理します。変換は必要な遅延解析を最初のAST書き換え前にすべて取得し、書き換え中に別の解析を初めて要求してはいけません。変更結果を返した時点でsnapshotが失効します。全体変換の結果も`moduleChanged`へ通知します。独立して`analyzeOptimizer`を呼ぶ利用側は、AST変更時に`invalidate()`する責任を持ちます。失効後のgetterは計算済みでも例外になります。取得済みの解析オブジェクトの寿命も同じで、変換をまたいで保持してはいけません。
+
+`optimizerAnalysis(policy)`のpolicy objectは、runtime・仮定・関数summaryの解析方針を含む不変のcache identityです。同じpolicyを共有する利用側は同じobjectを使い、方針を変える場合は新しいobjectを作ります。内部のMapも変更してはいけません。世代はownerがcache keyへ加えます。既定の言語仕様のみのpolicyはfoldとfactsを共有し、runtimeや仮定を持つpolicyとは分離します。未使用削除はMinifierのruntime・introspection方針を使うため、専用のfacts cache keyを使います。
+
+### 最終cost候補のsnapshot再利用
+
+`Minifier`のcost gateは、従来と同じbaseline・共同trial・consumerからproducerへの削除順、同点の扱い、最終UTF-8 byte比較を使います。候補数や探索範囲は変更しません。キャッシュは1回の候補選択だけで生存し、runtime・仮定・解析policyを含む同じ解決済み設定と入力を使います。
+
+再利用境界は次のとおりです。
+
+| 境界                                                     | キー・所有権                                                                                                                                                                   |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| link完了                                                 | 入力が同じため一度だけ構築します。変換前に全moduleのAST・コメント所有情報を複製し、Resolveを作り直します。                                                                     |
+| 関数変換・field・fold・export DCE・local DCE・再訪の完了 | function rewrite・specialization・field fact・export DCEの4設定をキーにします。後続のproducerが候補を作る可能性があるため、この段階の途中で「候補なし」を確定しません。        |
+| global名計画・alias・scheduler・最終全体解析の完了       | 上記4設定とscheduler設定をキーにします。変換前には全moduleを複製します。以降はASTを変更せず、同じsnapshot上のResolve・Rename結果・全体解析をfield rename候補間で読み取ります。 |
+| 最終出力                                                 | 最終field rename計画が空なら同じsnapshotの出力を再利用します。すべてのproducerとschedulerが終了した後で判定します。非空の計画は通常どおり最終出力を生成・比較します。          |
+
+複製先へ解析を流用しません。`SourceMetadata.fork`は変換で移動したコメント・annotation・削除済み宣言と識別子の所有対応も複製します。位置からの再付着ではありません。specialization履歴とfunction originの対応は複製しません。複製境界は、全producerの開始前と固定点完了後に限るためです。後者の境界より先へ関数変換を追加する場合は、この前提も変更する必要があります。失敗した段階はキャッシュへ公開しません。
+
+module単位のcopy-on-writeは今回は扱いません。whole-programの変換が複数moduleを直接変更するため、書き込み境界の改修が必要です。関数やmoduleごとの独立したbyte見積もりも導入しません。
+
+変更前を別途ビルドした`BASELINE_DIST`と比較するには、次を実行します。実入力のentryは任意です。依存関係はそれぞれのビルドから解決できる状態にしてください。
+
+```sh
+pnpm run verify:cost-snapshots -- "$BASELINE_DIST" "$EXTERNAL_ENTRY"
+```
+
+スクリプトは既存fixtureを3設定・診断on/offで比較し、選択されたコード・Source Map・診断と、選択過程で評価した全候補のmask・byte数・失敗有無の一致を検証します。合成100 local入力と任意の実入力では、同じNodeプロセスで旧→新、新→旧を交互に5対測定し、解析等の呼び出し回数が決定論的に減ることも確認します。経過時間は保証値ではありません。依存をinstallせず実行する場合は、ビルド後に`node scripts/verify-cost-snapshots.cjs "$BASELINE_DIST" "$EXTERNAL_ENTRY"`を使えます。
+
+### 干渉グラフの同値性と性能
+
+```console
+pnpm exec vitest run test/interference.test.ts
+pnpm run verify:interference -- path/to/baseline/dist [path/to/main.lua ...]
+```
+
+単体テストでは、既存の全Lua fixtureと合成入力について、生存点由来の辺集合と完成した干渉グラフを従来のclique方式・bitset方式・自動選択で比較します。local名の再利用の有無と、一部symbolを短縮対象から除く場合も検証します。
+
+比較スクリプトには、変更前のリビジョンを別ディレクトリでビルドした`dist`を渡します。そのビルドからも依存を解決できる必要があります。通常の候補選択でfixtureのコード・Source Map・診断の一致を確認し、小さいfixture・合成入力・任意の追加entryを同じNodeプロセスでウォームアップ後に5対測定します。各対で先に実行するリビジョンを交互に変え、各対の平均時間とその中央値をJSONで表示します。小さいfixtureは各対10回ずつ実行し、その他は各対1回です。合成入力は1候補固定で測り、100 localでは通常の候補選択も測ります。400同時生存localはLuaの200 local制限を超えるストレス入力であり、実用入力の性能保証には使用しません。測定値は環境に依存するため、自動テストに時間の合否条件は設けていません。
+
+### 文依存の遅延照会の比較
+
+```console
+pnpm run verify:sparse-statement-dependencies -- /absolute/path/to/baseline/dist [path/to/external/main.lua]
+```
+
+比較元を別途ビルドして指定します。fixtureを3設定で比較し、出力・Source Map・診断の一致を確認します。外部callが600文ある合成入力、小さいfixture、代表fixture、任意指定の実入力について、同じNodeプロセスでwarm-up後に実行順を交互に変えて5対測定します。時間は合否に使いません。
+
+文依存解析は各文の要約とblock内の位置だけを保持し、`dependenciesBetween`は要求された順方向のペアを従来と同じ規則で判定します。照会結果は蓄積しません。`canMoveBefore`も移動区間のペアだけを照会します。全辺を列挙する互換APIの`dependencies`は、明示的に取得した場合だけ二次サイズになり得る配列を生成・保持します。通常のschedulerはこのAPIを使いません。任意の全ペア照会そのものを線形時間にする変更ではありません。
+
+`test/helpers/pairwiseStatementDataflow.ts`は変更前の全ペア実装を固定したテスト用参照です。`statementDataflow.test.ts`で既存Lua fixtureと合成入力の全文ペアについて、依存辺（種類・location・順序）と移動可否・拒否理由を、全辺列挙の前後とも比較します。参照実装は製品側の判定関数を共有しません。

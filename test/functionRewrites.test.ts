@@ -227,7 +227,7 @@ describe("function rewrites", () => {
     if (replacement.type !== "DoStatement") throw new Error("expected do");
     expect(replacement.body[0]).toMatchObject({
       type: "LocalStatement",
-      variables: [{ name: "__stormInline0" }, { name: "__stormInline1" }],
+      variables: [{ type: "Identifier" }, { type: "Identifier" }],
       init: [
         { type: "CallExpression", base: { name: "makeFirst" } },
         { type: "CallExpression", base: { name: "makeSecond" } },
@@ -235,15 +235,33 @@ describe("function rewrites", () => {
     });
     expect(replacement.body[1]).toMatchObject({
       type: "LocalStatement",
-      variables: [{ name: "__stormInline2" }],
+      variables: [{ type: "Identifier" }],
       init: [
         {
           type: "BinaryExpression",
-          left: { name: "__stormInline0" },
-          right: { name: "__stormInline1" },
+          left: { type: "Identifier" },
+          right: { type: "Identifier" },
         },
       ],
     });
+    const actuals = replacement.body[0] as Parser.LocalStatement;
+    const copied = replacement.body[1] as Parser.LocalStatement;
+    expect(actuals.variables[0].name).not.toBe(actuals.variables[1].name);
+    const after = resolveScopes(chunk);
+    const sum = copied.init[0] as Parser.BinaryExpression;
+    expect(after.symbolOf(sum.left as Parser.Identifier)?.declaration).toBe(
+      actuals.variables[0],
+    );
+    expect(after.symbolOf(sum.right as Parser.Identifier)?.declaration).toBe(
+      actuals.variables[1],
+    );
+    const publish = replacement.body[2] as Parser.CallStatement;
+    expect(
+      after.symbolOf(
+        (publish.expression as Parser.CallExpression)
+          .arguments[0] as Parser.Identifier,
+      )?.declaration,
+    ).toBe(copied.variables[0]);
   });
 
   test("alpha-converts copied symbols away from call-site shadowing", () => {
@@ -271,9 +289,7 @@ describe("function rewrites", () => {
       throw new Error("expected inline do");
     const binding = replacement.body[0] as Parser.LocalStatement;
     const copiedLocal = replacement.body[1] as Parser.LocalStatement;
-    expect(binding.variables[0].name).toBe("__stormInline0");
-    expect(copiedLocal.variables[0].name).toBe("__stormInline1");
-
+    const outerLocal = outer.body[0] as Parser.LocalStatement;
     const after = resolveScopes(chunk);
     const initializer = copiedLocal.init[0] as Parser.BinaryExpression;
     expect(
@@ -285,6 +301,13 @@ describe("function rewrites", () => {
     expect(after.symbolOf(resultReference)?.declaration).toBe(
       copiedLocal.variables[0],
     );
+    const outerPublish = outer.body[2] as Parser.CallStatement;
+    expect(
+      after.symbolOf(
+        (outerPublish.expression as Parser.CallExpression)
+          .arguments[0] as Parser.Identifier,
+      )?.declaration,
+    ).toBe(outerLocal.variables[0]);
   });
 
   test("rejects an upvalue whose spelling could be captured at the call site", () => {
@@ -308,6 +331,42 @@ describe("function rewrites", () => {
     );
 
     expect(result).toEqual({ changed: false, inlinedFunctions: 0 });
+  });
+
+  test("binds omitted tail-call parameters to fresh nil locals", () => {
+    const source =
+      "x=42 local function f(x,y)local value=x if value then return y end return 2 end return f()";
+    const chunk = Parser.parse(source, {
+      luaVersion: "5.3",
+      comments: true,
+      locations: true,
+      ranges: true,
+    });
+    const resolved = resolveScopes(chunk);
+    const facts = analyzeOptimizerFacts(chunk, resolved);
+    const callGraph = analyzeCallGraph(chunk, resolved, facts);
+    const result = inlineTailCallFunctions(
+      chunk,
+      analyzeInterprocedural(chunk, resolved, callGraph),
+      resolved,
+      new SourceMetadata(chunk, source),
+      { maxIntroducedLocalsAt: () => 10 },
+    );
+    expect(result).toEqual({ changed: true, inlinedFunctions: 1 });
+    const replacement = chunk.body[2];
+    if (replacement.type !== "DoStatement") throw new Error("expected do");
+    const binding = replacement.body[0];
+    if (binding.type !== "LocalStatement") throw new Error("expected local");
+    expect(binding.variables).toHaveLength(2);
+    expect(binding.init).toEqual([]);
+    const copiedLocal = replacement.body[1];
+    if (copiedLocal.type !== "LocalStatement")
+      throw new Error("expected local");
+    const fresh = resolveScopes(chunk);
+    expect(fresh.symbolOf(binding.variables[0])).toBeDefined();
+    expect(fresh.symbolOf(copiedLocal.init[0] as Parser.Identifier)).toBe(
+      fresh.symbolOf(binding.variables[0]),
+    );
   });
 
   test("inlines multi-statement and tuple returns into a caller tail", () => {

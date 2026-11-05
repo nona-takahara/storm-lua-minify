@@ -1,7 +1,7 @@
 {
   "name": "storm-lua-minify",
   "description": "A Lua minifier also outputs source map",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nona-takahara/storm-lua-minify.git"
@@ -18,25 +18,25 @@
   ],
   "packageManager": "pnpm@11.21.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "files": [
     "dist"
   ],
   "dependencies": {
-    "commander": "^12.1.0",
+    "commander": "^15.0.0",
     "luaparse": "^0.3.1",
-    "source-map": "^0.7.4"
+    "source-map": "^0.8.0"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.5",
+    "@eslint/js": "^10.0.1",
     "@types/luaparse": "^0.2.13",
-    "@types/node": "^22.20.1",
-    "eslint": "^9.39.5",
+    "@types/node": "^24.0.0",
+    "eslint": "^10.13.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.7.0",
     "prettier": "^3.9.5",
-    "typescript": "^5.9.3",
+    "typescript": "^6.0.3",
     "typescript-eslint": "^8.63.0",
     "vitest": "^5.0.0"
   },
@@ -45,10 +45,11 @@
     "start": "node ./dist/cli.js",
     "build": "tsc",
     "test": "tsc -p tsconfig.eslint.json && npx vitest run",
-    "test:smoke": "pnpm run build && vitest run --config vitest.smoke.config.ts",
+    "test:smoke": "pnpm run build && vitest run --config vitest.smoke.config.mts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "verify:interference": "pnpm run build && node scripts/verify-interference.cjs",
     "verify:lua-budget": "node scripts/verify-lua-resource-budget.cjs",
     "report:optimizer": "pnpm run build && node scripts/report-optimizer-diagnostics.cjs",
     "report:whole-program-objects": "pnpm run build && node scripts/report-whole-program-objects.cjs",
@@ -58,7 +59,14 @@
     "report:whole-program-field-renames": "pnpm run build && node scripts/report-whole-program-field-renames.cjs",
     "verify:closed-field-names": "pnpm run build && node scripts/verify-closed-field-names.cjs",
     "verify:effect-semantics": "pnpm run build && node scripts/verify-effect-semantics.cjs",
-    "prepack": "pnpm run build"
+    "verify:discardable-local-reads": "pnpm run build && node scripts/verify-discardable-local-reads.cjs",
+    "measure:specialization-budget": "pnpm run build && node --expose-gc scripts/measure-specialization-budget.cjs",
+    "verify:specialization-budget": "pnpm run build && node scripts/verify-specialization-budget.cjs",
+    "verify:transform-reentry": "pnpm run build && node scripts/verify-transform-reentry.cjs",
+    "prepack": "pnpm run build",
+    "verify:cost-snapshots": "pnpm run build && node scripts/verify-cost-snapshots.cjs",
+    "verify:sparse-statement-dependencies": "pnpm run build && node scripts/verify-sparse-statement-dependencies.cjs",
+    "verify:lazy-optimizer": "pnpm run build && node scripts/verify-lazy-optimizer.cjs"
   },
   "author": "Nona Takahara <nona_t_2612@yahoo.co.jp>",
   "license": "MIT"

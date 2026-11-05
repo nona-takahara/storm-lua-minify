@@ -2,6 +2,7 @@ import Parser from "luaparse";
 import { ResolveResult } from "./resolver";
 import { SourceMetadata } from "./sourceMetadata";
 import { OptimizerFacts } from "./optimizerFacts";
+import { walkBlockDeep } from "./astWalk";
 
 function rangeOf(node: object): [number, number] | undefined {
   return (node as { range?: [number, number] }).range;
@@ -54,14 +55,14 @@ function hasExternalReference(
   statement: Parser.FunctionDeclaration,
   references: readonly Parser.Identifier[],
 ): boolean {
-  const range = rangeOf(statement);
-  if (!range) return references.length > 0;
-  return references.some((reference) => {
-    const position = rangeOf(reference)?.[0];
-    return (
-      position === undefined || position < range[0] || position >= range[1]
-    );
+  if (references.length === 0) return false;
+  // Generated functions and their callers can retain ranges from different
+  // source files. Only actual AST containment identifies recursive references.
+  const external = new Set(references);
+  walkBlockDeep(statement.body, {
+    onIdentifierReference: (reference) => external.delete(reference),
   });
+  return external.size > 0;
 }
 
 function removeFromBlock(

@@ -1,10 +1,10 @@
 import Parser from "luaparse";
-import { CallGraphAnalysis } from "./callGraph";
+import { CallGraphAnalysis, Callable } from "./callGraph";
 import { walkExpression, walkStatement } from "./astWalk";
 import { InterproceduralAnalysis } from "./interproceduralAnalysis";
 import { ResolveResult, Scope, Symbol } from "./resolver";
 import { SourceMetadata } from "./sourceMetadata";
-import { copyNodeOrigin } from "./generatedNode";
+import { cloneWithFunctionOrigins, copyNodeOrigin } from "./generatedNode";
 
 export interface FunctionRewriteResult {
   readonly changed: boolean;
@@ -128,7 +128,7 @@ function substituteParameters(
   expression: Parser.Expression,
   replacements: ReadonlyMap<string, PrimitiveLiteral>,
 ): Parser.Expression {
-  const clone = structuredClone(expression);
+  const clone = cloneWithFunctionOrigins(expression);
   const substitute = (
     original: Parser.Expression,
     copied: Parser.Expression,
@@ -139,7 +139,7 @@ function substituteParameters(
       case "Identifier": {
         const replacement = replacements.get(original.name);
         if (replacement)
-          overwriteExpression(copied, structuredClone(replacement));
+          overwriteExpression(copied, cloneWithFunctionOrigins(replacement));
         return;
       }
       case "StringLiteral":
@@ -274,7 +274,7 @@ export function inlineClosedSingleUseFunctions(
 
     // structuredClone retains loc/range on every copied node, so the inlined
     // expression maps to the function body/return origin rather than call-site text.
-    overwriteExpression(site.call, structuredClone(expression));
+    overwriteExpression(site.call, cloneWithFunctionOrigins(expression));
     inlinedFunctions++;
   });
 
@@ -575,7 +575,7 @@ export function inlineClosedStatementFunctions(
     if (!site) return;
 
     const replacements = executable.map((statement) =>
-      structuredClone(statement),
+      cloneWithFunctionOrigins(statement),
     );
     if (!replaceStatement(chunk.body, site.owner, replacements)) return;
     metadata.replaceStatement(site.owner, replacements);
@@ -602,9 +602,13 @@ export function inlineBoundStatementFunctions(
   options: BoundStatementInlineOptions,
 ): StatementInlineRewriteResult {
   let inlinedFunctions = 0;
+  const rewrittenCallers = new Set<Callable>();
 
   analysis.callGraph.functions.forEach((callable) => {
     const declaration = callable.declaration;
+    // An earlier inline in this pass copied nodes into this body that `resolved`
+    // does not know, so alpha conversion would leave their references unrenamed.
+    if (rewrittenCallers.has(callable)) return;
     const symbol = callable.symbol;
     const functionScope = resolved.scopeOfFunction(declaration);
     if (
@@ -650,13 +654,15 @@ export function inlineBoundStatementFunctions(
     const binding: Parser.LocalStatement = {
       type: "LocalStatement",
       variables: declaration.parameters.map((parameter) =>
-        structuredClone(parameter as Parser.Identifier),
+        cloneWithFunctionOrigins(parameter as Parser.Identifier),
       ),
-      init: site.call.arguments.map((argument) => structuredClone(argument)),
+      init: site.call.arguments.map((argument) =>
+        cloneWithFunctionOrigins(argument),
+      ),
     };
     copyNodeOrigin(binding, site.owner);
     const copiedBody = executable.map((statement) =>
-      structuredClone(statement),
+      cloneWithFunctionOrigins(statement),
     );
     alphaConvertOwnedCopies(
       [...declaration.parameters, ...executable],
@@ -674,6 +680,7 @@ export function inlineBoundStatementFunctions(
     executable.forEach((source, index) => {
       metadata.transferStatements([source], copiedBody[index]);
     });
+    if (site.caller) rewrittenCallers.add(site.caller);
     inlinedFunctions++;
   });
 
@@ -693,9 +700,13 @@ export function inlineTailCallFunctions(
   options: BoundStatementInlineOptions,
 ): StatementInlineRewriteResult {
   let inlinedFunctions = 0;
+  const rewrittenCallers = new Set<Callable>();
 
   analysis.callGraph.functions.forEach((callable) => {
     const declaration = callable.declaration;
+    // An earlier inline in this pass copied nodes into this body that `resolved`
+    // does not know, so alpha conversion would leave their references unrenamed.
+    if (rewrittenCallers.has(callable)) return;
     const symbol = callable.symbol;
     const functionScope = resolved.scopeOfFunction(declaration);
     if (
@@ -741,9 +752,9 @@ export function inlineTailCallFunctions(
 
     const body: Parser.Statement[] = [];
     let copiedParameters: Parser.Identifier[] = [];
-    if (site.call.arguments.length > 0) {
+    if (declaration.parameters.length > 0 || site.call.arguments.length > 0) {
       copiedParameters = declaration.parameters.map((parameter) =>
-        structuredClone(parameter as Parser.Identifier),
+        cloneWithFunctionOrigins(parameter as Parser.Identifier),
       );
       const unavailable = new Set([
         ...resolved.symbols.map((candidate) => candidate.name),
@@ -762,13 +773,15 @@ export function inlineTailCallFunctions(
       const binding: Parser.LocalStatement = {
         type: "LocalStatement",
         variables: copiedParameters,
-        init: site.call.arguments.map((argument) => structuredClone(argument)),
+        init: site.call.arguments.map((argument) =>
+          cloneWithFunctionOrigins(argument),
+        ),
       };
       copyNodeOrigin(binding, site.owner);
       body.push(binding);
     }
     const copiedBody = declaration.body.map((statement) =>
-      structuredClone(statement),
+      cloneWithFunctionOrigins(statement),
     );
     alphaConvertOwnedCopies(
       [...declaration.parameters, ...declaration.body],
@@ -795,6 +808,7 @@ export function inlineTailCallFunctions(
     declaration.body.forEach((source, index) => {
       metadata.transferStatements([source], copiedBody[index]);
     });
+    if (site.caller) rewrittenCallers.add(site.caller);
     inlinedFunctions++;
   });
 
