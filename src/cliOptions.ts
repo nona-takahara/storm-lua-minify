@@ -25,6 +25,7 @@ export function createCliProgram(): Command {
   const command = new Command()
     .version("0.10.0")
     .description("A Lua minifier also outputs source map")
+    .argument("[files...]", "Lua input files")
     .option("--config <path>", "JSON configuration file")
     .addOption(
       new Option("--runtime-profile <profile>", "Target runtime semantics")

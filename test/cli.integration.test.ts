@@ -29,6 +29,18 @@ function runCli(directory: string, args: string[]) {
 
 describe("CLI configuration and output contract", () => {
   test.each([
+    { flag: "--help", expected: /--config/ },
+    { flag: "--version", expected: /^\d+\.\d+\.\d+\s*$/ },
+  ])("supports $flag without input files", ({ flag, expected }) => {
+    const project = createTemporaryLuaProject({});
+    const result = runCli(project.directory, [flag]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(expected);
+    expect(result.stderr).toBe("");
+    expect(fs.readdirSync(project.directory)).toEqual([]);
+  });
+
+  test.each([
     {
       name: "config-only settings with implicit non-TTY progress",
       configRename: false,

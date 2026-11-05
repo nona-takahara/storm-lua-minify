@@ -15,6 +15,32 @@ describe("v1 option hierarchy", () => {
     expect(optionsOf()).toEqual({});
   });
 
+  test.each([
+    { name: "no files", args: [], files: [] },
+    { name: "one file", args: ["main.lua"], files: ["main.lua"] },
+    {
+      name: "multiple files with an intervening option",
+      args: ["main.lua", "--no-progress", "second file.lua"],
+      files: ["main.lua", "second file.lua"],
+    },
+    {
+      name: "option-like filename after the terminator",
+      args: ["--", "--input.lua"],
+      files: ["--input.lua"],
+    },
+  ])("accepts $name", ({ args, files }) => {
+    const program = createCliProgram().exitOverride();
+    program.parse(args, { from: "user" });
+    expect(program.args).toEqual(files);
+  });
+
+  test.each([
+    { args: ["--progress", "--no-progress"], progress: false },
+    { args: ["--no-progress", "--progress"], progress: true },
+  ])("uses the last explicit boolean switch in $args", ({ args, progress }) => {
+    expect(optionsOf(...args)).toEqual({ progress });
+  });
+
   test("supports positive and negative kebab-case leaf switches", () => {
     expect(optionsOf("--function-inlining")).toMatchObject({
       functionInlining: true,

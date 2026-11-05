@@ -6,6 +6,8 @@
 
 パッケージマネージャーにはpnpmを使用します。対応するNode.jsとpnpmのバージョンは`package.json`の`engines`と`packageManager`を参照してください。
 
+Node.js 24系を開発・CI・公開ジョブの共通環境とし、選択するメジャーバージョンは`.node-version`に記載します。利用者向けの最低要件はNode.js 24です。`@types/node`も24系を使い、より新しいNode.jsにしかないAPIが型検査を通ることを防ぎます。
+
 ```console
 pnpm install --frozen-lockfile
 pnpm run build
@@ -27,6 +29,8 @@ pnpm test
 - スモークテスト: ビルド済みCLIの代表入力について、LuaとSource Mapの生成、Luaの構文と実行結果を確認する。さらにAPIのtrial失敗からの回復を確認する。各テストのタイムアウトは5秒
 
 通常の`pnpm test`はホワイトボックステストと契約テストを実行します。`pnpm run test:smoke`はビルド後にスモークテストだけを実行します。CIではスモークテストが成功した場合に限り、lint、format、全テストへ進みます。
+
+Vitestの設定ファイルは`.mts`でESMと明示します。これにより、Viteのnative config loaderでも設定のimport構文を読み込めます。製品のCommonJS出力とは別に設定します。
 
 前段smokeの基準は、出力の機能が保たれていることです。圧縮をあきらめてbaselineへ戻っても、期待する値・副作用を保つ有効なLuaなら成功とします。圧縮率や最適化の採用、fallback理由そのものを前段の合否条件にしません。後段では最適化ごとの採用・拒否理由、内部解析、Source Mapなどを詳しく検証し、失敗箇所を切り分けます。
 
@@ -51,6 +55,25 @@ pnpm run format
 CIはすべてのプルリクエストと、`main`・`develop`へのpushで動きます。他のPRのブランチを宛先とするstacked PRでも、smokeと後段の詳細チェックを実行します。詳細は`.github/workflows/ci.yml`を確認してください。
 
 Dependabotは、npmの依存とGitHub Actionsの更新を、`develop`向けのプルリクエストとして週に一度提案します。公開から7日経過していないバージョンは提案されません。設定は`.github/dependabot.yml`にあります。
+
+### 依存ライブラリのメジャー更新
+
+メジャー更新は依存ごとに確認します。複数を同時に検証する場合も、どの組み合わせを使ったかを残し、個別の更新が検証済みか区別してください。検証用の依存更新は別の作業領域で行い、採用する変更だけをPRへ含めます。
+
+| 更新対象        | 受け入れ時に確認すること                                                                                                                                                                                       |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Commander 15    | Node.js 24で、ビルドしたCommonJSのCLIからESMのCommanderを読み込めること。0件・1件・複数の入力、`--`以降のファイル名、繰り返し指定、正負のbooleanと未指定値、configとの優先順位、help/version、成果物を確認する |
+| TypeScript 6    | `module: "node20"`でNodeのモジュール解決と`require(ESM)`を扱い、CommonJS出力を維持する。`types: ["node"]`を明示し、製品とテストの両方を型検査する。非推奨エラーの抑制で済ませない                              |
+| `@eslint/js` 10 | 新しいrecommendedルールによる指摘と、既存のTypeScript向けルールとの組み合わせを確認する。実行結果を保つ修正を優先し、一括無効化しない                                                                          |
+| `@types/node`   | サポートするNode.jsのメジャーに合わせる。24系をサポートする間は、26系への更新提案をそのまま採用しない                                                                                                          |
+
+更新後は`pnpm install --frozen-lockfile`、`pnpm run test:smoke`、`pnpm test`、`pnpm run lint`、`pnpm run format:check`、`pnpm pack --dry-run`を確認します。smokeではビルド済みのCLIを別プロセスで実行するため、テストランナー内のimportだけでは見つからない起動失敗も検出します。
+
+Commanderは引数解析に加えてhelp生成と値の検証に利用しているため、組み込みの`util.parseArgs`への置換は、補助実装とCLI互換性の維持に必要な負担を比較して判断します。Vitestも継続利用します。`node:test`へ移す場合は、表形式テスト・部分一致・spy・一時ファイルの後始末を代表例で比較し、テストの意図と失敗理由が読み取りやすいことを確認してから範囲を決めます。依存数の削減だけを採用理由にしません。
+
+変更仕様の参照先: [Commanderの変更履歴](https://github.com/tj/commander.js/blob/v15.0.0/CHANGELOG.md)、[TypeScript 6の移行情報](https://devblogs.microsoft.com/typescript/announcing-typescript-6-0/)、[ESLint 10の移行情報](https://eslint.org/docs/latest/use/migrate-to-10.0.0)。
+
+### npmへの公開
 
 npmへの公開は、`.github/workflows/publish.yml`が行います。以下のリリース手順に従ってください。
 

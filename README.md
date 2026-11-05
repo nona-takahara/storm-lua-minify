@@ -6,6 +6,8 @@ Stormworks: Build and Rescue 以外の用途にも使用可能です。
 
 # 使い方
 
+実行にはNode.js 24以上が必要です。
+
 ```
 npm i storm-lua-minify
 

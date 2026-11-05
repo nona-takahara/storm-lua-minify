@@ -18,7 +18,7 @@
   ],
   "packageManager": "pnpm@11.21.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "files": [
     "dist"
@@ -31,7 +31,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.5",
     "@types/luaparse": "^0.2.13",
-    "@types/node": "^22.20.1",
+    "@types/node": "^24.0.0",
     "eslint": "^10.13.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.7.0",
@@ -45,7 +45,7 @@
     "start": "node ./dist/cli.js",
     "build": "tsc",
     "test": "tsc -p tsconfig.eslint.json && npx vitest run",
-    "test:smoke": "pnpm run build && vitest run --config vitest.smoke.config.ts",
+    "test:smoke": "pnpm run build && vitest run --config vitest.smoke.config.mts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
