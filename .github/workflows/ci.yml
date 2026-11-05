@@ -15,6 +15,9 @@ on:
 permissions:
   contents: read
 
+env:
+  LUA53: lua5.3
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -41,7 +44,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Smoke test (5 second test timeout)
+      - name: Install Lua 5.3
+        run: sudo apt-get update && sudo apt-get install -y lua5.3
+
+      - name: Functional smoke test (5 second test timeout)
         run: pnpm run test:smoke
 
   build-lint-test:
@@ -68,6 +74,9 @@ jobs:
 
       - name: Build
         run: pnpm run build
+
+      - name: Install Lua 5.3
+        run: sudo apt-get update && sudo apt-get install -y lua5.3
 
       - name: Lint
         run: pnpm run lint

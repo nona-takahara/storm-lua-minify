@@ -2,6 +2,7 @@ import { SourceNode } from "source-map";
 import { describe, expect, test, vi } from "vitest";
 import { AnalysisConvergenceError } from "../src/analysisConvergenceError";
 import { Minifier } from "../src/minifier";
+import { executeLua } from "./lib/luaExecution";
 import {
   createTemporaryLuaProject,
   minifyLuaProject,
@@ -31,11 +32,12 @@ const failures = [
 ];
 
 describe("cost gate failure diagnostics", () => {
-  test.each(["full-trial", "ablation"] as const)(
-    "classifies %s failures without changing code or source maps",
-    (stage) => {
-      const project = createTemporaryLuaProject({ "main.lua": "return 1" });
-      for (const failure of failures) {
+  describe.each(["full-trial", "ablation"] as const)("%s failures", (stage) => {
+    test.each(failures)(
+      "classifies $kind and preserves execution and source maps",
+      (failure) => {
+        const source = "return 1";
+        const project = createTemporaryLuaProject({ "main.lua": source });
         const run = (collectOptimizationDiagnostics: boolean) => {
           let calls = 0;
           const spy = vi
@@ -61,6 +63,14 @@ describe("cost gate failure diagnostics", () => {
         const enabled = run(true);
         expect(enabled.code).toBe(disabled.code);
         expect(enabled.map).toEqual(disabled.map);
+        const observe = (code: string) =>
+          executeLua(`print(pcall(function()\n${code}\nend))`);
+        const expected = { status: 0, stdout: "true\t1\n", stderr: "" };
+        expect(observe(source), "original program").toEqual(expected);
+        expect(observe(disabled.code), "diagnostics disabled").toEqual(
+          expected,
+        );
+        expect(observe(enabled.code), "diagnostics enabled").toEqual(expected);
         expect(disabled.minifier.optimizationDiagnostics).toEqual([]);
         const records = enabled.minifier.optimizationDiagnostics.filter(
           (item) => item.failure,
@@ -87,9 +97,9 @@ describe("cost gate failure diagnostics", () => {
           }),
         );
         expect(JSON.parse(JSON.stringify(records))).toEqual(records);
-      }
-    },
-  );
+      },
+    );
+  });
   test("propagates baseline failures", () => {
     const project = createTemporaryLuaProject({ "main.lua": "return 1" });
     const error = new AnalysisConvergenceError("baseline failed");

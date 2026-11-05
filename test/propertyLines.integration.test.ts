@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { describe, test } from "vitest";
 import Parser from "luaparse";
 import { SourceMapConsumer } from "source-map";
@@ -9,6 +6,7 @@ import { walkBlockDeep } from "../src/astWalk";
 import { resolveScopes } from "../src/resolver";
 import { MinifierMode } from "../src/minifier";
 import { LUAPARSE_SETTINGS } from "./lib/helpers";
+import { executeLua } from "./lib/luaExecution";
 import {
   minifyTemporaryLuaProject,
   minifyTemporaryLuaSource,
@@ -199,44 +197,24 @@ describe("Stormworks property call lines", () => {
     });
   });
 
-  test.skipIf(!process.env.LUA53)(
-    "preserves Lua evaluation order, side effects and multiple return values",
-    () => {
-      const source = `local function identity(...) return ... end
+  test("preserves Lua evaluation order, side effects and multiple return values", () => {
+    const source = `local function identity(...) return ... end
       local a,b=property.slider("first",1),property.slider("second",2)
       local nested=property.checkbox(property.getText("nested"),true)
       local x,y=identity(property.slider("third",3),property.slider("fourth",4))
       print(a,b,nested,x,y)`;
-      const result = minifyTemporaryLuaSource(source, {
-        ...mode,
-        optimizations: true,
-      });
-      assertSeparated(result.code, 6);
-      const prelude = `property=setmetatable({}, {__index=function(_,method)
+    const result = minifyTemporaryLuaSource(source, {
+      ...mode,
+      optimizations: true,
+    });
+    assertSeparated(result.code, 6);
+    const prelude = `property=setmetatable({}, {__index=function(_,method)
       return function(name,value) print(method,name,value) return value or name,99 end
     end})\n`;
-      function execute(code: string, name: string): string {
-        const input = path.join(result.directory, name + ".lua");
-        const output = path.join(result.directory, name + ".out");
-        fs.writeFileSync(input, prelude + code);
-        const fd = fs.openSync(output, "w");
-        try {
-          const lua = process.env.LUA53;
-          assert.ok(lua);
-          const run = spawnSync(lua, [input], {
-            stdio: ["ignore", fd, fd],
-          });
-          assert.ifError(run.error);
-          assert.equal(run.status, 0, fs.readFileSync(output, "utf8"));
-        } finally {
-          fs.closeSync(fd);
-        }
-        return fs.readFileSync(output, "utf8");
-      }
-      const expected =
-        "slider\tfirst\t1\nslider\tsecond\t2\ngetText\tnested\tnil\ncheckbox\tnested\ttrue\nslider\tthird\t3\nslider\tfourth\t4\n1\t2\ttrue\t3\t4\n";
-      assert.equal(execute(source, "original"), expected);
-      assert.equal(execute(result.code, "minified"), expected);
-    },
-  );
+    const stdout =
+      "slider\tfirst\t1\nslider\tsecond\t2\ngetText\tnested\tnil\ncheckbox\tnested\ttrue\nslider\tthird\t3\nslider\tfourth\t4\n1\t2\ttrue\t3\t4\n";
+    const expected = { status: 0, stdout, stderr: "" };
+    assert.deepEqual(executeLua(prelude + source), expected);
+    assert.deepEqual(executeLua(prelude + result.code), expected);
+  });
 });
