@@ -7,6 +7,7 @@ import { resolveScopes } from "../src/resolver";
 import { MinifierMode } from "../src/minifier";
 import { LUAPARSE_SETTINGS } from "./lib/helpers";
 import { executeLua } from "./lib/luaExecution";
+import { expectLuaProjectOutput } from "./lib/luaProjectAssertions";
 import {
   minifyTemporaryLuaProject,
   minifyTemporaryLuaSource,
@@ -130,14 +131,22 @@ describe("Stormworks property call lines", () => {
 
   for (const requireWrapper of [false, true]) {
     test(`separates calls across linked modules (wrapper=${String(requireWrapper)})`, () => {
-      const { code } = minifyTemporaryLuaProject(
+      const result = minifyTemporaryLuaProject(
         {
           "main.lua": `local first=require("settings")\nconsume(first,property.checkbox("main",true))`,
           "settings.lua": `return {property.checkbox("dep1",true),property.checkbox("dep2",true)}`,
         },
         { ...mode, requireWrapper, optimizations: true },
       );
-      assertSeparated(code, 3);
+      assertSeparated(result.code, 3);
+      expectLuaProjectOutput(
+        result,
+        "dep1\ttrue\ndep2\ttrue\nmain\ttrue\ntrue\ttrue\ttrue\ntrue\n",
+        {
+          prelude:
+            "property={checkbox=function(name,value) print(name,value) return value end} function consume(first,main) print(first[1],first[2],main) end",
+        },
+      );
     });
   }
 

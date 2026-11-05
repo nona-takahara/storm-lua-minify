@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 import { analyzeOptimizer } from "../src/optimizerAnalysis";
 import { resolveScopes } from "../src/resolver";
 import { minifyTemporaryLuaProject } from "./lib/minifierHarness";
+import { expectLuaProjectOutput } from "./lib/luaProjectAssertions";
 import {
   analyzeWholeProgramObjects,
   WholeProgramModule,
@@ -324,6 +325,9 @@ return Class
       );
     const methodParameters = method?.parameters.length;
     expect(methodParameters).toBe(1);
+    expectLuaProjectOutput(result, "side\ntrue\t1\n", {
+      prelude: 'function side() print("side") return 9 end',
+    });
 
     await SourceMapConsumer.with(result.map, null, (consumer) => {
       expect(consumer.hasContentsOfAllSources()).toBe(true);
@@ -377,6 +381,11 @@ return Class
           statement.identifier.identifier.name === "method",
       );
     expect(method?.parameters).toHaveLength(2);
+    const prelude =
+      'function side() print("side") return 9 end function external(self,value,unused) print(type(self),value,unused) return 42 end';
+    const stdout = "side\ntable\t1\t9\ntrue\t42\n";
+    expectLuaProjectOutput(enabled, stdout, { prelude });
+    expectLuaProjectOutput(disabled, stdout, { prelude });
   });
 
   test("specializes resolved method sites while preserving self and surplus effects", () => {
@@ -413,5 +422,8 @@ return Class
       }),
     );
     expect(result.code.match(/side\(\)/g)).toHaveLength(12);
+    expectLuaProjectOutput(result, "side\n".repeat(12) + "true\t84\n", {
+      prelude: 'function side() print("side") return 0 end',
+    });
   });
 });
