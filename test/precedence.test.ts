@@ -1,30 +1,38 @@
 import { describe, test } from "vitest";
 import assert from "node:assert/strict";
 import Parser from "luaparse";
-import fs from "fs";
-import os from "os";
-import path from "path";
 import { runMinifier } from "./lib/helpers";
-import { Minifier } from "../src/minifier";
+import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
+import { executeLua } from "./lib/luaExecution";
 
 function minifyExpression(exprSource: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "storm-precedence-"));
-  const filePath = path.join(dir, "main.lua");
-  fs.writeFileSync(filePath, "return " + exprSource + "\n");
-  try {
-    return new Minifier(
-      filePath,
-      { locations: true, luaVersion: "5.3", ranges: true, scope: true },
-      { requireWrapper: false },
-    )
-      .parse()
-      .toStringWithSourceMap({ file: "main.min.lua" }).code;
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  return minifyTemporaryLuaSource(`return ${exprSource}\n`, {
+    requireWrapper: false,
+  }).code;
 }
 
 describe("expression precedence in minified output", () => {
+  test.each([
+    ["2 ^ 3 ^ 2", "512.0\n"],
+    ["(2 ^ 3) ^ 2", "64.0\n"],
+    ["-2 ^ 2", "-4.0\n"],
+    ["(-2) ^ 2", "4.0\n"],
+    ["3 | 4 & 2", "3\n"],
+    ["(3 | 4) & 2", "2\n"],
+    ["20 // 3 // 2", "3\n"],
+    ["20 // (3 // 2)", "20\n"],
+    ['0xff .. "x"', "255x\n"],
+    ["#(1 .. 2)", "2\n"],
+  ])("preserves the Lua result of %s", (expression, stdout) => {
+    const expected = { status: 0, stdout, stderr: "" };
+    const code = minifyExpression(expression);
+    assert.deepEqual(executeLua(`print(${expression})`), expected);
+    assert.deepEqual(
+      executeLua(`print((function()\n${code}\nend)())`),
+      expected,
+    );
+  });
+
   test("preserves bitwise and floor-division precedence", () => {
     const { code } = runMinifier({
       label: "bitwise-precedence",

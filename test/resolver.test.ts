@@ -8,6 +8,105 @@ describe("lexical name resolution", () => {
     return Parser.parse(code, { luaVersion: "5.3" });
   }
 
+  test("resolves a shadowing local initializer before introducing the new binding", () => {
+    const chunk = parse(
+      "local value=7 do local value=value+1 print(value) end",
+    );
+    const result = resolveScopes(chunk);
+    const outer = result.symbolOf(
+      (chunk.body[0] as Parser.LocalStatement).variables[0],
+    );
+    const block = chunk.body[1] as Parser.DoStatement;
+    const declaration = block.body[0] as Parser.LocalStatement;
+    const inner = result.symbolOf(declaration.variables[0]);
+    const initializer = declaration.init[0] as Parser.BinaryExpression;
+    const use = (block.body[1] as Parser.CallStatement)
+      .expression as Parser.CallExpression;
+    assert.ok(outer);
+    assert.ok(inner);
+    assert.notEqual(outer, inner);
+    assert.equal(result.symbolOf(initializer.left as Parser.Identifier), outer);
+    assert.equal(result.symbolOf(use.arguments[0] as Parser.Identifier), inner);
+  });
+
+  test("keeps repeat-body locals visible in until but out of the enclosing block", () => {
+    const chunk = parse(
+      "local value=0 repeat local value=1 until value==1 print(value)",
+    );
+    const result = resolveScopes(chunk);
+    const outer = result.symbolOf(
+      (chunk.body[0] as Parser.LocalStatement).variables[0],
+    );
+    const repeat = chunk.body[1] as Parser.RepeatStatement;
+    const inner = result.symbolOf(
+      (repeat.body[0] as Parser.LocalStatement).variables[0],
+    );
+    const condition = repeat.condition as Parser.BinaryExpression;
+    const after = (chunk.body[2] as Parser.CallStatement)
+      .expression as Parser.CallExpression;
+    assert.ok(outer);
+    assert.ok(inner);
+    assert.notEqual(inner, outer);
+    assert.equal(result.symbolOf(condition.left as Parser.Identifier), inner);
+    assert.equal(
+      result.symbolOf(after.arguments[0] as Parser.Identifier),
+      outer,
+    );
+  });
+
+  test("resolves numeric loop bounds before declaring the loop variable", () => {
+    const chunk = parse("local i=3 for i=i,i+1 do print(i) end");
+    const result = resolveScopes(chunk);
+    const outer = result.symbolOf(
+      (chunk.body[0] as Parser.LocalStatement).variables[0],
+    );
+    const loop = chunk.body[1] as Parser.ForNumericStatement;
+    const variable = result.symbolOf(loop.variable);
+    const use = (loop.body[0] as Parser.CallStatement)
+      .expression as Parser.CallExpression;
+    assert.ok(outer);
+    assert.ok(variable);
+    assert.notEqual(variable, outer);
+    assert.equal(result.symbolOf(loop.start as Parser.Identifier), outer);
+    assert.equal(
+      result.symbolOf(
+        (loop.end as Parser.BinaryExpression).left as Parser.Identifier,
+      ),
+      outer,
+    );
+    assert.equal(
+      result.symbolOf(use.arguments[0] as Parser.Identifier),
+      variable,
+    );
+  });
+
+  test("resolves generic iterators before declaring either loop variable", () => {
+    const chunk = parse(
+      "local key,value=next,{} for key,value in key,value do print(key,value) end",
+    );
+    const result = resolveScopes(chunk);
+    const outer = (chunk.body[0] as Parser.LocalStatement).variables.map((id) =>
+      result.symbolOf(id),
+    );
+    const loop = chunk.body[1] as Parser.ForGenericStatement;
+    const variables = loop.variables.map((id) => result.symbolOf(id));
+    const use = (loop.body[0] as Parser.CallStatement)
+      .expression as Parser.CallExpression;
+    outer.forEach((symbol, index) => {
+      assert.ok(symbol);
+      assert.ok(variables[index]);
+      assert.notEqual(variables[index], symbol);
+    });
+    assert.deepEqual(
+      loop.iterators.map((id) => result.symbolOf(id as Parser.Identifier)),
+      outer,
+    );
+    assert.deepEqual(
+      use.arguments.map((id) => result.symbolOf(id as Parser.Identifier)),
+      variables,
+    );
+  });
+
   test("binds colon method self as an implicit first parameter", () => {
     const chunk = parse(
       "local Object={} function Object:method(value)return self.value,value end",
