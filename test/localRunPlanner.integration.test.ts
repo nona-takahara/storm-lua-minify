@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { MinifierMode } from "../src/minifier";
 import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
+import { executeLua } from "./lib/luaExecution";
 
 function minify(source: string, mode: Partial<MinifierMode>): string {
   return minifyTemporaryLuaSource(
@@ -72,5 +73,15 @@ describe("local-run planner profiles", () => {
       "local before,after=tableValue.x,tableValue.x tableValue.x=2",
     );
     expect(Buffer.byteLength(aggressive)).toBeLessThan(Buffer.byteLength(safe));
+    const prelude = "function use(before,after) print(before,after) end\n";
+    const unchanged = { status: 0, stdout: "1\t2\n", stderr: "" };
+    expect(executeLua(prelude + source)).toEqual(unchanged);
+    expect(executeLua(prelude + safe)).toEqual(unchanged);
+    // This opt-in explicitly permits the second read to observe the old value.
+    expect(executeLua(prelude + aggressive)).toEqual({
+      status: 0,
+      stdout: "1\t1\n",
+      stderr: "",
+    });
   });
 });

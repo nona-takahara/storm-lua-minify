@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { SourceMapConsumer } from "source-map";
 import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
 import { runMinifier, WORKING_CASES } from "./lib/helpers";
+import { executeLua } from "./lib/luaExecution";
 
 const SOURCE = `local first = 1
 use(first)
@@ -19,6 +20,36 @@ const BASE_MODE = {
 } as const;
 
 describe("liveness-based identifier coloring", () => {
+  test.each([
+    {
+      name: "a revived captured binding",
+      source:
+        "local revived local function read()return revived end local intervening=true revived=7 print(read(),intervening)",
+      stdout: "7\ttrue\n",
+    },
+    {
+      name: "capture through a nested block",
+      source:
+        "local captured=1 do local nested=2 local function read()return captured end print(nested,read()) end",
+      stdout: "2\t1\n",
+    },
+    {
+      name: "simultaneously live values across a loop back-edge",
+      source:
+        "local left,right=1,2 for i=1,3 do left,right=right,left end print(left,right)",
+      stdout: "2\t1\n",
+    },
+  ])("preserves $name", ({ source, stdout }) => {
+    const { code } = minifyTemporaryLuaSource(source, {
+      ...BASE_MODE,
+      runtimeProfile: "stormworks",
+      functionOptimizations: false,
+    });
+    const expected = { status: 0, stdout, stderr: "" };
+    expect(executeLua(source), "original program").toEqual(expected);
+    expect(executeLua(code), "colored program").toEqual(expected);
+  });
+
   test("reuses a same-scope name and preserves each Source Map origin", async () => {
     const result = minifyTemporaryLuaSource(SOURCE, {
       ...BASE_MODE,
@@ -31,6 +62,10 @@ describe("liveness-based identifier coloring", () => {
     expect(result.map.names).toEqual(
       expect.arrayContaining(["first", "second"]),
     );
+    const prelude = "function use(value) print(value) end\n";
+    const expected = { status: 0, stdout: "1\n2\n", stderr: "" };
+    expect(executeLua(prelude + SOURCE)).toEqual(expected);
+    expect(executeLua(prelude + result.code)).toEqual(expected);
     await SourceMapConsumer.with(result.map, null, (consumer) => {
       const first = consumer.generatedPositionFor({
         source: "main.lua",

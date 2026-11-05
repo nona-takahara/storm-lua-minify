@@ -5,6 +5,7 @@ import { resolveScopes } from "../src/resolver";
 import { insertGlobalAliases } from "../src/transform";
 import { minifyTemporaryLuaProject } from "./lib/minifierHarness";
 import { runMinifier } from "./lib/helpers";
+import { executeLua } from "./lib/luaExecution";
 
 describe("global alias insertion", () => {
   function parse(code: string): Parser.Chunk {
@@ -83,9 +84,8 @@ describe("global alias insertion", () => {
   });
 
   test("a global written by another module is not captured before that module runs", () => {
-    const { code } = minifyTemporaryLuaProject(
-      {
-        "main.lua": `
+    const files = {
+      "main.lua": `
           function onTick()
             calculateTick()
             calculateTick()
@@ -95,21 +95,20 @@ describe("global alias insertion", () => {
           end
           require("implementation")
         `,
-        "implementation.lua": `
+      "implementation.lua": `
           function calculateTick()
             return 1
           end
         `,
-      },
-      {
-        requireWrapper: false,
-        optimizations: false,
-        localRenaming: true,
-        globalRenaming: false,
-        globalAliasing: true,
-        neverRenameGlobals: new Set(["onTick"]),
-      },
-    );
+    };
+    const { code, directory } = minifyTemporaryLuaProject(files, {
+      requireWrapper: false,
+      optimizations: false,
+      localRenaming: true,
+      globalRenaming: false,
+      globalAliasing: true,
+      neverRenameGlobals: new Set(["onTick"]),
+    });
 
     assert.equal(
       /local\s+\w+\s*=\s*calculateTick/.test(code),
@@ -117,6 +116,14 @@ describe("global alias insertion", () => {
       `program-owned global must not be captured as an external alias: ${code}`,
     );
     assert.match(code, /calculateTick\(\)/);
+    const observe = (source: string) =>
+      executeLua(
+        `print(pcall(function()\n${source}\nonTick() return calculateTick()\nend))`,
+        directory,
+      );
+    const expected = { status: 0, stdout: "true\t1\n", stderr: "" };
+    assert.deepEqual(observe(files["main.lua"]), expected);
+    assert.deepEqual(observe(code), expected);
   });
 
   test("require and dofile are never aliased even when referenced frequently", () => {
