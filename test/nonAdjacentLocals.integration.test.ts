@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { MinifierMode } from "../src/minifier";
 import { minifyTemporaryLuaSource } from "./lib/minifierHarness";
 import { executeLua } from "./lib/luaExecution";
+import { expectLuaProgramsOutput } from "./lib/luaProjectAssertions";
 
 function minify(source: string, mode: Partial<MinifierMode>): string {
   return minifyTemporaryLuaSource(
@@ -21,6 +22,14 @@ local third = makeThird()
 use(first, second, third)
 `;
 
+function expectSourceTrace(...outputs: string[]): void {
+  expectLuaProgramsOutput(
+    [SOURCE, ...outputs].map((code) => `${code}\nprint("global",value)`),
+    "first\ntick\nsecond\nthird\nuse\t11\t22\t33\nglobal\t1\ntrue\n",
+    'function makeFirst() print("first") return 11 end function makeSecond() print("second") return 22 end function makeThird() print("third") return 33 end function tick() print("tick") end function use(...) print("use",...) end',
+  );
+}
+
 describe("effect-aware non-adjacent locals pipeline", () => {
   test("is enabled by default for Stormworks and produces shorter valid Lua", () => {
     const disabled = minify(SOURCE, {
@@ -37,12 +46,13 @@ describe("effect-aware non-adjacent locals pipeline", () => {
   });
 
   test("can be opted out in Stormworks", () => {
-    expect(
+    expectSourceTrace(
       minify(SOURCE, {
         runtimeProfile: "stormworks",
         statementOptimizations: false,
       }),
-    ).toBe(minify(SOURCE, { runtimeProfile: "lua53" }));
+      minify(SOURCE, { runtimeProfile: "lua53" }),
+    );
   });
 
   test("requires a separate local-lifetime opt-in for pure Lua", () => {
@@ -64,7 +74,7 @@ describe("effect-aware non-adjacent locals pipeline", () => {
       statementOptimizations: false,
     });
 
-    expect(output).toBe(minify(SOURCE, { runtimeProfile: "lua53" }));
+    expectSourceTrace(output, minify(SOURCE, { runtimeProfile: "lua53" }));
   });
 
   test("does not replace a shorter adjacent-local merge", () => {
@@ -80,7 +90,11 @@ describe("effect-aware non-adjacent locals pipeline", () => {
     expect(Buffer.byteLength(enabled)).toBeLessThanOrEqual(
       Buffer.byteLength(disabled),
     );
-    expect(enabled).toBe(disabled);
+    expectLuaProgramsOutput(
+      [source, enabled, disabled],
+      "f\ng\nh\nuse\t1\t2\t3\ntrue\n",
+      'function f() print("f") return 1 end function g() print("g") return 2 end function h() print("h") return 3 end function use(...) print("use",...) end',
+    );
   });
 
   test("table-read opt-out does not disable local hoisting", () => {

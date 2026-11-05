@@ -227,7 +227,7 @@ describe("function rewrites", () => {
     if (replacement.type !== "DoStatement") throw new Error("expected do");
     expect(replacement.body[0]).toMatchObject({
       type: "LocalStatement",
-      variables: [{ name: "__stormInline0" }, { name: "__stormInline1" }],
+      variables: [{ type: "Identifier" }, { type: "Identifier" }],
       init: [
         { type: "CallExpression", base: { name: "makeFirst" } },
         { type: "CallExpression", base: { name: "makeSecond" } },
@@ -235,15 +235,33 @@ describe("function rewrites", () => {
     });
     expect(replacement.body[1]).toMatchObject({
       type: "LocalStatement",
-      variables: [{ name: "__stormInline2" }],
+      variables: [{ type: "Identifier" }],
       init: [
         {
           type: "BinaryExpression",
-          left: { name: "__stormInline0" },
-          right: { name: "__stormInline1" },
+          left: { type: "Identifier" },
+          right: { type: "Identifier" },
         },
       ],
     });
+    const actuals = replacement.body[0] as Parser.LocalStatement;
+    const copied = replacement.body[1] as Parser.LocalStatement;
+    expect(actuals.variables[0].name).not.toBe(actuals.variables[1].name);
+    const after = resolveScopes(chunk);
+    const sum = copied.init[0] as Parser.BinaryExpression;
+    expect(after.symbolOf(sum.left as Parser.Identifier)?.declaration).toBe(
+      actuals.variables[0],
+    );
+    expect(after.symbolOf(sum.right as Parser.Identifier)?.declaration).toBe(
+      actuals.variables[1],
+    );
+    const publish = replacement.body[2] as Parser.CallStatement;
+    expect(
+      after.symbolOf(
+        (publish.expression as Parser.CallExpression)
+          .arguments[0] as Parser.Identifier,
+      )?.declaration,
+    ).toBe(copied.variables[0]);
   });
 
   test("alpha-converts copied symbols away from call-site shadowing", () => {
@@ -271,9 +289,7 @@ describe("function rewrites", () => {
       throw new Error("expected inline do");
     const binding = replacement.body[0] as Parser.LocalStatement;
     const copiedLocal = replacement.body[1] as Parser.LocalStatement;
-    expect(binding.variables[0].name).toBe("__stormInline0");
-    expect(copiedLocal.variables[0].name).toBe("__stormInline1");
-
+    const outerLocal = outer.body[0] as Parser.LocalStatement;
     const after = resolveScopes(chunk);
     const initializer = copiedLocal.init[0] as Parser.BinaryExpression;
     expect(
@@ -285,6 +301,13 @@ describe("function rewrites", () => {
     expect(after.symbolOf(resultReference)?.declaration).toBe(
       copiedLocal.variables[0],
     );
+    const outerPublish = outer.body[2] as Parser.CallStatement;
+    expect(
+      after.symbolOf(
+        (outerPublish.expression as Parser.CallExpression)
+          .arguments[0] as Parser.Identifier,
+      )?.declaration,
+    ).toBe(outerLocal.variables[0]);
   });
 
   test("rejects an upvalue whose spelling could be captured at the call site", () => {
