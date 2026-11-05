@@ -5,6 +5,8 @@ import { CostSnapshotClone } from "../src/costSnapshot";
 import { Minifier, MinifierMode } from "../src/minifier";
 import { SourceMetadata } from "../src/sourceMetadata";
 import { createTemporaryLuaProject } from "./lib/minifierHarness";
+import { executeLua } from "./lib/luaExecution";
+import { expectLuaProjectOutput } from "./lib/luaProjectAssertions";
 
 type Variant = "baseline" | "trial";
 type Mask = Record<
@@ -151,12 +153,13 @@ describe("cost evaluation snapshots", () => {
   });
 
   test("matches all 48 dependency-closed masks with independent full evaluations", () => {
-    const { entryFilePath } = createTemporaryLuaProject({
+    const project = createTemporaryLuaProject({
       "main.lua":
         'local m=require("child") local t=m.make(3) local u=m.make(3) return t.longField+u.longField',
       "child.lua":
         "local M={} function M.make(x)return {longField=x,unused=2}end return M",
     });
+    const { entryFilePath } = project;
     let cache: Map<string, Evaluation> | undefined;
     const original = prototype.evaluateCostVariant;
     vi.spyOn(prototype, "evaluateCostVariant").mockImplementation(function (
@@ -169,7 +172,10 @@ describe("cost evaluation snapshots", () => {
       return original.call(this, mask, label, values);
     });
     const selected = new Minifier(entryFilePath, { luaVersion: "5.3" }, mode);
-    selected.parse();
+    const selectedCode = selected
+      .parse()
+      .toStringWithSourceMap({ file: "out.lua" }).code;
+    expectLuaProjectOutput({ ...project, code: selectedCode }, "true\t6\n");
     if (!cache) throw new Error("No candidate cache captured");
     let compared = 0;
     for (let bits = 0; bits < 64; bits++) {
@@ -210,6 +216,13 @@ describe("cost evaluation snapshots", () => {
       expect(actual.code).toBe(expected.code);
       expect(reused.byteLength).toBe(Buffer.byteLength(expected.code));
       expect(actual.map.toJSON()).toEqual(expected.map.toJSON());
+      expect(
+        executeLua(
+          `print(pcall(function()\n${actual.code}\nend))`,
+          project.directory,
+        ),
+        `candidate mask ${String(bits)}`,
+      ).toEqual({ status: 0, stdout: "true\t6\n", stderr: "" });
       compared++;
     }
     expect(compared).toBe(48);
