@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import Parser from "luaparse";
 import { describe, test } from "vitest";
 import { Minifier } from "../src/minifier";
+import { executeLua } from "./lib/luaExecution";
 import {
   fixtureEntryPath,
   LUAPARSE_SETTINGS,
@@ -26,6 +29,16 @@ describe("minifier options visible to library users", () => {
     assert.match(code, /--# before call\nprint\([a-zA-Z_]\)/);
     assert.match(code, /print\([a-zA-Z_]\)\n--# after call/);
     assert.doesNotThrow(() => Parser.parse(code, { luaVersion: "5.3" }));
+    const input = fixtureEntryPath("annotations");
+    for (const source of [fs.readFileSync(input, "utf8"), code]) {
+      assert.deepEqual(
+        executeLua(
+          `print(pcall(function()\n${source}\nonTick()\nend))`,
+          path.dirname(input),
+        ),
+        { status: 0, stdout: "4\n2\n1\nnested\ntick\ntrue\n", stderr: "" },
+      );
+    }
   });
 
   test("configured and annotated global names are both preserved", () => {
