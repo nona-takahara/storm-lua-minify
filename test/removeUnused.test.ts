@@ -49,6 +49,42 @@ describe("unused-code removal", () => {
     assert.equal(chunk.body.length, 0);
   });
 
+  test("keeps external calls when generated function origin ranges overlap them", () => {
+    const code = "local function factory() return {} end return factory()";
+    const chunk = Parser.parse(code, {
+      luaVersion: "5.3",
+      ranges: true,
+    });
+    const declaration = chunk.body[0] as Parser.FunctionDeclaration & {
+      range: [number, number];
+    };
+    // Simulate a specialization cloned from another module's source range.
+    declaration.range = [0, code.length];
+    const resolved = resolveScopes(chunk);
+    removeUnusedLocals(
+      chunk,
+      resolved,
+      new SourceMetadata(chunk, code),
+      analyzeOptimizerFacts(chunk, resolved),
+    );
+    assert.equal(chunk.body[0], declaration);
+    assert.deepEqual(declaration.range, [0, code.length]);
+  });
+
+  test("removes recursion confined to nested closures without source ranges", () => {
+    const code =
+      "local function recursive() return function() return recursive() end end";
+    const chunk = Parser.parse(code, { luaVersion: "5.3" });
+    const resolved = resolveScopes(chunk);
+    removeUnusedLocals(
+      chunk,
+      resolved,
+      new SourceMetadata(chunk, code),
+      analyzeOptimizerFacts(chunk, resolved),
+    );
+    assert.equal(chunk.body.length, 0);
+  });
+
   test("keeps used, annotated, effectful, multi-variable, and expandable locals", () => {
     const chunk = remove(`
     local used = 1
